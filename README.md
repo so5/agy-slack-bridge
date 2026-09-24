@@ -28,24 +28,27 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   conversation *started*:
 
   - A conversation that started via `agy -p` (including one this bridge
-    created) stays fully in sync: the web UI can open it directly via a
-    URL of the form `.../r/<your-instance-id>/?p=c%2F<conversation-id>%3Fsection%3D<project-id>`
+    created) stays fully in sync both ways. The web UI can open it directly
+    via a URL of the form
+    `.../r/<your-instance-id>/?p=c%2F<conversation-id>%3Fsection%3D<project-id>`
     (grab the exact `<your-instance-id>` from any conversation URL the web
-    UI already gives you), it appears in the sidebar once opened that way,
-    and further turns from either side keep landing in the same place. This
-    is because each `agy -p` turn — including a resumed one — extends the
-    conversation's `.system_generated/steps/` trace, which is what the web
-    UI actually renders.
+    UI already gives you) — it appears in the sidebar once opened that way,
+    even though it never showed up there on its own. From then on, messages
+    sent from the web UI are visible to a later `agy -p --conversation`
+    call (confirmed: asked it "what did I just send from the web UI?" and
+    it correctly quoted the message and timestamp), and vice versa.
   - A conversation that started *interactively in the web UI* cannot be
     genuinely extended from `agy -p`. `agy` does echo back the same
     `conversation_id` and does append to the conversation's transcript log
     (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/`), so a
     `resume` onto one of these reads real history and gives a contextually
-    correct answer — but it does *not* add to that conversation's
-    `steps/` trace, so nothing new shows up in the web UI even via the
+    correct answer — but nothing new shows up in the web UI even via the
     direct URL above. It's a read: agy can see and reason about that
     conversation's past content, but can't write to the part of it the web
-    UI displays.
+    UI displays. (We don't know the exact mechanism the web UI renders
+    from - it isn't simply the `.system_generated/steps/` trace, since
+    plain conversational turns don't always get one of those either, in
+    conversations of either origin.)
 
   Practically: if you want a conversation you can pick up from **either**
   Slack or the web UI, start it from Slack (or any other `agy -p` caller).
