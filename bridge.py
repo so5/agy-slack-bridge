@@ -62,8 +62,13 @@ _HEADER_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 # of always starting a fresh one. Only checked on new messages, not thread
 # replies - once grafted, the resulting Slack thread continues normally.
 # Example: "resume db68d299-5a1c-475a-a1ed-09604f5537e4: what's next?"
+# The ID (optionally wrapped in a single backtick, e.g. "resume `<id>: ...`"
+# - a natural thing to type in Slack, and easy to do without noticing, since
+# a whole message ending in "?`" doesn't look obviously different from one
+# ending in "?") is captured separately so a stray trailing backtick can be
+# stripped back off the message text below.
 _RESUME_RE = re.compile(
-    r"^\s*resume\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"^\s*resume\s+(`)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`?"
     r"\s*[:,\-]?\s*(.*)$",
     re.IGNORECASE | re.DOTALL,
 )
@@ -278,8 +283,11 @@ def build_app() -> App:
 
         resume_match = None if is_reply else _RESUME_RE.match(text)
         if resume_match:
-            conversation_id = resume_match.group(1)
-            text = resume_match.group(2).strip()
+            had_leading_backtick = resume_match.group(1) is not None
+            conversation_id = resume_match.group(2)
+            text = resume_match.group(3).strip()
+            if had_leading_backtick and text.endswith("`"):
+                text = text[:-1].rstrip()
             if not text:
                 client.chat_postMessage(
                     channel=channel_id,

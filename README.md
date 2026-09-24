@@ -23,21 +23,15 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   later reply in the thread continues it normally — no need to repeat
   `resume` after the first message.
 
-  **Caveat**: this reliably continues a conversation that was itself created
-  via `agy -p` (print mode) — e.g. one another `resume`'d Slack thread
-  started. Pointing it at a conversation created interactively in the
-  Antigravity web UI has, in testing, *not* actually reattached to that
-  session: `agy` returns a brand-new `conversation_id`, and the original
-  conversation's on-disk state
-  (`~/.gemini/antigravity-cli/brain/<id>/`) is left untouched — it reads that
-  conversation's history as context rather than resuming it. Print mode
-  and the web UI's interactive sessions appear to be different session
-  types under the hood; there's no known CLI flag that bridges the two, and
-  the interactive CLI (`agy -i`) needs a real TTY, so this bridge can't
-  probe it further via a scripted process. If you need to hand off a
-  conversation from Slack back to the web UI (or vice versa) with true
-  continuity, that isn't currently possible through this bridge, or as far
-  as we could confirm, through `agy` itself.
+  This does genuinely reattach to a conversation started interactively in
+  the [Antigravity web UI](https://antigravity.google.com) — confirmed both
+  by `agy` echoing back the same `conversation_id` and by the conversation's
+  on-disk transcript (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/`)
+  actually growing. (An earlier version of this note said this didn't work;
+  that was this bridge failing to parse a Slack message where the ID was
+  wrapped in backticks - e.g. `` resume `<id>: ...` `` - which is a natural
+  way to type it in Slack. Wrap the ID in backticks or not, either parses
+  fine now.)
 - Markdown in `agy`'s response (bold, links, tables, headers, ...) is
   converted to Slack's own `mrkdwn` dialect before posting, since Slack
   doesn't render standard Markdown as-is (e.g. it has no table syntax, and
