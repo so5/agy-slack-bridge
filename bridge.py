@@ -123,6 +123,7 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
         "--project", project_id,
         "--output-format", "json",
         "--print-timeout", "0",
+        "--dangerously-skip-permissions",
     ]
     if conversation_id:
         cmd += ["--conversation", conversation_id]
@@ -163,6 +164,8 @@ def build_app() -> App:
         thread_key = incoming_thread_ts if is_reply else ts
 
         conversation_id = store.get(channel_id, thread_key) if is_reply else None
+        log.info("incoming text=%r channel=%s thread_key=%s conversation=%s",
+                  text, channel_id, thread_key, conversation_id)
 
         with locks.get((channel_id, thread_key)):
             try:
@@ -173,6 +176,16 @@ def build_app() -> App:
                     channel=channel_id,
                     thread_ts=thread_key,
                     text=":x: agy invocation failed. Check the bridge's logs.",
+                )
+                return
+
+            log.info("agy result=%r", result)
+            if result.get("status") != "SUCCESS":
+                logger.error("agy returned non-SUCCESS status: %r", result)
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_key,
+                    text=f":x: agy status={result.get('status')}: {result.get('error') or '(no error detail)'}",
                 )
                 return
 
