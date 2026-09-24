@@ -23,22 +23,35 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   later reply in the thread continues it normally — no need to repeat
   `resume` after the first message.
 
-  **Caveat, confirmed by testing**: this stays within `agy -p` (print mode).
-  `agy` does echo back the same `conversation_id` when you resume a
-  conversation that was started interactively in the
-  [Antigravity web UI](https://antigravity.google.com), and the
-  conversation's on-disk transcript
-  (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/`) really
-  does grow — but that conversation never shows up, or updates, in the web
-  UI itself. Even a conversation created *entirely* from Slack (never
-  touched via the web UI) doesn't appear in the web UI's list of
-  conversations for that project. So the two apparently don't share a
-  conversation index/registry — only, incidentally, the same on-disk
-  transcript format and ID space. There's no known way to bridge that from
-  the outside; it would need Antigravity itself to expose whatever session
-  registry the web UI reads from. Treat `resume` as "continue this
-  conversation from Slack, and from any other `agy -p` caller" - not as a
-  way to hand a conversation back and forth with the web UI.
+  **Caveat, confirmed by testing**: whether this is visible from the
+  [Antigravity web UI](https://antigravity.google.com) depends on where the
+  conversation *started*:
+
+  - A conversation that started via `agy -p` (including one this bridge
+    created) stays fully in sync: the web UI can open it directly via a
+    URL of the form `.../r/<your-instance-id>/?p=c%2F<conversation-id>%3Fsection%3D<project-id>`
+    (grab the exact `<your-instance-id>` from any conversation URL the web
+    UI already gives you), it appears in the sidebar once opened that way,
+    and further turns from either side keep landing in the same place. This
+    is because each `agy -p` turn — including a resumed one — extends the
+    conversation's `.system_generated/steps/` trace, which is what the web
+    UI actually renders.
+  - A conversation that started *interactively in the web UI* cannot be
+    genuinely extended from `agy -p`. `agy` does echo back the same
+    `conversation_id` and does append to the conversation's transcript log
+    (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/`), so a
+    `resume` onto one of these reads real history and gives a contextually
+    correct answer — but it does *not* add to that conversation's
+    `steps/` trace, so nothing new shows up in the web UI even via the
+    direct URL above. It's a read: agy can see and reason about that
+    conversation's past content, but can't write to the part of it the web
+    UI displays.
+
+  Practically: if you want a conversation you can pick up from **either**
+  Slack or the web UI, start it from Slack (or any other `agy -p` caller).
+  A conversation started in the web UI can be *read* from Slack via
+  `resume`, but its Slack-side continuation won't be visible back in the
+  web UI.
 - Markdown in `agy`'s response (bold, links, tables, headers, ...) is
   converted to Slack's own `mrkdwn` dialect before posting, since Slack
   doesn't render standard Markdown as-is (e.g. it has no table syntax, and
