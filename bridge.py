@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -45,6 +46,116 @@ STATE_PATH = Path(os.environ.get("AGY_BRIDGE_STATE_DB", "state.sqlite3"))
 AGY_BIN = os.environ.get("AGY_BIN", "agy")
 # Safety cap so a stuck agy invocation can't wedge the bridge forever.
 AGY_TIMEOUT_SEC = int(os.environ.get("AGY_TIMEOUT_SEC", "1200"))
+
+
+_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+_TABLE_ROW_RE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
+_TABLE_SEP_RE = re.compile(r"^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$")
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
+_STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([a-zA-Z][a-zA-Z0-9+.\-]*://[^\s)]+)\)")
+_HEADER_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+
+# Lets a *new* top-level Slack message graft onto an agy conversation that
+# already exists elsewhere (e.g. started in the Antigravity web UI), instead
+# of always starting a fresh one. Only checked on new messages, not thread
+# replies - once grafted, the resulting Slack thread continues normally.
+# Example: "resume db68d299-5a1c-475a-a1ed-09604f5537e4: what's next?"
+_RESUME_RE = re.compile(
+    r"^\s*resume\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"\s*[:,\-]?\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _convert_markdown_tables(text: str) -> str:
+    """Slack mrkdwn has no table syntax; render markdown tables as a
+    monospace code block instead of leaving the raw `| a | b |` pipes."""
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if (
+            _TABLE_ROW_RE.match(lines[i])
+            and i + 1 < len(lines)
+            and _TABLE_SEP_RE.match(lines[i + 1])
+        ):
+            def plain_cell(cell: str) -> str:
+                # Table cells end up inside a ``` code block (Slack mrkdwn
+                # has no table syntax), where Slack won't render any nested
+                # formatting anyway - so flatten common markdown down to
+                # plain text instead of leaving literal ** and [text](url).
+                cell = _LINK_RE.sub(lambda m: m.group(1), cell)
+                cell = _BOLD_RE.sub(lambda m: m.group(1), cell)
+                cell = _STRIKE_RE.sub(lambda m: m.group(1), cell)
+                cell = cell.replace("`", "")
+                return cell.strip()
+
+            def split_row(line: str) -> list[str]:
+                return [plain_cell(c) for c in line.strip().strip("|").split("|")]
+
+            rows = [split_row(lines[i])]
+            i += 2  # header + separator consumed
+            while i < len(lines) and _TABLE_ROW_RE.match(lines[i]):
+                rows.append(split_row(lines[i]))
+                i += 1
+            ncols = max(len(r) for r in rows)
+            rows = [r + [""] * (ncols - len(r)) for r in rows]
+            widths = [max(len(r[c]) for r in rows) for c in range(ncols)]
+            rendered = []
+            for ridx, row in enumerate(rows):
+                rendered.append("  ".join(cell.ljust(widths[c]) for c, cell in enumerate(row)))
+                if ridx == 0:
+                    rendered.append("  ".join("-" * widths[c] for c in range(ncols)))
+            out.append("```\n" + "\n".join(rendered) + "\n```")
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
+
+
+def markdown_to_mrkdwn(text: str) -> str:
+    """Best-effort conversion of the GitHub-flavored Markdown agy returns
+    into Slack's "mrkdwn" dialect, so bold/links/tables actually render
+    instead of showing up as literal '**' and '[text](url)' in Slack."""
+    if not text:
+        return text
+
+    text = _convert_markdown_tables(text)
+
+    # Protect code spans/blocks so the substitutions below don't mangle
+    # markdown-looking characters that appear inside code.
+    code_spans: list[str] = []
+
+    def stash_code(m: re.Match) -> str:
+        code_spans.append(m.group(0))
+        return f"\x00CODE{len(code_spans) - 1}\x00"
+
+    text = _CODE_SPAN_RE.sub(stash_code, text)
+
+    text = _HEADER_RE.sub(lambda m: f"*{m.group(1)}*", text)
+    text = _LINK_RE.sub(lambda m: f"<{m.group(2)}|{m.group(1)}>", text)
+    text = _STRIKE_RE.sub(lambda m: f"~{m.group(1)}~", text)
+
+    # Bold uses the same character Slack uses for italics (*), so pull **
+    # out first (as a placeholder) before touching single-* italics -
+    # otherwise the italic pass would immediately re-match the new *bold*.
+    bolds: list[str] = []
+
+    def stash_bold(m: re.Match) -> str:
+        bolds.append(m.group(1))
+        return f"\x00BOLD{len(bolds) - 1}\x00"
+
+    text = _BOLD_RE.sub(stash_bold, text)
+    text = _ITALIC_STAR_RE.sub(lambda m: f"_{m.group(1)}_", text)
+    for idx, content in enumerate(bolds):
+        text = text.replace(f"\x00BOLD{idx}\x00", f"*{content}*")
+
+    for idx, code in enumerate(code_spans):
+        text = text.replace(f"\x00CODE{idx}\x00", code)
+
+    return text
 
 
 def load_channel_map() -> dict:
@@ -164,8 +275,22 @@ def build_app() -> App:
         thread_key = incoming_thread_ts if is_reply else ts
 
         conversation_id = store.get(channel_id, thread_key) if is_reply else None
-        log.info("incoming text=%r channel=%s thread_key=%s conversation=%s",
-                  text, channel_id, thread_key, conversation_id)
+
+        resume_match = None if is_reply else _RESUME_RE.match(text)
+        if resume_match:
+            conversation_id = resume_match.group(1)
+            text = resume_match.group(2).strip()
+            if not text:
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_key,
+                    text="resumeの後にメッセージ本文も書いてや（例: `resume <会話ID> 続きをお願い`）",
+                )
+                return
+
+        log.info("incoming text=%r channel=%s thread_key=%s conversation=%s%s",
+                  text, channel_id, thread_key, conversation_id,
+                  " (resumed)" if resume_match else "")
 
         with locks.get((channel_id, thread_key)):
             try:
@@ -190,10 +315,12 @@ def build_app() -> App:
                 return
 
             store.put(channel_id, thread_key, result["conversation_id"], project_id)
+            outgoing_text = markdown_to_mrkdwn(result.get("response")) or "(empty response)"
+            log.info("posting to slack text=%r", outgoing_text)
             client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_key,
-                text=result.get("response") or "(empty response)",
+                text=outgoing_text,
             )
 
     return app
