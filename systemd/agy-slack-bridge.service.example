@@ -1,0 +1,33 @@
+# Install as a systemd --user service (matches how the rest of this box runs
+# small daemons, e.g. Antigravity's own remote-control daemon):
+#
+#   mkdir -p ~/.config/agy-slack-bridge
+#   cp env.example ~/.config/agy-slack-bridge/env        # fill in real tokens
+#   cp config.example.yaml ~/.config/agy-slack-bridge/config.yaml  # fill in real channel/project IDs
+#   chmod 600 ~/.config/agy-slack-bridge/env
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#   cp systemd/agy-slack-bridge.service.example ~/.config/systemd/user/agy-slack-bridge.service
+#   # edit the copied unit if this repo isn't checked out at ~/WORK/agy-slack-bridge
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agy-slack-bridge.service
+#
+# loginctl enable-linger <user> beforehand if you want it to survive logout /
+# start on boot without an active login session.
+
+[Unit]
+Description=Slack <-> Antigravity CLI (agy) bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/WORK/agy-slack-bridge
+EnvironmentFile=%h/.config/agy-slack-bridge/env
+Environment=AGY_BRIDGE_CONFIG=%h/.config/agy-slack-bridge/config.yaml
+Environment=AGY_BRIDGE_STATE_DB=%h/.config/agy-slack-bridge/state.sqlite3
+ExecStart=%h/WORK/agy-slack-bridge/.venv/bin/python %h/WORK/agy-slack-bridge/bridge.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,14 @@
+# Copy this file to a private location (NOT inside the repo checkout) and
+# point AGY_BRIDGE_CONFIG at it, e.g. ~/.config/agy-slack-bridge/config.yaml.
+#
+# Each entry maps a Slack channel ID to one `agy` project. Find a channel's ID
+# in Slack via "View channel details" -> bottom of the panel. Find a project's
+# ID with `agy --project <name-or-id> -p "hi" --output-format json` once, or
+# by inspecting ~/.gemini/config/projects/*.json for the "name" you want.
+channels:
+  C0123ABCD456:
+    project: "11111111-1111-1111-1111-111111111111"
+    name: "accountant"  # for your own reference only, not read by the bridge
+  C0678WXYZ789:
+    project: "22222222-2222-2222-2222-222222222222"
+    name: "secretary"
