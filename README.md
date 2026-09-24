@@ -23,15 +23,22 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   later reply in the thread continues it normally — no need to repeat
   `resume` after the first message.
 
-  This does genuinely reattach to a conversation started interactively in
-  the [Antigravity web UI](https://antigravity.google.com) — confirmed both
-  by `agy` echoing back the same `conversation_id` and by the conversation's
-  on-disk transcript (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/`)
-  actually growing. (An earlier version of this note said this didn't work;
-  that was this bridge failing to parse a Slack message where the ID was
-  wrapped in backticks - e.g. `` resume `<id>: ...` `` - which is a natural
-  way to type it in Slack. Wrap the ID in backticks or not, either parses
-  fine now.)
+  **Caveat, confirmed by testing**: this stays within `agy -p` (print mode).
+  `agy` does echo back the same `conversation_id` when you resume a
+  conversation that was started interactively in the
+  [Antigravity web UI](https://antigravity.google.com), and the
+  conversation's on-disk transcript
+  (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/`) really
+  does grow — but that conversation never shows up, or updates, in the web
+  UI itself. Even a conversation created *entirely* from Slack (never
+  touched via the web UI) doesn't appear in the web UI's list of
+  conversations for that project. So the two apparently don't share a
+  conversation index/registry — only, incidentally, the same on-disk
+  transcript format and ID space. There's no known way to bridge that from
+  the outside; it would need Antigravity itself to expose whatever session
+  registry the web UI reads from. Treat `resume` as "continue this
+  conversation from Slack, and from any other `agy -p` caller" - not as a
+  way to hand a conversation back and forth with the web UI.
 - Markdown in `agy`'s response (bold, links, tables, headers, ...) is
   converted to Slack's own `mrkdwn` dialect before posting, since Slack
   doesn't render standard Markdown as-is (e.g. it has no table syntax, and
