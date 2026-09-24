@@ -4,19 +4,24 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
 (`agy`) projects, so you can talk to your agy agents from Slack.
 
 - Each configured Slack channel maps 1:1 to one `agy` project.
-- A new top-level message in the channel starts a fresh `agy` conversation;
-  the reply is posted as a thread on that message.
+- A new top-level message starts a fresh `agy` conversation only if it
+  **@-mentions the bot** — so other traffic in the channel (a batch job
+  posting its results via an Incoming Webhook, ordinary chatter) isn't
+  treated as a prompt. The mention is stripped before the rest of the text
+  is sent to `agy`. The reply is posted as a thread on that message.
 - Replying inside that Slack thread continues the same `agy` conversation
-  (looked up by the thread's root timestamp). Replying in a thread the bridge
-  has no record of just starts a new conversation and adopts that thread from
-  then on.
+  (looked up by the thread's root timestamp) — **no mention needed for
+  thread replies**, only for starting a new one. Replying in a thread the
+  bridge has no record of just starts a new conversation and adopts that
+  thread from then on.
 - A new top-level message can also graft onto an *existing* conversation
   instead of starting a fresh one — handy for continuing, from Slack, a
   conversation you started in the [Antigravity web UI](https://antigravity.google.com).
-  Start the message with `resume <conversation-id>`:
+  Start the message with an @-mention (required for any new top-level
+  message, see above) followed by `resume <conversation-id>`:
 
   ```
-  resume db68d299-5a1c-475a-a1ed-09604f5537e4: 続きをお願い
+  @your-bot resume db68d299-5a1c-475a-a1ed-09604f5537e4: 続きをお願い
   ```
 
   The resulting Slack thread is grafted onto that conversation ID, so every

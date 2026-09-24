@@ -259,11 +259,17 @@ def build_app() -> App:
     locks = KeyedLocks()
 
     app = App(token=os.environ["SLACK_BOT_TOKEN"])
+    self_user_id = app.client.auth_test()["user_id"]
+    mention_re = re.compile(rf"<@{re.escape(self_user_id)}>\s*")
+    log.info("bridge bot user id=%s (mention required to start a new conversation)", self_user_id)
 
     @app.event("message")
     def handle_message(event, client, logger):  # noqa: ANN001 - Bolt signature
         # Ignore edits, deletes, bot messages, thread-broadcast echoes, etc.
-        # A plain human message has no "subtype".
+        # A plain human message has no "subtype". This also quietly ignores
+        # messages posted via an Incoming Webhook (e.g. a batch job posting
+        # its results into the same channel) - those arrive with
+        # subtype="bot_message".
         if event.get("subtype") is not None:
             return
 
@@ -278,6 +284,15 @@ def build_app() -> App:
         incoming_thread_ts = event.get("thread_ts")
         is_reply = incoming_thread_ts is not None and incoming_thread_ts != ts
         thread_key = incoming_thread_ts if is_reply else ts
+
+        if not is_reply:
+            # Only start a *new* conversation when explicitly @-mentioned,
+            # so other traffic landing in the channel (a webhook's batch
+            # results, ordinary chatter) isn't treated as a prompt. Once a
+            # thread exists, replies in it don't need to repeat the mention.
+            if not mention_re.search(text):
+                return
+            text = mention_re.sub("", text).strip()
 
         conversation_id = store.get(channel_id, thread_key) if is_reply else None
 
