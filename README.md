@@ -89,6 +89,10 @@ mapping from Slack threads to `agy` conversation IDs.
    - `chat:write`
    - `channels:history` (for public channels) and/or `groups:history` (for
      private channels), depending on which kind of channel you're bridging.
+   - `chat:write.customize` — optional, only needed if you set
+     `display_name`/`icon_emoji` per channel in `config.yaml` (see below) to
+     make the bot post under a different name/avatar per project instead of
+     one fixed bot identity everywhere.
 4. **Event Subscriptions**: enable it, and subscribe to bot events:
    - `message.channels` (public channels) and/or `message.groups` (private
      channels), matching the scopes above.

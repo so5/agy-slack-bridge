@@ -163,6 +163,21 @@ def markdown_to_mrkdwn(text: str) -> str:
     return text
 
 
+def _persona_kwargs(channel_cfg: dict) -> dict:
+    """Per-channel display name/icon override for chat.postMessage, so the
+    same bot token can look like a different persona in each channel (e.g.
+    "secretary" vs "accountant"). Requires the chat:write.customize scope;
+    silently has no effect without it if channel_cfg sets nothing."""
+    kwargs = {}
+    if channel_cfg.get("display_name"):
+        kwargs["username"] = channel_cfg["display_name"]
+    if channel_cfg.get("icon_emoji"):
+        kwargs["icon_emoji"] = channel_cfg["icon_emoji"]
+    elif channel_cfg.get("icon_url"):
+        kwargs["icon_url"] = channel_cfg["icon_url"]
+    return kwargs
+
+
 def load_channel_map() -> dict:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
@@ -308,6 +323,7 @@ def build_app() -> App:
                     channel=channel_id,
                     thread_ts=thread_key,
                     text="resumeの後にメッセージ本文も書いてや（例: `resume <会話ID> 続きをお願い`）",
+                    **_persona_kwargs(channel_cfg),
                 )
                 return
 
@@ -324,6 +340,7 @@ def build_app() -> App:
                     channel=channel_id,
                     thread_ts=thread_key,
                     text=":x: agy invocation failed. Check the bridge's logs.",
+                    **_persona_kwargs(channel_cfg),
                 )
                 return
 
@@ -334,6 +351,7 @@ def build_app() -> App:
                     channel=channel_id,
                     thread_ts=thread_key,
                     text=f":x: agy status={result.get('status')}: {result.get('error') or '(no error detail)'}",
+                    **_persona_kwargs(channel_cfg),
                 )
                 return
 
@@ -344,6 +362,7 @@ def build_app() -> App:
                 channel=channel_id,
                 thread_ts=thread_key,
                 text=outgoing_text,
+                **_persona_kwargs(channel_cfg),
             )
 
     return app
