@@ -284,11 +284,30 @@ def _run_with_status(client, channel_id: str, thread_ts: str, status_text: str,
         refresher.join(timeout=1)
 
 
+def _describe_tool_error(err: dict) -> str:
+    """Render one entry of run_agy()'s _tool_errors as a short, readable line
+    (backtick-quoted so Slack shows it as inline code, not mangled markdown)."""
+    tool_name = err.get("tool_name") or "?"
+    params = err.get("parameters") or {}
+    detail = params.get("CommandLine") or params.get("FilePath") or params.get("Path")
+    if detail is None and params:
+        detail = json.dumps(params, ensure_ascii=False)
+    if detail:
+        return f"`{tool_name}`: `{detail}`"
+    return f"`{tool_name}`"
+
+
 def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
+    # --output-format json only gives denied_actions as a bare
+    # {"action": "command", "display_name": "RunCommand"} - not what was
+    # actually denied. stream-json emits a step_update per tool call, so a
+    # denied one carries the exact command line / file path / etc. Parse
+    # that stream ourselves and fold the detail into the final result dict
+    # under "_tool_errors" for the caller to report.
     cmd = [
         AGY_BIN, "-p", text,
         "--project", project_id,
-        "--output-format", "json",
+        "--output-format", "stream-json",
         "--print-timeout", "0",
         "--mode", "accept-edits",
     ]
@@ -298,10 +317,33 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=AGY_TIMEOUT_SEC)
     if proc.returncode != 0:
         raise RuntimeError(f"agy exited {proc.returncode}: {proc.stderr.strip()[-2000:]}")
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"agy returned non-JSON output: {proc.stdout[-2000:]}") from e
+
+    result = None
+    tool_errors = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # stray non-JSON line; the real payload is line-delimited JSON
+        if event.get("event") == "result":
+            result = event.get("result")
+        elif event.get("event") == "step_update":
+            step = event.get("step_update", {})
+            if step.get("state") == "ERROR" and step.get("step_type") == "tool":
+                info = step.get("tool_info", {})
+                tool_errors.append({
+                    "tool_name": step.get("tool_name"),
+                    "parameters": info.get("parameters"),
+                    "message": (info.get("error") or {}).get("message"),
+                })
+
+    if result is None:
+        raise RuntimeError(f"agy produced no result event: {proc.stdout[-2000:]}")
+    result["_tool_errors"] = tool_errors
+    return result
 
 
 def build_app() -> App:
@@ -398,21 +440,28 @@ def build_app() -> App:
             store.put(channel_id, thread_key, result["conversation_id"], project_id)
             outgoing_text = markdown_to_mrkdwn(result.get("response")) or "(empty response)"
 
-            denied = result.get("denied_actions") or []
-            if denied:
-                # status is still SUCCESS here - agy didn't error out, it just
-                # silently skipped an action headless mode can't get approval
-                # for (see --mode accept-edits in run_agy). Surface this
-                # instead of leaving a vague/empty-looking reply.
-                logger.warning("agy denied actions: %r", denied)
-                denied_desc = ", ".join(
-                    d.get("display_name") or d.get("action") or "?" for d in denied
-                )
+            # status is still SUCCESS here - agy didn't error out, it just
+            # silently skipped an action headless mode can't get approval for
+            # (see --mode accept-edits in run_agy). Surface exactly what was
+            # denied instead of leaving a vague/empty-looking reply.
+            tool_errors = result.get("_tool_errors") or []
+            if tool_errors:
+                logger.warning("agy tool errors: %r", tool_errors)
+                lines = "\n".join(f"- {_describe_tool_error(e)}" for e in tool_errors)
                 outgoing_text += (
-                    f"\n\n:warning: 一部のツール実行が権限不足で拒否されました: {denied_desc}\n"
+                    "\n\n:warning: 一部のツール実行が権限不足で拒否されました:\n"
+                    f"{lines}\n"
                     "必要なら `~/.gemini/antigravity-cli/settings.json` の "
-                    "`permissions.allow` にそのコマンドを追加してください。"
+                    "`permissions.allow` に上記コマンドをそのまま（完全一致で）追加してください。"
                 )
+            elif result.get("denied_actions"):
+                # Fallback in case we couldn't pull step-level detail out of
+                # the stream for some reason.
+                denied_desc = ", ".join(
+                    d.get("display_name") or d.get("action") or "?"
+                    for d in result["denied_actions"]
+                )
+                outgoing_text += f"\n\n:warning: 一部のツール実行が権限不足で拒否されました: {denied_desc}"
 
             log.info("posting to slack text=%r", outgoing_text)
             client.chat_postMessage(
