@@ -27,6 +27,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +47,12 @@ STATE_PATH = Path(os.environ.get("AGY_BRIDGE_STATE_DB", "state.sqlite3"))
 AGY_BIN = os.environ.get("AGY_BIN", "agy")
 # Safety cap so a stuck agy invocation can't wedge the bridge forever.
 AGY_TIMEOUT_SEC = int(os.environ.get("AGY_TIMEOUT_SEC", "1200"))
+# agy's own global permission file (see README's "Tool permissions" section)
+# - not owned by this bridge, so every write here preserves whatever else is
+# already in it (trustedWorkspaces, etc.) and only touches permissions.allow.
+AGY_SETTINGS_PATH = Path(
+    os.environ.get("AGY_SETTINGS_PATH", "~/.gemini/antigravity-cli/settings.json")
+).expanduser()
 
 
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
@@ -191,7 +198,9 @@ def load_channel_map() -> dict:
 
 
 class ThreadStore:
-    """Maps (channel_id, thread_ts) -> agy conversation_id.
+    """Maps (channel_id, thread_ts) -> agy conversation_id, and holds
+    short-lived "pending retry" records for the permission-grant buttons
+    (see _build_reply_blocks / grant_once / grant_permanent below).
 
     Backed by sqlite (not a plain JSON file) because Slack Bolt dispatches
     events from a worker thread pool, so writes can race.
@@ -208,6 +217,17 @@ class ThreadStore:
                 project_id TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (channel_id, thread_ts)
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS pending_retries (
+                retry_id TEXT PRIMARY KEY,
+                channel_id TEXT NOT NULL,
+                thread_ts TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                conversation_id TEXT,
+                prompt_text TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )"""
         )
         self._conn.commit()
@@ -232,6 +252,96 @@ class ThreadStore:
                 (channel_id, thread_ts, conversation_id, project_id),
             )
             self._conn.commit()
+
+    def put_retry(self, retry_id: str, channel_id: str, thread_ts: str, project_id: str,
+                   conversation_id: Optional[str], prompt_text: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO pending_retries
+                   (retry_id, channel_id, thread_ts, project_id, conversation_id, prompt_text, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (retry_id, channel_id, thread_ts, project_id, conversation_id, prompt_text),
+            )
+            self._conn.commit()
+
+    def get_retry(self, retry_id: str) -> Optional[dict]:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT channel_id, thread_ts, project_id, conversation_id, prompt_text
+                   FROM pending_retries WHERE retry_id=?""",
+                (retry_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "channel_id": row[0], "thread_ts": row[1], "project_id": row[2],
+            "conversation_id": row[3], "prompt_text": row[4],
+        }
+
+    def delete_retry(self, retry_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM pending_retries WHERE retry_id=?", (retry_id,))
+            self._conn.commit()
+
+
+class PermissionsFile:
+    """Read-modify-write helper for agy's global
+    ~/.gemini/antigravity-cli/settings.json permissions.allow list.
+
+    Every write reloads the file fresh and only touches the allow list, so
+    whatever else is in there (trustedWorkspaces, etc.) - and any change a
+    human made by hand in between - survives untouched."""
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._lock = threading.Lock()
+
+    def _load(self) -> dict:
+        try:
+            with self._path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def _save(self, data: dict) -> None:
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        tmp.replace(self._path)
+
+    @staticmethod
+    def _entry(command: str) -> str:
+        return f"command({command})"
+
+    def list_commands(self) -> list[str]:
+        with self._lock:
+            allow = (self._load().get("permissions") or {}).get("allow") or []
+        return [a[len("command("):-1] for a in allow if a.startswith("command(") and a.endswith(")")]
+
+    def add(self, command: str) -> bool:
+        entry = self._entry(command)
+        with self._lock:
+            data = self._load()
+            allow = data.setdefault("permissions", {}).setdefault("allow", [])
+            if entry in allow:
+                return False
+            allow.append(entry)
+            self._save(data)
+        log.info("permissions.allow += %r", entry)
+        return True
+
+    def remove(self, command: str) -> bool:
+        entry = self._entry(command)
+        with self._lock:
+            data = self._load()
+            allow = (data.get("permissions") or {}).get("allow") or []
+            if entry not in allow:
+                return False
+            allow.remove(entry)
+            self._save(data)
+        log.info("permissions.allow -= %r", entry)
+        return True
 
 
 class KeyedLocks:
@@ -346,9 +456,132 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
     return result
 
 
+def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
+    """Slack section blocks cap out around 3000 chars; split long replies
+    into several sections rather than truncating them."""
+    text = text or "(empty response)"
+    chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)] or [text]
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": c}} for c in chunks]
+
+
+def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
+    """Reply blocks for a turn that hit at least one run_command denial: the
+    text as usual, plus one pair of grant/retry buttons per distinct denied
+    command line. Only run_command denials get buttons - other tool types
+    (file edits, etc.) still just show up as text, since there's no
+    permissions.allow syntax for this bridge to grant on their behalf."""
+    blocks = _text_to_section_blocks(outgoing_text)
+    seen: set[str] = set()
+    for err in tool_errors:
+        if err.get("tool_name") != "run_command":
+            continue
+        cmd = (err.get("parameters") or {}).get("CommandLine")
+        if not cmd or cmd in seen:
+            continue
+        seen.add(cmd)
+        value = json.dumps({"retry_id": retry_id, "cmd": cmd})
+        blocks.append({
+            "type": "actions",
+            "block_id": f"perm_{len(seen)}_{retry_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "今回だけ許可して再実行"},
+                    "style": "primary",
+                    "action_id": "grant_once",
+                    "value": value,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "恒久的に許可して再実行"},
+                    "style": "danger",
+                    "action_id": "grant_permanent",
+                    "value": value,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "恒久的に許可しますか?"},
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"以下のコマンドを今後ずっと許可します:\n`{cmd}`",
+                        },
+                        "confirm": {"type": "plain_text", "text": "許可する"},
+                        "deny": {"type": "plain_text", "text": "キャンセル"},
+                    },
+                },
+            ],
+        })
+        if len(seen) >= 10:  # stay well under Slack's block-count limit
+            break
+    return blocks
+
+
+def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
+                    channel_id: str, thread_key: str, project_id: str,
+                    conversation_id: Optional[str], text: str, persona_kwargs: dict,
+                    status_text: str = "考え中です...") -> None:
+    """Runs one agy turn and posts the reply, attaching permission-grant
+    buttons if a run_command call got denied. Shared by the normal message
+    handler and by the grant_once/grant_permanent retry flow."""
+    try:
+        result = _run_with_status(
+            client, channel_id, thread_key, status_text, persona_kwargs,
+            run_agy, text, project_id, conversation_id,
+        )
+    except Exception:
+        log.exception("agy invocation failed")
+        client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_key,
+            text=":x: agy invocation failed. Check the bridge's logs.",
+            **persona_kwargs,
+        )
+        return
+
+    log.info("agy result=%r", result)
+    if result.get("status") != "SUCCESS":
+        log.error("agy returned non-SUCCESS status: %r", result)
+        client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_key,
+            text=f":x: agy status={result.get('status')}: {result.get('error') or '(no error detail)'}",
+            **persona_kwargs,
+        )
+        return
+
+    conversation_id = result["conversation_id"]
+    store.put(channel_id, thread_key, conversation_id, project_id)
+    outgoing_text = markdown_to_mrkdwn(result.get("response")) or "(empty response)"
+
+    tool_errors = result.get("_tool_errors") or []
+    blocks = None
+    if tool_errors:
+        log.warning("agy tool errors: %r", tool_errors)
+        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in tool_errors)
+        outgoing_text += (
+            "\n\n:warning: 一部のツール実行が権限不足で拒否されました:\n"
+            f"{lines}\n"
+            "下のボタンで許可して再実行するか、`~/.gemini/antigravity-cli/settings.json` の "
+            "`permissions.allow` に直接追加してください。"
+        )
+        retry_id = uuid.uuid4().hex[:12]
+        store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id, text)
+        blocks = _build_reply_blocks(outgoing_text, tool_errors, retry_id)
+    elif result.get("denied_actions"):
+        # Fallback in case we couldn't pull step-level detail out of the
+        # stream for some reason - no command line to grant, so no buttons.
+        denied_desc = ", ".join(
+            d.get("display_name") or d.get("action") or "?" for d in result["denied_actions"]
+        )
+        outgoing_text += f"\n\n:warning: 一部のツール実行が権限不足で拒否されました: {denied_desc}"
+
+    log.info("posting to slack text=%r", outgoing_text)
+    client.chat_postMessage(
+        channel=channel_id, thread_ts=thread_key,
+        text=outgoing_text, blocks=blocks, **persona_kwargs,
+    )
+
+
 def build_app() -> App:
     channel_map = load_channel_map()
     store = ThreadStore(STATE_PATH)
+    permissions = PermissionsFile(AGY_SETTINGS_PATH)
     locks = KeyedLocks()
 
     app = App(token=os.environ["SLACK_BOT_TOKEN"])
@@ -410,65 +643,146 @@ def build_app() -> App:
                   " (resumed)" if resume_match else "")
 
         with locks.get((channel_id, thread_key)):
-            try:
-                result = _run_with_status(
-                    client, channel_id, thread_key, "考え中です...",
-                    _persona_kwargs(channel_cfg),
-                    run_agy, text, project_id, conversation_id,
+            _run_and_reply(
+                client, store, permissions, channel_id, thread_key, project_id,
+                conversation_id, text, _persona_kwargs(channel_cfg),
+            )
+
+    def _grant_and_retry(body: dict, client, permanent: bool) -> None:
+        action = body["actions"][0]
+        try:
+            payload = json.loads(action["value"])
+        except (KeyError, json.JSONDecodeError):
+            log.error("bad button value: %r", action.get("value"))
+            return
+        retry_id = payload.get("retry_id")
+        cmd = payload.get("cmd")
+        ctx = store.get_retry(retry_id) if retry_id else None
+
+        message = body.get("message") or {}
+        origin_channel_id = body["channel"]["id"]
+        message_ts = message.get("ts")
+
+        if not ctx or not cmd:
+            if message_ts:
+                client.chat_update(
+                    channel=origin_channel_id, ts=message_ts,
+                    text=":warning: このボタンは期限切れです。もう一度メッセージを送ってください。",
+                    blocks=[],
                 )
-            except Exception:
-                logger.exception("agy invocation failed")
-                client.chat_postMessage(
-                    channel=channel_id,
-                    thread_ts=thread_key,
-                    text=":x: agy invocation failed. Check the bridge's logs.",
-                    **_persona_kwargs(channel_cfg),
-                )
+            return
+
+        clicker = (body.get("user") or {}).get("username") or (body.get("user") or {}).get("id") or "?"
+        log.info("%s permission grant for command=%r by user=%s",
+                  "permanent" if permanent else "one-time", cmd, clicker)
+
+        channel_cfg = channel_map.get(ctx["channel_id"], {})
+        persona = _persona_kwargs(channel_cfg)
+        label = "恒久的に許可" if permanent else "今回だけ許可"
+
+        added = permissions.add(cmd)
+        if message_ts:
+            client.chat_update(
+                channel=origin_channel_id, ts=message_ts,
+                text=f":gear: {label}して再実行しています... (`{cmd}`)",
+                blocks=[],
+            )
+
+        try:
+            _run_and_reply(
+                client, store, permissions, ctx["channel_id"], ctx["thread_ts"],
+                ctx["project_id"], ctx["conversation_id"], ctx["prompt_text"], persona,
+                status_text="許可して再実行しています...",
+            )
+        finally:
+            if not permanent and added:
+                permissions.remove(cmd)
+            store.delete_retry(retry_id)
+
+    @app.action("grant_once")
+    def handle_grant_once(ack, body, client):  # noqa: ANN001 - Bolt signature
+        ack()
+        _grant_and_retry(body, client, permanent=False)
+
+    @app.action("grant_permanent")
+    def handle_grant_permanent(ack, body, client):  # noqa: ANN001 - Bolt signature
+        ack()
+        _grant_and_retry(body, client, permanent=True)
+
+    @app.action("revoke_entry")
+    def handle_revoke_entry(ack, body, respond):  # noqa: ANN001 - Bolt signature
+        ack()
+        cmd = body["actions"][0]["value"]
+        removed = permissions.remove(cmd)
+        respond(
+            text=(f":wastebasket: `command({cmd})` を削除しました。" if removed
+                  else f"`command({cmd})` は既に存在しませんでした。"),
+            replace_original=False,
+            response_type="ephemeral",
+        )
+
+    @app.command("/agy-permissions")
+    def handle_permissions_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
+        ack()
+        if command.get("channel_id") not in channel_map:
+            respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
+            return
+
+        text = (command.get("text") or "").strip()
+        parts = text.split(maxsplit=1)
+        sub = parts[0].lower() if parts else "list"
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if sub in ("", "list"):
+            cmds = permissions.list_commands()
+            if not cmds:
+                respond(text="permissions.allow は現在空です。", response_type="ephemeral")
                 return
-
-            log.info("agy result=%r", result)
-            if result.get("status") != "SUCCESS":
-                logger.error("agy returned non-SUCCESS status: %r", result)
-                client.chat_postMessage(
-                    channel=channel_id,
-                    thread_ts=thread_key,
-                    text=f":x: agy status={result.get('status')}: {result.get('error') or '(no error detail)'}",
-                    **_persona_kwargs(channel_cfg),
-                )
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"`{c}`"},
+                    "accessory": {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "削除"},
+                        "style": "danger",
+                        "action_id": "revoke_entry",
+                        "value": c,
+                        "confirm": {
+                            "title": {"type": "plain_text", "text": "削除しますか?"},
+                            "text": {"type": "mrkdwn", "text": f"`{c}` を permissions.allow から削除します。"},
+                            "confirm": {"type": "plain_text", "text": "削除する"},
+                            "deny": {"type": "plain_text", "text": "キャンセル"},
+                        },
+                    },
+                }
+                for c in cmds
+            ]
+            respond(text=f"現在の permissions.allow ({len(cmds)}件):", blocks=blocks, response_type="ephemeral")
+        elif sub == "add":
+            if not arg:
+                respond(text="使い方: `/agy-permissions add <コマンド>`", response_type="ephemeral")
                 return
-
-            store.put(channel_id, thread_key, result["conversation_id"], project_id)
-            outgoing_text = markdown_to_mrkdwn(result.get("response")) or "(empty response)"
-
-            # status is still SUCCESS here - agy didn't error out, it just
-            # silently skipped an action headless mode can't get approval for
-            # (see --mode accept-edits in run_agy). Surface exactly what was
-            # denied instead of leaving a vague/empty-looking reply.
-            tool_errors = result.get("_tool_errors") or []
-            if tool_errors:
-                logger.warning("agy tool errors: %r", tool_errors)
-                lines = "\n".join(f"- {_describe_tool_error(e)}" for e in tool_errors)
-                outgoing_text += (
-                    "\n\n:warning: 一部のツール実行が権限不足で拒否されました:\n"
-                    f"{lines}\n"
-                    "必要なら `~/.gemini/antigravity-cli/settings.json` の "
-                    "`permissions.allow` に上記コマンドをそのまま（完全一致で）追加してください。"
-                )
-            elif result.get("denied_actions"):
-                # Fallback in case we couldn't pull step-level detail out of
-                # the stream for some reason.
-                denied_desc = ", ".join(
-                    d.get("display_name") or d.get("action") or "?"
-                    for d in result["denied_actions"]
-                )
-                outgoing_text += f"\n\n:warning: 一部のツール実行が権限不足で拒否されました: {denied_desc}"
-
-            log.info("posting to slack text=%r", outgoing_text)
-            client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_key,
-                text=outgoing_text,
-                **_persona_kwargs(channel_cfg),
+            added = permissions.add(arg)
+            respond(
+                text=(f":white_check_mark: `command({arg})` を追加しました。" if added
+                      else f"`command({arg})` はすでに登録されています。"),
+                response_type="ephemeral",
+            )
+        elif sub == "remove":
+            if not arg:
+                respond(text="使い方: `/agy-permissions remove <コマンド>`", response_type="ephemeral")
+                return
+            removed = permissions.remove(arg)
+            respond(
+                text=(f":wastebasket: `command({arg})` を削除しました。" if removed
+                      else f"`command({arg})` は登録されていません。"),
+                response_type="ephemeral",
+            )
+        else:
+            respond(
+                text="使い方: `/agy-permissions [list|add <コマンド>|remove <コマンド>]`",
+                response_type="ephemeral",
             )
 
     return app

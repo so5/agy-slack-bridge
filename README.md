@@ -72,6 +72,16 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   automatically once the reply is posted.
 - Runs entirely over Slack's **Socket Mode** (an outbound websocket from your
   machine to Slack) — no inbound port, reverse proxy, or public URL needed.
+- When a reply comes back with a denied `run_command` call (see "Tool
+  permissions" below), the message gets two buttons instead of just a text
+  warning: **今回だけ許可して再実行** (grant that exact command, retry the same
+  prompt, then revoke it again once the retry finishes) and **恒久的に許可して
+  再実行** (grant it permanently, with a native Slack confirm prompt first).
+  This makes a permission denial actionable straight from a phone, without
+  SSHing in to edit `settings.json` by hand. There's also a `/agy-permissions`
+  slash command (`list`, `add <command>`, `remove <command>`) for managing
+  the allow-list ahead of time or cleaning up stray entries — see "Managing
+  permissions from Slack" below.
 
 This is intentionally a thin process wrapper around `agy -p ... --output-format
 json`, not a reimplementation of anything agy does. It just routes Slack
@@ -102,10 +112,17 @@ mapping from Slack threads to `agy` conversation IDs.
 4. **Event Subscriptions**: enable it, and subscribe to bot events:
    - `message.channels` (public channels) and/or `message.groups` (private
      channels), matching the scopes above.
-5. Install the app to your workspace. Save the Bot User OAuth Token as
+5. **Interactivity & Shortcuts**: enable it. With Socket Mode already on,
+   button clicks are delivered over the same websocket — no Request URL
+   needed. This is required for the permission-grant/revoke buttons.
+6. **Slash Commands** (optional, only for `/agy-permissions` — see "Managing
+   permissions from Slack" below): create a command named `/agy-permissions`
+   (any description/usage hint you like). Same as above, no Request URL
+   needed with Socket Mode on. Add the `commands` Bot Token Scope.
+7. Install the app to your workspace. Save the Bot User OAuth Token as
    `SLACK_BOT_TOKEN` (`xoxb-...`).
-6. Invite the bot to each channel you want to bridge (`/invite @your-bot`).
-7. Get each channel's ID from Slack ("View channel details" → bottom of the
+8. Invite the bot to each channel you want to bridge (`/invite @your-bot`).
+9. Get each channel's ID from Slack ("View channel details" → bottom of the
    panel).
 
 **Security note**: anyone who can post in a bridged channel can direct the
@@ -118,17 +135,75 @@ click "approve" on a tool-permission prompt, so this bridge runs with
 `--mode accept-edits` rather than `--dangerously-skip-permissions`. In
 testing: `accept-edits` auto-approves file edits and safe read-only shell
 commands (e.g. `ls`), but a command agy considers destructive (e.g. `rm`) is
-still denied unless it exactly matches an entry under `permissions.allow` in
+still denied unless it matches an entry under `permissions.allow` in
 `~/.gemini/antigravity-cli/settings.json` (a **global** file, shared across
-every `agy` project on the machine) - and the match is on the *whole*
-command, not just the binary name (`command(rm test_ae.txt)` does not also
-allow `command(rm test_be.txt)`). Grow that allow-list narrowly, one exact
-command at a time, as legitimate denials come up - never a bare
-`command(rm)` or similar, which would defeat the point. When agy silently
-skips an action this way, the run still comes back `status: SUCCESS` with an
+every `agy` project on the machine).
+
+The match is **not** literal full-string equality, and it's **not** a bare
+binary-name allow either — confirmed by testing, it's a *token-complete
+prefix* match: `command(git diff)` matches `git diff --stat`, `git diff
+HEAD~1`, any continuation, because each already-typed token (`git`, `diff`)
+is complete and followed by a token boundary. It does **not** match
+`git diffX` (not a token boundary) or `git status` (different second
+token). A trailing `*` in an entry does **not** reliably help - tested and
+found inconsistent, so don't use it. Grow the allow-list narrowly - a whole
+subcommand prefix like `command(aws lambda)` or `command(git diff)` is fine
+and typically the useful grain, but never a bare `command(rm)` or
+`command(git)`, which would defeat the point. When agy silently skips an
+action this way, the run still comes back `status: SUCCESS` with an
 empty-looking response and a `denied_actions` field; this bridge detects that
 and appends a `:warning:` note naming the denied action to the Slack reply,
 instead of leaving you looking at a blank-seeming answer.
+
+**Compound commands (`&&`, etc.)**: confirmed by testing, agy splits a
+compound command line on shell operators like `&&` and checks **each
+sub-command independently** against `permissions.allow` - it's not a literal
+whole-string match, and it's not a blanket "any `&&` is denied" rule either.
+`sleep 10 && aws logs ...` is denied only because `sleep 10 ...` on its own
+isn't in the allow-list (even though `command(aws logs)` matches the second
+half) - allow-listing `command(sleep)` too would make the whole line pass.
+Conversely, chaining a disallowed action onto an allowed one doesn't sneak it
+through: with only `command(echo hi)` allowed, `echo hi && touch
+/tmp/whatever` is still denied outright (and nothing runs) because `touch
+...` doesn't match anything on its own. So there's no `&&`-based bypass in
+either direction - each piece of a compound command needs its own matching
+allow entry, same as if it were run alone.
+
+**Note on `grep`/`sleep`/`ls` seeming inconsistent**: there's no built-in
+"safe commands are free" allowance for arbitrary shell invocations. A small
+set of dedicated tools (directory listing, file viewing/writing, etc.) skip
+the permission gate entirely because they aren't `run_command` calls at all -
+that's why simple file/directory operations tend to just work. But the
+moment agy chooses to run something as an actual shell command via
+`run_command`, it needs a matching `permissions.allow` entry regardless of
+how harmless that command is (confirmed: even a bare `grep` or `ls` invoked
+this way is denied with zero entries configured, identical to `rm`). This
+isn't something narrowing the allow-list can make worse, and it isn't new
+behavior triggered by adding entries - headless `--mode accept-edits` has
+always required an explicit match for every `run_command` call, full stop.
+
+## Managing permissions from Slack
+
+Two ways to act on `permissions.allow` without leaving Slack:
+
+- **Buttons on a denial reply**: click 今回だけ許可して再実行 for a one-off, or
+  恒久的に許可して再実行 (confirm prompt first) to keep it. Either way the bridge
+  re-runs the *exact same prompt* against the *exact same conversation* right
+  after granting, so you see the real result instead of just "permission
+  added, try again yourself." A one-time grant is removed again immediately
+  after that retry, whether it succeeded or not — it never lingers.
+- **`/agy-permissions` slash command** (only in a bridged channel):
+  - `/agy-permissions list` — every current entry, each with a 削除 (delete)
+    button.
+  - `/agy-permissions add <command>` — add `command(<command>)` permanently
+    (same one-argument-string-is-the-whole-command rules as above; this
+    doesn't validate or narrow what you type, so type the exact prefix you
+    want).
+  - `/agy-permissions remove <command>` — remove it.
+
+Both paths write straight to `~/.gemini/antigravity-cli/settings.json` (or
+wherever `AGY_SETTINGS_PATH` points, see below), preserving everything else
+already in the file. Every add/remove is logged.
 
 ## Configuration
 
@@ -147,8 +222,9 @@ $EDITOR ~/.config/agy-slack-bridge/config.yaml   # fill in channel -> project ma
 
 See `config.example.yaml` for the mapping format and `env.example` for the
 environment variables (tokens, plus optional overrides like `AGY_BIN` if
-`agy` isn't on `PATH`, or `AGY_TIMEOUT_SEC` if your conversations legitimately
-run longer than 20 minutes).
+`agy` isn't on `PATH`, `AGY_TIMEOUT_SEC` if your conversations legitimately
+run longer than 20 minutes, or `AGY_SETTINGS_PATH` if agy's settings file
+isn't at the default `~/.gemini/antigravity-cli/settings.json`).
 
 ## Running
 
