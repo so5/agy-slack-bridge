@@ -205,6 +205,19 @@ Both paths write straight to `~/.gemini/antigravity-cli/settings.json` (or
 wherever `AGY_SETTINGS_PATH` points, see below), preserving everything else
 already in the file. Every add/remove is logged.
 
+**Caveat, confirmed by testing**: `denied_actions`/`duration_seconds`/`usage`
+in agy's result are cumulative for the whole conversation, not scoped to one
+turn - so a plain-text "一部のツール実行が権限不足で拒否されました" warning with
+no buttons can mean the conversation has an *old*, unresolved denial in its
+history rather than something that just happened (agy can silently choose
+not to retry a denied command at all, rather than trying it again and
+failing). Buttons only ever appear when agy's stream shows a *fresh*
+denial this turn - only that case has an exact command line to grant. Also,
+after clicking a button, the retry prompt sent back to agy explicitly names
+the just-granted command and tells it to run it now, rather than resending
+your original message verbatim - agy doesn't reliably retry on its own even
+once the permission is in place.
+
 ## Configuration
 
 Copy the two example files somewhere **outside** this repo checkout (they

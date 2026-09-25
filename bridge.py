@@ -564,12 +564,22 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id, text)
         blocks = _build_reply_blocks(outgoing_text, tool_errors, retry_id)
     elif result.get("denied_actions"):
-        # Fallback in case we couldn't pull step-level detail out of the
-        # stream for some reason - no command line to grant, so no buttons.
+        # `denied_actions` (like duration_seconds/usage in the same result)
+        # is cumulative for the whole conversation, not scoped to this turn
+        # - confirmed by testing: it stays set even on a turn where agy's
+        # own stream shows no fresh tool call at all (the model can simply
+        # choose not to retry a previously-denied action, non-
+        # deterministically). So this branch means "this conversation has
+        # an unresolved denial somewhere in its history", not "something
+        # was just denied" - don't claim the latter.
         denied_desc = ", ".join(
             d.get("display_name") or d.get("action") or "?" for d in result["denied_actions"]
         )
-        outgoing_text += f"\n\n:warning: 一部のツール実行が権限不足で拒否されました: {denied_desc}"
+        outgoing_text += (
+            f"\n\n:grey_question: この会話には過去に拒否された操作({denied_desc})が残っていますが、"
+            "今回のターンでは新たなツール実行は発生しませんでした。"
+            "もう一度はっきり「実行して」と頼むか、`/agy-permissions` で先に許可しておいてください。"
+        )
 
     log.info("posting to slack text=%r", outgoing_text)
     client.chat_postMessage(
@@ -688,10 +698,23 @@ def build_app() -> App:
                 blocks=[],
             )
 
+        # Confirmed by testing: agy doesn't always actually retry a
+        # previously-denied command just because you resend the same
+        # prompt - it can non-deterministically choose to give up instead
+        # (an empty response, no fresh tool call at all), especially since
+        # the tool's own denial message tells the model not to try to work
+        # around it. Prefix an explicit instruction naming the exact
+        # command that was just newly allowed, so the retry actually
+        # exercises the grant instead of silently doing nothing with it.
+        retry_prompt = (
+            f"(先ほど権限不足で拒否された次のコマンドを、今permissions.allowに追加したので、"
+            f"今すぐそのまま実行してください: `{cmd}`)\n\n{ctx['prompt_text']}"
+        )
+
         try:
             _run_and_reply(
                 client, store, permissions, ctx["channel_id"], ctx["thread_ts"],
-                ctx["project_id"], ctx["conversation_id"], ctx["prompt_text"], persona,
+                ctx["project_id"], ctx["conversation_id"], retry_prompt, persona,
                 status_text="許可して再実行しています...",
             )
         finally:
