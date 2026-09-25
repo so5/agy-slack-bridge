@@ -517,10 +517,17 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
 def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
                     channel_id: str, thread_key: str, project_id: str,
                     conversation_id: Optional[str], text: str, persona_kwargs: dict,
-                    status_text: str = "考え中です...") -> None:
+                    status_text: str = "考え中です...",
+                    remember_text: Optional[str] = None) -> None:
     """Runs one agy turn and posts the reply, attaching permission-grant
     buttons if a run_command call got denied. Shared by the normal message
-    handler and by the grant_once/grant_permanent retry flow."""
+    handler and by the grant_once/grant_permanent retry flow.
+
+    `remember_text` is what gets saved as the prompt to replay on a *future*
+    grant-and-retry, if this turn hits another denial - defaults to `text`
+    itself, but the retry flow passes the original, unwrapped prompt here so
+    a chain of several denials in the same message doesn't nest another
+    "please run <cmd> now" instruction inside the last one every time."""
     try:
         result = _run_with_status(
             client, channel_id, thread_key, status_text, persona_kwargs,
@@ -561,7 +568,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             "`permissions.allow` に直接追加してください。"
         )
         retry_id = uuid.uuid4().hex[:12]
-        store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id, text)
+        store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id,
+                         remember_text if remember_text is not None else text)
         blocks = _build_reply_blocks(outgoing_text, tool_errors, retry_id)
     elif result.get("denied_actions"):
         # `denied_actions` (like duration_seconds/usage in the same result)
@@ -716,6 +724,7 @@ def build_app() -> App:
                 client, store, permissions, ctx["channel_id"], ctx["thread_ts"],
                 ctx["project_id"], ctx["conversation_id"], retry_prompt, persona,
                 status_text="許可して再実行しています...",
+                remember_text=ctx["prompt_text"],
             )
         finally:
             if not permanent and added:
