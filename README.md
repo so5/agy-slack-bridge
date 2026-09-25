@@ -113,6 +113,23 @@ corresponding `agy` project to act on this machine (run commands, edit files,
 send email, etc. — whatever that project's own permissions allow). Use
 private channels with a membership you trust, not open/public ones.
 
+**Tool permissions**: there's no human present in a headless `agy -p` call to
+click "approve" on a tool-permission prompt, so this bridge runs with
+`--mode accept-edits` rather than `--dangerously-skip-permissions`. In
+testing: `accept-edits` auto-approves file edits and safe read-only shell
+commands (e.g. `ls`), but a command agy considers destructive (e.g. `rm`) is
+still denied unless it exactly matches an entry under `permissions.allow` in
+`~/.gemini/antigravity-cli/settings.json` (a **global** file, shared across
+every `agy` project on the machine) - and the match is on the *whole*
+command, not just the binary name (`command(rm test_ae.txt)` does not also
+allow `command(rm test_be.txt)`). Grow that allow-list narrowly, one exact
+command at a time, as legitimate denials come up - never a bare
+`command(rm)` or similar, which would defeat the point. When agy silently
+skips an action this way, the run still comes back `status: SUCCESS` with an
+empty-looking response and a `denied_actions` field; this bridge detects that
+and appends a `:warning:` note naming the denied action to the Slack reply,
+instead of leaving you looking at a blank-seeming answer.
+
 ## Configuration
 
 Copy the two example files somewhere **outside** this repo checkout (they

@@ -290,7 +290,7 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
         "--project", project_id,
         "--output-format", "json",
         "--print-timeout", "0",
-        "--dangerously-skip-permissions",
+        "--mode", "accept-edits",
     ]
     if conversation_id:
         cmd += ["--conversation", conversation_id]
@@ -397,6 +397,23 @@ def build_app() -> App:
 
             store.put(channel_id, thread_key, result["conversation_id"], project_id)
             outgoing_text = markdown_to_mrkdwn(result.get("response")) or "(empty response)"
+
+            denied = result.get("denied_actions") or []
+            if denied:
+                # status is still SUCCESS here - agy didn't error out, it just
+                # silently skipped an action headless mode can't get approval
+                # for (see --mode accept-edits in run_agy). Surface this
+                # instead of leaving a vague/empty-looking reply.
+                logger.warning("agy denied actions: %r", denied)
+                denied_desc = ", ".join(
+                    d.get("display_name") or d.get("action") or "?" for d in denied
+                )
+                outgoing_text += (
+                    f"\n\n:warning: 一部のツール実行が権限不足で拒否されました: {denied_desc}\n"
+                    "必要なら `~/.gemini/antigravity-cli/settings.json` の "
+                    "`permissions.allow` にそのコマンドを追加してください。"
+                )
+
             log.info("posting to slack text=%r", outgoing_text)
             client.chat_postMessage(
                 channel=channel_id,
