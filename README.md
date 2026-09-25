@@ -190,20 +190,45 @@ Two ways to act on `permissions.allow` without leaving Slack:
   恒久的に許可して再実行 (confirm prompt first) to keep it. Either way the bridge
   re-runs the *exact same prompt* against the *exact same conversation* right
   after granting, so you see the real result instead of just "permission
-  added, try again yourself." A one-time grant is removed again immediately
-  after that retry, whether it succeeded or not — it never lingers.
+  added, try again yourself." Not just `run_command` - any denial whose own
+  message spells out the exact grantable entry gets a button too (confirmed
+  for `read_url_content`, e.g. `read_url(support.yayoi-kk.co.jp)` - note
+  that one's granted per-domain, not per-URL, since that's the granularity
+  agy itself uses).
+  - If a single turn hits **two or more distinct denials at once**, each
+    gets its own button pair *and* one more pair appears offering to grant
+    all of them together in one click - clicking the individual ones one at
+    a time would only grant one and immediately retry, likely re-hitting the
+    others.
+  - A one-time grant is **not** torn down the instant its own retry
+    finishes - see "Temporary grant lifetime" below.
 - **`/agy-permissions` slash command** (only in a bridged channel):
   - `/agy-permissions list` — every current entry, each with a 削除 (delete)
     button.
-  - `/agy-permissions add <command>` — add `command(<command>)` permanently
-    (same one-argument-string-is-the-whole-command rules as above; this
-    doesn't validate or narrow what you type, so type the exact prefix you
-    want).
-  - `/agy-permissions remove <command>` — remove it.
+  - `/agy-permissions add <command>` — add it permanently. A bare command
+    (no `kind(...)` wrapper typed) is wrapped as `command(<that>)`, same as
+    before; typing a full entry like `read_url(example.com)` is used as-is.
+  - `/agy-permissions remove <command>` — same rules, removes it.
 
 Both paths write straight to `~/.gemini/antigravity-cli/settings.json` (or
 wherever `AGY_SETTINGS_PATH` points, see below), preserving everything else
 already in the file. Every add/remove is logged.
+
+**Temporary grant lifetime**: a one-time grant used to be removed the
+instant its own retry finished, which turned out to be actively wrong for a
+task needing *several* different grants in sequence - by the time the
+second one got granted, the first was already gone, so a later retry that
+needed both would just deny the first one again. Instead, a `grant_once`
+entry is now tied to the conversation: it's released (and only *actually*
+removed from `permissions.allow` if no other conversation on the machine is
+also relying on the exact same entry, since that file is shared) the next
+time that conversation has a turn with **no** fresh denial at all - the
+natural "this task is done for now" signal. As a backstop for a conversation
+that's abandoned mid-task and never comes back clean, a background sweep
+force-releases anything older than `AGY_TEMP_GRANT_MAX_AGE_SEC` (default
+3600s), checked every `AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC` (default 300s). If
+the sweep fires before you're actually done, you'll just see a fresh denial
+again - click the button again, no harm done.
 
 **Caveat, confirmed by testing**: `denied_actions`/`duration_seconds`/`usage`
 in agy's result are cumulative for the whole conversation, not scoped to one

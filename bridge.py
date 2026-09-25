@@ -27,6 +27,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -53,6 +54,11 @@ AGY_TIMEOUT_SEC = int(os.environ.get("AGY_TIMEOUT_SEC", "1200"))
 AGY_SETTINGS_PATH = Path(
     os.environ.get("AGY_SETTINGS_PATH", "~/.gemini/antigravity-cli/settings.json")
 ).expanduser()
+# Safety-net upper bound on how long a grant_once entry can outlive its own
+# retry, for a conversation that's abandoned mid-task and never comes back
+# to a clean turn (see _run_and_reply / ThreadStore.sweep_stale_temp_grants).
+AGY_TEMP_GRANT_MAX_AGE_SEC = int(os.environ.get("AGY_TEMP_GRANT_MAX_AGE_SEC", "3600"))
+AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC = int(os.environ.get("AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC", "300"))
 
 
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
@@ -230,6 +236,14 @@ class ThreadStore:
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )"""
         )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS temp_grants (
+                conversation_id TEXT NOT NULL,
+                entry TEXT NOT NULL,
+                granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (conversation_id, entry)
+            )"""
+        )
         self._conn.commit()
 
     def get(self, channel_id: str, thread_ts: str) -> Optional[str]:
@@ -283,6 +297,74 @@ class ThreadStore:
             self._conn.execute("DELETE FROM pending_retries WHERE retry_id=?", (retry_id,))
             self._conn.commit()
 
+    def add_temp_grant(self, conversation_id: str, entry: str) -> None:
+        """Records that `entry` is temporarily granted for `conversation_id`,
+        so release can be deferred (see clear_temp_grants /
+        sweep_stale_temp_grants) instead of happening right after the one
+        retry that needed it - a second grant for a *different* entry in
+        the same conversation must not undo this one."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO temp_grants (conversation_id, entry, granted_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(conversation_id, entry) DO UPDATE SET granted_at=excluded.granted_at""",
+                (conversation_id, entry),
+            )
+            self._conn.commit()
+
+    def clear_temp_grants(self, conversation_id: str) -> list[str]:
+        """Releases every temp grant recorded for this conversation, and
+        returns the subset now safe to actually remove from
+        permissions.allow - i.e. no *other* conversation still holds the
+        same entry, since that file is shared machine-wide."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT entry FROM temp_grants WHERE conversation_id=?",
+                (conversation_id,),
+            ).fetchall()
+            entries = [r[0] for r in rows]
+            if not entries:
+                return []
+            self._conn.execute("DELETE FROM temp_grants WHERE conversation_id=?", (conversation_id,))
+            self._conn.commit()
+            to_revoke = []
+            for entry in entries:
+                remaining = self._conn.execute(
+                    "SELECT COUNT(*) FROM temp_grants WHERE entry=?", (entry,)
+                ).fetchone()[0]
+                if remaining == 0:
+                    to_revoke.append(entry)
+            return to_revoke
+
+    def sweep_stale_temp_grants(self, max_age_seconds: int) -> list[str]:
+        """Safety net for a conversation that never comes back to a clean
+        turn (abandoned mid-task, etc.) - force-releases anything older
+        than max_age_seconds, with the same cross-conversation check."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT conversation_id, entry FROM temp_grants
+                   WHERE (strftime('%s','now') - strftime('%s', granted_at)) > ?""",
+                (max_age_seconds,),
+            ).fetchall()
+            if not rows:
+                return []
+            self._conn.executemany(
+                "DELETE FROM temp_grants WHERE conversation_id=? AND entry=?", rows
+            )
+            self._conn.commit()
+            to_revoke = []
+            seen: set[str] = set()
+            for _, entry in rows:
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                remaining = self._conn.execute(
+                    "SELECT COUNT(*) FROM temp_grants WHERE entry=?", (entry,)
+                ).fetchone()[0]
+                if remaining == 0:
+                    to_revoke.append(entry)
+            return to_revoke
+
 
 class PermissionsFile:
     """Read-modify-write helper for agy's global
@@ -314,13 +396,11 @@ class PermissionsFile:
     def _entry(command: str) -> str:
         return f"command({command})"
 
-    def list_commands(self) -> list[str]:
+    def list_entries(self) -> list[str]:
         with self._lock:
-            allow = (self._load().get("permissions") or {}).get("allow") or []
-        return [a[len("command("):-1] for a in allow if a.startswith("command(") and a.endswith(")")]
+            return list((self._load().get("permissions") or {}).get("allow") or [])
 
-    def add(self, command: str) -> bool:
-        entry = self._entry(command)
+    def add_entry(self, entry: str) -> bool:
         with self._lock:
             data = self._load()
             allow = data.setdefault("permissions", {}).setdefault("allow", [])
@@ -331,8 +411,7 @@ class PermissionsFile:
         log.info("permissions.allow += %r", entry)
         return True
 
-    def remove(self, command: str) -> bool:
-        entry = self._entry(command)
+    def remove_entry(self, entry: str) -> bool:
         with self._lock:
             data = self._load()
             allow = (data.get("permissions") or {}).get("allow") or []
@@ -342,6 +421,19 @@ class PermissionsFile:
             self._save(data)
         log.info("permissions.allow -= %r", entry)
         return True
+
+    # Backward-compatible helpers for a bare shell command (used by
+    # /agy-permissions add/remove when given a plain command instead of a
+    # full "<kind>(...)" entry like the grant buttons pass).
+    def list_commands(self) -> list[str]:
+        return [e[len("command("):-1] for e in self.list_entries()
+                if e.startswith("command(") and e.endswith(")")]
+
+    def add(self, command: str) -> bool:
+        return self.add_entry(self._entry(command))
+
+    def remove(self, command: str) -> bool:
+        return self.remove_entry(self._entry(command))
 
 
 class KeyedLocks:
@@ -407,6 +499,41 @@ def _describe_tool_error(err: dict) -> str:
     return f"`{tool_name}`"
 
 
+# Some tool kinds spell out the exact grantable permissions.allow entry
+# right in their own denial message, e.g. read_url_content's:
+#   'user denied permission for read_url(support.yayoi-kk.co.jp)'
+# (confirmed by testing against a live denial) - trust that instead of
+# guessing the syntax per tool kind ourselves.
+_ENTRY_IN_MESSAGE_RE = re.compile(r"\b([a-z_]+\([^()]*\))")
+# Whether a string typed into /agy-permissions add/remove already looks like
+# a full "<kind>(...)" entry (e.g. "read_url(example.com)") rather than a
+# bare shell command that should get wrapped as command(<that>).
+_FULL_ENTRY_RE = re.compile(r"^[a-z_]+\(.*\)$")
+
+
+def _grantable_entry(err: dict) -> Optional[dict]:
+    """Figures out the literal permissions.allow entry that would have let
+    one run_agy() tool error through, plus a short human-readable
+    description of what it was trying to do (for confirm dialogs / retry
+    prompts). Returns None if we can't tell - that error just stays
+    text-only, no button."""
+    tool_name = err.get("tool_name")
+    params = err.get("parameters") or {}
+
+    if tool_name == "run_command":
+        cmd = params.get("CommandLine")
+        if not cmd:
+            return None
+        return {"entry": f"command({cmd})", "describe": cmd}
+
+    m = _ENTRY_IN_MESSAGE_RE.search(err.get("message") or "")
+    if not m:
+        return None
+    entry = m.group(1)
+    describe = params.get("Url") or params.get("FilePath") or params.get("Path") or entry
+    return {"entry": entry, "describe": describe}
+
+
 def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
     # --output-format json only gives denied_actions as a bare
     # {"action": "command", "display_name": "RunCommand"} - not what was
@@ -465,24 +592,32 @@ def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
 
 
 def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
-    """Reply blocks for a turn that hit at least one run_command denial: the
-    text as usual, plus one pair of grant/retry buttons per distinct denied
-    command line. Only run_command denials get buttons - other tool types
-    (file edits, etc.) still just show up as text, since there's no
-    permissions.allow syntax for this bridge to grant on their behalf."""
+    """Reply blocks for a turn that hit at least one grantable denial: the
+    text as usual, plus one pair of grant/retry buttons per distinct
+    denied entry, and - only when 2 or more distinct entries showed up in
+    this *same* turn - one more pair of "grant all of these at once"
+    buttons, since clicking the individual ones one at a time would only
+    ever grant one and immediately re-run the whole prompt, possibly
+    hitting the others all over again. Denials we can't map to a
+    permissions.allow entry (see _grantable_entry) stay text-only."""
     blocks = _text_to_section_blocks(outgoing_text)
+    entries: list[dict] = []
     seen: set[str] = set()
     for err in tool_errors:
-        if err.get("tool_name") != "run_command":
+        grantable = _grantable_entry(err)
+        if not grantable or grantable["entry"] in seen:
             continue
-        cmd = (err.get("parameters") or {}).get("CommandLine")
-        if not cmd or cmd in seen:
-            continue
-        seen.add(cmd)
-        value = json.dumps({"retry_id": retry_id, "cmd": cmd})
+        seen.add(grantable["entry"])
+        entries.append(grantable)
+        if len(entries) >= 9:  # stay well under Slack's block-count limit
+            break
+
+    for i, g in enumerate(entries):
+        entry, describe = g["entry"], g["describe"]
+        value = json.dumps({"retry_id": retry_id, "entries": [entry], "describe": describe})
         blocks.append({
             "type": "actions",
-            "block_id": f"perm_{len(seen)}_{retry_id}",
+            "block_id": f"perm_{i}_{retry_id}",
             "elements": [
                 {
                     "type": "button",
@@ -501,7 +636,7 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                         "title": {"type": "plain_text", "text": "恒久的に許可しますか?"},
                         "text": {
                             "type": "mrkdwn",
-                            "text": f"以下のコマンドを今後ずっと許可します:\n`{cmd}`",
+                            "text": f"以下を今後ずっと許可します:\n`{entry}`",
                         },
                         "confirm": {"type": "plain_text", "text": "許可する"},
                         "deny": {"type": "plain_text", "text": "キャンセル"},
@@ -509,8 +644,42 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                 },
             ],
         })
-        if len(seen) >= 10:  # stay well under Slack's block-count limit
-            break
+
+    if len(entries) >= 2:
+        all_entries = [g["entry"] for g in entries]
+        all_describe = " / ".join(g["describe"] for g in entries)
+        value = json.dumps({"retry_id": retry_id, "entries": all_entries, "describe": all_describe})
+        blocks.append({
+            "type": "actions",
+            "block_id": f"perm_all_{retry_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": f"表示された{len(entries)}件を全部今回だけ許可して再実行"},
+                    "style": "primary",
+                    "action_id": "grant_once",
+                    "value": value,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": f"{len(entries)}件を全部恒久的に許可して再実行"},
+                    "style": "danger",
+                    "action_id": "grant_permanent",
+                    "value": value,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": f"{len(entries)}件を恒久的に許可しますか?"},
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "以下すべてを今後ずっと許可します:\n"
+                                     + "\n".join(f"`{e}`" for e in all_entries),
+                        },
+                        "confirm": {"type": "plain_text", "text": "許可する"},
+                        "deny": {"type": "plain_text", "text": "キャンセル"},
+                    },
+                },
+            ],
+        })
+
     return blocks
 
 
@@ -557,6 +726,17 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
     outgoing_text = markdown_to_mrkdwn(result.get("response")) or "(empty response)"
 
     tool_errors = result.get("_tool_errors") or []
+    if not tool_errors:
+        # A turn with no fresh tool denials is our signal that whatever
+        # this conversation needed permissions for is done (for now) -
+        # release any temp grants it's been holding since an earlier
+        # grant_once click (see _grant_and_retry), instead of tearing one
+        # down the moment a *different* one gets granted. Safe across
+        # conversations: clear_temp_grants only returns entries no other
+        # conversation still needs.
+        for entry in store.clear_temp_grants(conversation_id):
+            permissions.remove_entry(entry)
+
     blocks = None
     if tool_errors:
         log.warning("agy tool errors: %r", tool_errors)
@@ -601,6 +781,19 @@ def build_app() -> App:
     store = ThreadStore(STATE_PATH)
     permissions = PermissionsFile(AGY_SETTINGS_PATH)
     locks = KeyedLocks()
+
+    def _sweep_temp_grants() -> None:
+        while True:
+            time.sleep(AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC)
+            try:
+                for entry in store.sweep_stale_temp_grants(AGY_TEMP_GRANT_MAX_AGE_SEC):
+                    permissions.remove_entry(entry)
+                    log.info("swept stale temp grant %r (older than %ss without a clean turn)",
+                              entry, AGY_TEMP_GRANT_MAX_AGE_SEC)
+            except Exception:
+                log.exception("temp-grant sweep failed")
+
+    threading.Thread(target=_sweep_temp_grants, daemon=True).start()
 
     app = App(token=os.environ["SLACK_BOT_TOKEN"])
     self_user_id = app.client.auth_test()["user_id"]
@@ -674,14 +867,15 @@ def build_app() -> App:
             log.error("bad button value: %r", action.get("value"))
             return
         retry_id = payload.get("retry_id")
-        cmd = payload.get("cmd")
+        entries = payload.get("entries") or []
+        describe = payload.get("describe") or ", ".join(entries)
         ctx = store.get_retry(retry_id) if retry_id else None
 
         message = body.get("message") or {}
         origin_channel_id = body["channel"]["id"]
         message_ts = message.get("ts")
 
-        if not ctx or not cmd:
+        if not ctx or not entries:
             if message_ts:
                 client.chat_update(
                     channel=origin_channel_id, ts=message_ts,
@@ -691,44 +885,51 @@ def build_app() -> App:
             return
 
         clicker = (body.get("user") or {}).get("username") or (body.get("user") or {}).get("id") or "?"
-        log.info("%s permission grant for command=%r by user=%s",
-                  "permanent" if permanent else "one-time", cmd, clicker)
+        log.info("%s permission grant for entries=%r by user=%s",
+                  "permanent" if permanent else "one-time", entries, clicker)
 
         channel_cfg = channel_map.get(ctx["channel_id"], {})
         persona = _persona_kwargs(channel_cfg)
         label = "恒久的に許可" if permanent else "今回だけ許可"
+        conversation_id = ctx["conversation_id"]
 
-        added = permissions.add(cmd)
+        for entry in entries:
+            newly_added = permissions.add_entry(entry)
+            if newly_added and not permanent:
+                # Deferred release (see _run_and_reply's clean-turn check
+                # and the sweep thread below) instead of tearing this down
+                # the moment *this one* retry finishes - so granting a
+                # different entry later in the same conversation doesn't
+                # undo it.
+                store.add_temp_grant(conversation_id, entry)
+
         if message_ts:
             client.chat_update(
                 channel=origin_channel_id, ts=message_ts,
-                text=f":gear: {label}して再実行しています... (`{cmd}`)",
+                text=f":gear: {label}して再実行しています... (`{describe}`)",
                 blocks=[],
             )
 
         # Confirmed by testing: agy doesn't always actually retry a
-        # previously-denied command just because you resend the same
+        # previously-denied action just because you resend the same
         # prompt - it can non-deterministically choose to give up instead
         # (an empty response, no fresh tool call at all), especially since
         # the tool's own denial message tells the model not to try to work
-        # around it. Prefix an explicit instruction naming the exact
-        # command that was just newly allowed, so the retry actually
-        # exercises the grant instead of silently doing nothing with it.
+        # around it. Prefix an explicit instruction naming what was just
+        # allowed, so the retry actually exercises the grant.
         retry_prompt = (
-            f"(先ほど権限不足で拒否された次のコマンドを、今permissions.allowに追加したので、"
-            f"今すぐそのまま実行してください: `{cmd}`)\n\n{ctx['prompt_text']}"
+            f"(先ほど権限不足で拒否された次を、今permissions.allowに追加したので、"
+            f"今すぐそのまま実行してください: `{describe}`)\n\n{ctx['prompt_text']}"
         )
 
         try:
             _run_and_reply(
                 client, store, permissions, ctx["channel_id"], ctx["thread_ts"],
-                ctx["project_id"], ctx["conversation_id"], retry_prompt, persona,
+                ctx["project_id"], conversation_id, retry_prompt, persona,
                 status_text="許可して再実行しています...",
                 remember_text=ctx["prompt_text"],
             )
         finally:
-            if not permanent and added:
-                permissions.remove(cmd)
             store.delete_retry(retry_id)
 
     @app.action("grant_once")
@@ -744,11 +945,11 @@ def build_app() -> App:
     @app.action("revoke_entry")
     def handle_revoke_entry(ack, body, respond):  # noqa: ANN001 - Bolt signature
         ack()
-        cmd = body["actions"][0]["value"]
-        removed = permissions.remove(cmd)
+        entry = body["actions"][0]["value"]
+        removed = permissions.remove_entry(entry)
         respond(
-            text=(f":wastebasket: `command({cmd})` を削除しました。" if removed
-                  else f"`command({cmd})` は既に存在しませんでした。"),
+            text=(f":wastebasket: `{entry}` を削除しました。" if removed
+                  else f"`{entry}` は既に存在しませんでした。"),
             replace_original=False,
             response_type="ephemeral",
         )
@@ -766,51 +967,55 @@ def build_app() -> App:
         arg = parts[1].strip() if len(parts) > 1 else ""
 
         if sub in ("", "list"):
-            cmds = permissions.list_commands()
-            if not cmds:
+            entries = permissions.list_entries()
+            if not entries:
                 respond(text="permissions.allow は現在空です。", response_type="ephemeral")
                 return
             blocks = [
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"`{c}`"},
+                    "text": {"type": "mrkdwn", "text": f"`{e}`"},
                     "accessory": {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "削除"},
                         "style": "danger",
                         "action_id": "revoke_entry",
-                        "value": c,
+                        "value": e,
                         "confirm": {
                             "title": {"type": "plain_text", "text": "削除しますか?"},
-                            "text": {"type": "mrkdwn", "text": f"`{c}` を permissions.allow から削除します。"},
+                            "text": {"type": "mrkdwn", "text": f"`{e}` を permissions.allow から削除します。"},
                             "confirm": {"type": "plain_text", "text": "削除する"},
                             "deny": {"type": "plain_text", "text": "キャンセル"},
                         },
                     },
                 }
-                for c in cmds
+                for e in entries
             ]
-            respond(text=f"現在の permissions.allow ({len(cmds)}件):", blocks=blocks, response_type="ephemeral")
-        elif sub == "add":
+            respond(text=f"現在の permissions.allow ({len(entries)}件):", blocks=blocks, response_type="ephemeral")
+        elif sub in ("add", "remove"):
             if not arg:
-                respond(text="使い方: `/agy-permissions add <コマンド>`", response_type="ephemeral")
+                respond(text=f"使い方: `/agy-permissions {sub} <コマンド または kind(引数)>`",
+                        response_type="ephemeral")
                 return
-            added = permissions.add(arg)
-            respond(
-                text=(f":white_check_mark: `command({arg})` を追加しました。" if added
-                      else f"`command({arg})` はすでに登録されています。"),
-                response_type="ephemeral",
-            )
-        elif sub == "remove":
-            if not arg:
-                respond(text="使い方: `/agy-permissions remove <コマンド>`", response_type="ephemeral")
-                return
-            removed = permissions.remove(arg)
-            respond(
-                text=(f":wastebasket: `command({arg})` を削除しました。" if removed
-                      else f"`command({arg})` は登録されていません。"),
-                response_type="ephemeral",
-            )
+            # A bare shell command (no "kind(...)" wrapper typed) gets
+            # wrapped as command(<that>), same as the old command-only
+            # /agy-permissions; typing a full entry like read_url(example.com)
+            # is used as-is.
+            entry = arg if _FULL_ENTRY_RE.match(arg) else f"command({arg})"
+            if sub == "add":
+                ok = permissions.add_entry(entry)
+                respond(
+                    text=(f":white_check_mark: `{entry}` を追加しました。" if ok
+                          else f"`{entry}` はすでに登録されています。"),
+                    response_type="ephemeral",
+                )
+            else:
+                ok = permissions.remove_entry(entry)
+                respond(
+                    text=(f":wastebasket: `{entry}` を削除しました。" if ok
+                          else f"`{entry}` は登録されていません。"),
+                    response_type="ephemeral",
+                )
         else:
             respond(
                 text="使い方: `/agy-permissions [list|add <コマンド>|remove <コマンド>]`",
