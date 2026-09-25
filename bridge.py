@@ -248,6 +248,42 @@ class KeyedLocks:
             return self._locks.setdefault(key, threading.Lock())
 
 
+# Slack auto-clears an assistant status after 2 minutes of silence; agy can
+# easily run longer than that (we've seen many minutes on real tasks), so
+# it needs to be refreshed periodically rather than set once.
+STATUS_REFRESH_SEC = 90
+
+
+def _run_with_status(client, channel_id: str, thread_ts: str, status_text: str,
+                      persona_kwargs: dict, fn, *args, **kwargs):
+    """Show a Slack "is thinking..." style status in the thread for as long
+    as fn() is running. Best-effort: a failure to set/refresh the status
+    never blocks or fails the actual agy call."""
+    def set_status():
+        try:
+            client.assistant_threads_setStatus(
+                channel_id=channel_id, thread_ts=thread_ts, status=status_text,
+                **persona_kwargs,
+            )
+        except Exception:
+            log.warning("failed to set assistant status", exc_info=True)
+
+    stop_event = threading.Event()
+
+    def keep_alive():
+        while not stop_event.wait(STATUS_REFRESH_SEC):
+            set_status()
+
+    set_status()
+    refresher = threading.Thread(target=keep_alive, daemon=True)
+    refresher.start()
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        stop_event.set()
+        refresher.join(timeout=1)
+
+
 def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
     cmd = [
         AGY_BIN, "-p", text,
@@ -333,7 +369,11 @@ def build_app() -> App:
 
         with locks.get((channel_id, thread_key)):
             try:
-                result = run_agy(text, project_id, conversation_id)
+                result = _run_with_status(
+                    client, channel_id, thread_key, "考え中です...",
+                    _persona_kwargs(channel_cfg),
+                    run_agy, text, project_id, conversation_id,
+                )
             except Exception:
                 logger.exception("agy invocation failed")
                 client.chat_postMessage(

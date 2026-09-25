@@ -64,6 +64,12 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   converted to Slack's own `mrkdwn` dialect before posting, since Slack
   doesn't render standard Markdown as-is (e.g. it has no table syntax, and
   uses `*bold*`/`_italic_` instead of `**bold**`/`*italic*`).
+- While `agy` is working, the thread shows Slack's native "is thinking..."
+  status indicator (`assistant.threads.setStatus`) instead of going quiet —
+  useful since a real task can run for many minutes. No extra Slack scope
+  needed beyond `chat:write`. The status is refreshed periodically (Slack
+  clears it after ~2 minutes of silence on its own) and is cleared
+  automatically once the reply is posted.
 - Runs entirely over Slack's **Socket Mode** (an outbound websocket from your
   machine to Slack) — no inbound port, reverse proxy, or public URL needed.
 
