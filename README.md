@@ -72,6 +72,17 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   automatically once the reply is posted.
 - Runs entirely over Slack's **Socket Mode** (an outbound websocket from your
   machine to Slack) — no inbound port, reverse proxy, or public URL needed.
+- When agy's response mentions a `file://` link to something it generated
+  (a chart, a report, ...), that link is dead in Slack - nothing can open a
+  local filesystem path. So the bridge also uploads the file itself
+  (`files_upload_v2`, needs the `files:write` scope) as a reply in the same
+  thread, whenever it's a recognized type (image/PDF/CSV/etc., see
+  `UPLOADABLE_EXTS`) and lives under either that agy project's own
+  workspace directory or that conversation's own
+  `~/.gemini/antigravity-cli/brain/<id>/` artifact directory - deliberately
+  not "any absolute path agy happens to mention," to avoid ever turning a
+  response into a way to exfiltrate an arbitrary file elsewhere on the box.
+  Capped at 20MB and 5 files per reply.
 - When a reply comes back with a denied `run_command` call (see "Tool
   permissions" below), the message gets two buttons instead of just a text
   warning: **今回だけ許可して再実行** (grant that exact command, retry the same
@@ -119,6 +130,8 @@ mapping from Slack threads to `agy` conversation IDs.
    permissions from Slack" below): create a command named `/agy-permissions`
    (any description/usage hint you like). Same as above, no Request URL
    needed with Socket Mode on. Add the `commands` Bot Token Scope.
+   - `files:write` — optional, only needed for the auto-upload-generated-
+     files feature below.
 7. Install the app to your workspace. Save the Bot User OAuth Token as
    `SLACK_BOT_TOKEN` (`xoxb-...`).
 8. Invite the bot to each channel you want to bridge (`/invite @your-bot`).

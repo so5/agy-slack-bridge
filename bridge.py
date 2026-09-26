@@ -59,6 +59,13 @@ AGY_SETTINGS_PATH = Path(
 # to a clean turn (see _run_and_reply / ThreadStore.sweep_stale_temp_grants).
 AGY_TEMP_GRANT_MAX_AGE_SEC = int(os.environ.get("AGY_TEMP_GRANT_MAX_AGE_SEC", "3600"))
 AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC = int(os.environ.get("AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC", "300"))
+AGY_PROJECTS_DIR = Path("~/.gemini/config/projects").expanduser()
+AGY_BRAIN_DIR = Path("~/.gemini/antigravity-cli/brain").expanduser()
+# Extensions worth auto-uploading a local file agy mentions by file:// link
+# (a generated chart, report, etc.) - deliberately narrow so this can't turn
+# into a generic "fetch me any file on the box" primitive.
+UPLOADABLE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf", ".csv", ".xlsx", ".md", ".txt"}
+UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 
 
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
@@ -69,6 +76,7 @@ _ITALIC_STAR_RE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
 _STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([a-zA-Z][a-zA-Z0-9+.\-]*://[^\s)]+)\)")
 _HEADER_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+_FILE_LINK_RE = re.compile(r"file://(/[^\s)>\]]+)")
 
 # Lets a *new* top-level Slack message graft onto an agy conversation that
 # already exists elsewhere (e.g. started in the Antigravity web UI), instead
@@ -556,6 +564,72 @@ def _grantable_entry(err: dict) -> Optional[dict]:
     return {"entry": entry, "describe": describe}
 
 
+def _project_root(project_id: str) -> Optional[Path]:
+    """Best-effort: the git working directory agy registered for this
+    project, read from ~/.gemini/config/projects/<id>.json. Used to scope
+    which local files this bridge is willing to auto-upload to Slack (see
+    _extract_uploadable_files) - never anywhere outside a project's own
+    workspace or its own conversation's brain/artifact directory."""
+    try:
+        data = json.loads((AGY_PROJECTS_DIR / f"{project_id}.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    for res in (data.get("projectResources") or {}).get("resources", []):
+        uri = (res.get("gitFolder") or {}).get("folderUri")
+        if uri and uri.startswith("file://"):
+            return Path(uri[len("file://"):])
+    return None
+
+
+def _extract_uploadable_files(response_text: str, project_id: str, conversation_id: str) -> list[Path]:
+    """Finds file:// links in agy's response (e.g. "generated this chart:
+    file:///.../chart.png") that point at real, safely-scoped local files,
+    so the bridge can upload them to Slack directly instead of leaving a
+    dead file:// link nothing in Slack can open. Deliberately narrow:
+    - only image/document-ish extensions (UPLOADABLE_EXTS), never an
+      arbitrary file agy happens to mention;
+    - only under this project's own workspace (per _project_root) or this
+      conversation's own brain/artifact directory - never an arbitrary
+      absolute path, which could otherwise leak something sensitive
+      elsewhere on the box if a response ever named one;
+    - must actually exist, be a plain file, and be under the size cap.
+    """
+    roots = []
+    proj_root = _project_root(project_id)
+    if proj_root and proj_root.is_dir():
+        roots.append(proj_root.resolve())
+    brain_dir = AGY_BRAIN_DIR / conversation_id
+    if brain_dir.is_dir():
+        roots.append(brain_dir.resolve())
+    if not roots:
+        return []
+
+    found: list[Path] = []
+    seen: set[str] = set()
+    for m in _FILE_LINK_RE.finditer(response_text or ""):
+        raw = m.group(1)
+        if raw in seen:
+            continue
+        seen.add(raw)
+        try:
+            p = Path(raw).resolve()
+        except (OSError, ValueError):
+            continue
+        if p.suffix.lower() not in UPLOADABLE_EXTS:
+            continue
+        if not any(p == root or root in p.parents for root in roots):
+            continue
+        try:
+            if not p.is_file() or p.stat().st_size > UPLOAD_MAX_BYTES:
+                continue
+        except OSError:
+            continue
+        found.append(p)
+        if len(found) >= 5:  # sane cap per reply
+            break
+    return found
+
+
 def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
     # --output-format json only gives denied_actions as a bare
     # {"action": "command", "display_name": "RunCommand"} - not what was
@@ -836,6 +910,19 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             )
         except Exception:
             log.exception("plain-text fallback post also failed")
+
+    # agy often reports a generated artifact (a chart, a report PDF, ...)
+    # as a file:// link, which nothing in Slack can actually open - upload
+    # the file itself so it's viewable right in the thread instead.
+    for path in _extract_uploadable_files(result.get("response"), project_id, conversation_id):
+        try:
+            client.files_upload_v2(
+                channel=channel_id, thread_ts=thread_key,
+                file=str(path), filename=path.name, title=path.name,
+            )
+            log.info("uploaded generated file to slack: %s", path)
+        except Exception:
+            log.exception("failed to upload generated file %s", path)
 
 
 def build_app() -> App:
