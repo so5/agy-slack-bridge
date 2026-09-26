@@ -613,18 +613,6 @@ def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": c}} for c in chunks]
 
 
-def _slack_safe(text: str, limit: int) -> str:
-    """Truncates for one of Block Kit's hard length limits (e.g. a
-    confirm dialog's `text` caps at 300 chars). Confirmed by testing: a
-    field over its limit doesn't just get rejected in isolation - the
-    *entire* chat.postMessage call fails (invalid_blocks) and the whole
-    reply silently never reaches Slack, so truncating here beats leaving
-    that failure mode in place."""
-    if len(text) <= limit:
-        return text
-    return text[:max(limit - 1, 0)] + "…"
-
-
 def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
     """Reply blocks for a turn that hit at least one grantable denial: the
     text as usual, plus one pair of grant/retry buttons per distinct
@@ -666,11 +654,17 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                     "style": "danger",
                     "action_id": "grant_permanent",
                     "value": value,
+                    # Deliberately generic/short, not a repeat of `entry` -
+                    # that's already shown in the message text above this
+                    # button, and an arbitrarily long command would blow
+                    # past confirm.text's 300-char cap (confirmed by
+                    # testing: that failure silently drops the *entire*
+                    # reply, not just this dialog).
                     "confirm": {
                         "title": {"type": "plain_text", "text": "恒久的に許可しますか?"},
                         "text": {
                             "type": "mrkdwn",
-                            "text": _slack_safe(f"以下を今後ずっと許可します:\n`{entry}`", 300),
+                            "text": "上のメッセージの操作を、今後ずっと許可します。",
                         },
                         "confirm": {"type": "plain_text", "text": "許可する"},
                         "deny": {"type": "plain_text", "text": "キャンセル"},
@@ -704,11 +698,7 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                         "title": {"type": "plain_text", "text": f"{len(entries)}件を恒久的に許可しますか?"},
                         "text": {
                             "type": "mrkdwn",
-                            "text": _slack_safe(
-                                "以下すべてを今後ずっと許可します:\n"
-                                + "\n".join(f"`{e}`" for e in all_entries),
-                                300,
-                            ),
+                            "text": f"上のメッセージに出ている{len(entries)}件すべてを、今後ずっと許可します。",
                         },
                         "confirm": {"type": "plain_text", "text": "許可する"},
                         "deny": {"type": "plain_text", "text": "キャンセル"},
@@ -832,11 +822,12 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         )
     except Exception:
         # Confirmed by testing: a malformed block (e.g. a confirm dialog
-        # over Slack's 300-char limit, before _slack_safe existed) makes
-        # this call fail outright and the *entire* reply silently never
-        # reaches Slack - no buttons, no text, nothing. A plain-text-only
-        # retry is worth far more than losing real progress to a
-        # formatting bug.
+        # that used to embed an arbitrarily long command and blew past
+        # Slack's 300-char limit) makes this call fail outright and the
+        # *entire* reply silently never reaches Slack - no buttons, no
+        # text, nothing. A plain-text-only retry is worth far more than
+        # losing real progress to a formatting bug - kept as a backstop
+        # even now that the confirm dialogs are fixed-length by design.
         log.exception("failed to post reply with blocks, retrying as plain text")
         try:
             client.chat_postMessage(
