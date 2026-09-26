@@ -843,9 +843,40 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
     # matches the file (a real edit bug, nothing a grant would fix).
     # Reporting that as "denied due to insufficient permission" with a
     # grant button would be actively misleading, so split them apart.
-    permission_errors = [e for e in tool_errors if _is_permission_error(e)]
-    other_errors = [e for e in tool_errors if e not in permission_errors]
+    # Each list is also de-duplicated by its rendered text - agy sometimes
+    # reports the exact same failure more than once in one turn (e.g. two
+    # identical replace_file_content attempts), which otherwise shows up
+    # as the same line repeated verbatim.
+    def _dedupe(errors: list[dict]) -> list[dict]:
+        seen_lines: set[str] = set()
+        out = []
+        for e in errors:
+            line = _describe_tool_error(e)
+            if line in seen_lines:
+                continue
+            seen_lines.add(line)
+            out.append(e)
+        return out
 
+    permission_errors = _dedupe([e for e in tool_errors if _is_permission_error(e)])
+    other_errors = _dedupe([e for e in tool_errors if not _is_permission_error(e)])
+
+    # other_errors (no buttons) is deliberately placed *before*
+    # permission_errors (which gets buttons) in the text, not after -
+    # confirmed by testing: the buttons always render at the very end of
+    # the message, below every text section, regardless of which section
+    # they logically belong to. Putting the button-less section last would
+    # leave the buttons visually stuck right below unrelated text, making
+    # it look like they applied to that instead of the (possibly much
+    # earlier) permission-denied section.
+    if other_errors:
+        log.warning("agy non-permission tool errors: %r", other_errors)
+        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in other_errors)
+        outgoing_text += (
+            "\n\n:x: 一部のツール実行が失敗しました（権限の問題ではありません。"
+            "内容を確認してagyに指示し直してください）:\n"
+            f"{lines}"
+        )
     if permission_errors:
         log.warning("agy permission errors: %r", permission_errors)
         lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
@@ -854,14 +885,6 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             f"{lines}\n"
             "下のボタンで許可して再実行するか、`~/.gemini/antigravity-cli/settings.json` の "
             "`permissions.allow` に直接追加してください。"
-        )
-    if other_errors:
-        log.warning("agy non-permission tool errors: %r", other_errors)
-        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in other_errors)
-        outgoing_text += (
-            "\n\n:x: 一部のツール実行が失敗しました（権限の問題ではありません。"
-            "内容を確認してagyに指示し直してください）:\n"
-            f"{lines}"
         )
     if not tool_errors and result.get("denied_actions") and not result.get("response"):
         # `denied_actions` (like duration_seconds/usage in the same result)
