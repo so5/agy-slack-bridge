@@ -491,12 +491,21 @@ def _describe_tool_error(err: dict) -> str:
     (backtick-quoted so Slack shows it as inline code, not mangled markdown)."""
     tool_name = err.get("tool_name") or "?"
     params = err.get("parameters") or {}
-    detail = params.get("CommandLine") or params.get("FilePath") or params.get("Path")
+    detail = (params.get("CommandLine") or params.get("FilePath") or params.get("Path")
+              or params.get("TargetFile") or params.get("Url"))
     if detail is None and params:
         detail = json.dumps(params, ensure_ascii=False)
-    if detail:
-        return f"`{tool_name}`: `{detail}`"
-    return f"`{tool_name}`"
+    head = f"`{tool_name}`: `{detail}`" if detail else f"`{tool_name}`"
+
+    message = err.get("message") or ""
+    if "permission" in message.lower():
+        return head  # the grant button / surrounding text already covers this one
+
+    # Not a permission issue (e.g. a file edit whose target text no longer
+    # matches the file) - the reason itself is the useful part here, so
+    # include it instead of leaving just the target name.
+    reason = message.split("\nDo not attempt to circumvent")[0].strip()
+    return f"{head} — {reason}" if reason else head
 
 
 # Some tool kinds spell out the exact grantable permissions.allow entry
@@ -509,6 +518,19 @@ _ENTRY_IN_MESSAGE_RE = re.compile(r"\b([a-z_]+\([^()]*\))")
 # a full "<kind>(...)" entry (e.g. "read_url(example.com)") rather than a
 # bare shell command that should get wrapped as command(<that>).
 _FULL_ENTRY_RE = re.compile(r"^[a-z_]+\(.*\)$")
+
+
+def _is_permission_error(err: dict) -> bool:
+    """Distinguishes a genuine permission denial (grantable via
+    permissions.allow) from some other tool failure - e.g.
+    replace_file_content failing because its target text didn't match the
+    file's *current* content, which is a real bug in the edit, not a
+    permission problem. Confirmed by testing: every actual denial's own
+    message mentions "permission" (e.g. "permission check failed", "user
+    denied permission for ..."); unrelated tool errors don't. Reporting
+    the latter as "denied due to insufficient permission" is actively
+    misleading - no permissions.allow entry would fix it."""
+    return "permission" in (err.get("message") or "").lower()
 
 
 def _grantable_entry(err: dict) -> Optional[dict]:
@@ -591,6 +613,18 @@ def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": c}} for c in chunks]
 
 
+def _slack_safe(text: str, limit: int) -> str:
+    """Truncates for one of Block Kit's hard length limits (e.g. a
+    confirm dialog's `text` caps at 300 chars). Confirmed by testing: a
+    field over its limit doesn't just get rejected in isolation - the
+    *entire* chat.postMessage call fails (invalid_blocks) and the whole
+    reply silently never reaches Slack, so truncating here beats leaving
+    that failure mode in place."""
+    if len(text) <= limit:
+        return text
+    return text[:max(limit - 1, 0)] + "…"
+
+
 def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
     """Reply blocks for a turn that hit at least one grantable denial: the
     text as usual, plus one pair of grant/retry buttons per distinct
@@ -636,7 +670,7 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                         "title": {"type": "plain_text", "text": "恒久的に許可しますか?"},
                         "text": {
                             "type": "mrkdwn",
-                            "text": f"以下を今後ずっと許可します:\n`{entry}`",
+                            "text": _slack_safe(f"以下を今後ずっと許可します:\n`{entry}`", 300),
                         },
                         "confirm": {"type": "plain_text", "text": "許可する"},
                         "deny": {"type": "plain_text", "text": "キャンセル"},
@@ -670,8 +704,11 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                         "title": {"type": "plain_text", "text": f"{len(entries)}件を恒久的に許可しますか?"},
                         "text": {
                             "type": "mrkdwn",
-                            "text": "以下すべてを今後ずっと許可します:\n"
-                                     + "\n".join(f"`{e}`" for e in all_entries),
+                            "text": _slack_safe(
+                                "以下すべてを今後ずっと許可します:\n"
+                                + "\n".join(f"`{e}`" for e in all_entries),
+                                300,
+                            ),
                         },
                         "confirm": {"type": "plain_text", "text": "許可する"},
                         "deny": {"type": "plain_text", "text": "キャンセル"},
@@ -737,21 +774,32 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         for entry in store.clear_temp_grants(conversation_id):
             permissions.remove_entry(entry)
 
-    blocks = None
-    if tool_errors:
-        log.warning("agy tool errors: %r", tool_errors)
-        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in tool_errors)
+    # Not every tool-step error is a permission denial - e.g.
+    # replace_file_content can fail because its target text no longer
+    # matches the file (a real edit bug, nothing a grant would fix).
+    # Reporting that as "denied due to insufficient permission" with a
+    # grant button would be actively misleading, so split them apart.
+    permission_errors = [e for e in tool_errors if _is_permission_error(e)]
+    other_errors = [e for e in tool_errors if e not in permission_errors]
+
+    if permission_errors:
+        log.warning("agy permission errors: %r", permission_errors)
+        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
         outgoing_text += (
             "\n\n:warning: 一部のツール実行が権限不足で拒否されました:\n"
             f"{lines}\n"
             "下のボタンで許可して再実行するか、`~/.gemini/antigravity-cli/settings.json` の "
             "`permissions.allow` に直接追加してください。"
         )
-        retry_id = uuid.uuid4().hex[:12]
-        store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id,
-                         remember_text if remember_text is not None else text)
-        blocks = _build_reply_blocks(outgoing_text, tool_errors, retry_id)
-    elif result.get("denied_actions") and not result.get("response"):
+    if other_errors:
+        log.warning("agy non-permission tool errors: %r", other_errors)
+        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in other_errors)
+        outgoing_text += (
+            "\n\n:x: 一部のツール実行が失敗しました（権限の問題ではありません。"
+            "内容を確認してagyに指示し直してください）:\n"
+            f"{lines}"
+        )
+    if not tool_errors and result.get("denied_actions") and not result.get("response"):
         # `denied_actions` (like duration_seconds/usage in the same result)
         # is cumulative for the whole conversation, not scoped to this turn,
         # and never clears once set - confirmed by testing: it stays set on
@@ -769,11 +817,34 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             "もう一度はっきり「実行して」と頼むか、`/agy-permissions` で先に許可しておいてください。"
         )
 
+    blocks = None
+    if permission_errors:
+        retry_id = uuid.uuid4().hex[:12]
+        store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id,
+                         remember_text if remember_text is not None else text)
+        blocks = _build_reply_blocks(outgoing_text, permission_errors, retry_id)
+
     log.info("posting to slack text=%r", outgoing_text)
-    client.chat_postMessage(
-        channel=channel_id, thread_ts=thread_key,
-        text=outgoing_text, blocks=blocks, **persona_kwargs,
-    )
+    try:
+        client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_key,
+            text=outgoing_text, blocks=blocks, **persona_kwargs,
+        )
+    except Exception:
+        # Confirmed by testing: a malformed block (e.g. a confirm dialog
+        # over Slack's 300-char limit, before _slack_safe existed) makes
+        # this call fail outright and the *entire* reply silently never
+        # reaches Slack - no buttons, no text, nothing. A plain-text-only
+        # retry is worth far more than losing real progress to a
+        # formatting bug.
+        log.exception("failed to post reply with blocks, retrying as plain text")
+        try:
+            client.chat_postMessage(
+                channel=channel_id, thread_ts=thread_key,
+                text=outgoing_text, **persona_kwargs,
+            )
+        except Exception:
+            log.exception("plain-text fallback post also failed")
 
 
 def build_app() -> App:
