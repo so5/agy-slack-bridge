@@ -751,15 +751,15 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id,
                          remember_text if remember_text is not None else text)
         blocks = _build_reply_blocks(outgoing_text, tool_errors, retry_id)
-    elif result.get("denied_actions"):
+    elif result.get("denied_actions") and not result.get("response"):
         # `denied_actions` (like duration_seconds/usage in the same result)
-        # is cumulative for the whole conversation, not scoped to this turn
-        # - confirmed by testing: it stays set even on a turn where agy's
-        # own stream shows no fresh tool call at all (the model can simply
-        # choose not to retry a previously-denied action, non-
-        # deterministically). So this branch means "this conversation has
-        # an unresolved denial somewhere in its history", not "something
-        # was just denied" - don't claim the latter.
+        # is cumulative for the whole conversation, not scoped to this turn,
+        # and never clears once set - confirmed by testing: it stays set on
+        # every later turn even when that turn has real, substantive
+        # content (agy did make genuine progress and reported back). So
+        # this note is only useful/accurate on a turn that *also* came back
+        # with an empty response - pairing it with real response text would
+        # misleadingly suggest nothing happened when something clearly did.
         denied_desc = ", ".join(
             d.get("display_name") or d.get("action") or "?" for d in result["denied_actions"]
         )
