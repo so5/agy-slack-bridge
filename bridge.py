@@ -1153,9 +1153,15 @@ def build_app() -> App:
                         "style": "danger",
                         "action_id": "revoke_entry",
                         "value": e,
+                        # Deliberately generic, not a repeat of `e` - same
+                        # reasoning as the grant buttons' confirm dialogs:
+                        # an arbitrarily long entry would blow past
+                        # confirm.text's 300-char cap and silently break
+                        # this whole list (the entry is already shown in
+                        # the section text directly above this button).
                         "confirm": {
                             "title": {"type": "plain_text", "text": "削除しますか?"},
-                            "text": {"type": "mrkdwn", "text": f"`{e}` を permissions.allow から削除します。"},
+                            "text": {"type": "mrkdwn", "text": "上の項目を permissions.allow から削除します。"},
                             "confirm": {"type": "plain_text", "text": "削除する"},
                             "deny": {"type": "plain_text", "text": "キャンセル"},
                         },
