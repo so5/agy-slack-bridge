@@ -260,6 +260,15 @@ the just-granted command and tells it to run it now, rather than resending
 your original message verbatim - agy doesn't reliably retry on its own even
 once the permission is in place.
 
+This can even show up on a conversation's very first turn (confirmed by
+testing) - a tool call that ran async (`WaitMsBeforeAsync`) can have its
+permission check resolve *after* this print-mode call already captured its
+stream and returned, so there's no fresh step_update to report even though
+`denied_actions` already reflects it. The bridge only calls this "past" when
+`num_turns` is more than 1; on turn 1 it says a fresh async denial likely
+happened but couldn't be captured in time, since there's no earlier turn for
+anything to actually be "past" from.
+
 ## Configuration
 
 Copy the two example files somewhere **outside** this repo checkout (they

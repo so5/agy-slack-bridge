@@ -898,11 +898,24 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         denied_desc = ", ".join(
             d.get("display_name") or d.get("action") or "?" for d in result["denied_actions"]
         )
-        outgoing_text += (
-            f"\n\n:grey_question: この会話には過去に拒否された操作({denied_desc})が残っていますが、"
-            "今回のターンでは新たなツール実行は発生しませんでした。"
-            "もう一度はっきり「実行して」と頼むか、`/agy-permissions` で先に許可しておいてください。"
-        )
+        if result.get("num_turns") == 1:
+            # Confirmed by testing: this can happen on a conversation's
+            # very first turn, when a tool call ran async (WaitMsBeforeAsync)
+            # and its permission check only resolved *after* this print-mode
+            # call had already captured its stream and returned - so there's
+            # no earlier turn for anything to be "past" from; saying so
+            # would be flatly wrong, not just imprecise.
+            outgoing_text += (
+                f"\n\n:grey_question: 今回の処理中に非同期実行されていた操作({denied_desc})が"
+                "権限不足で拒否されたようですが、結果が確定する前にこのターンが終了したため詳細は表示できません。"
+                "もう一度はっきり「実行して」と頼むか、`/agy-permissions` で先に許可しておいてください。"
+            )
+        else:
+            outgoing_text += (
+                f"\n\n:grey_question: この会話には過去に拒否された操作({denied_desc})が残っていますが、"
+                "今回のターンでは新たなツール実行は発生しませんでした。"
+                "もう一度はっきり「実行して」と頼むか、`/agy-permissions` で先に許可しておいてください。"
+            )
 
     blocks = None
     if permission_errors:
