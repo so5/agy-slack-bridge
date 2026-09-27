@@ -216,8 +216,9 @@ Two ways to act on `permissions.allow` without leaving Slack:
   - A one-time grant is **not** torn down the instant its own retry
     finishes - see "Temporary grant lifetime" below.
 - **`/agy-permissions` slash command** (only in a bridged channel):
-  - `/agy-permissions list` — every current entry, each with a 削除 (delete)
-    button.
+  - `/agy-permissions list` — every current entry as plain numbered text
+    (no per-entry buttons - simpler, and doesn't depend on Slack's
+    per-block length/count limits the way an earlier version did).
   - `/agy-permissions add <command>` — add it permanently. A bare command
     (no `kind(...)` wrapper typed) is wrapped as `command(<that>)`, same as
     before; typing a full entry like `read_url(example.com)` is used as-is.

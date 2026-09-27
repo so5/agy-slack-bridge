@@ -1114,18 +1114,6 @@ def build_app() -> App:
         ack()
         _grant_and_retry(body, client, permanent=True)
 
-    @app.action("revoke_entry")
-    def handle_revoke_entry(ack, body, respond):  # noqa: ANN001 - Bolt signature
-        ack()
-        entry = body["actions"][0]["value"]
-        removed = permissions.remove_entry(entry)
-        respond(
-            text=(f":wastebasket: `{entry}` を削除しました。" if removed
-                  else f"`{entry}` は既に存在しませんでした。"),
-            replace_original=False,
-            response_type="ephemeral",
-        )
-
     @app.command("/agy-permissions")
     def handle_permissions_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
         ack()
@@ -1143,49 +1131,16 @@ def build_app() -> App:
             if not entries:
                 respond(text="permissions.allow は現在空です。", response_type="ephemeral")
                 return
-            # Slack caps a message at 50 blocks total - one section+button
-            # per entry, uncapped, would silently break this whole listing
-            # (same invalid_blocks failure mode as the confirm-text length
-            # bugs) the day the allow-list grows past that. Leave headroom
-            # for the trailing "and N more" note.
-            MAX_LISTED = 45
-            shown, hidden = entries[:MAX_LISTED], entries[MAX_LISTED:]
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"`{e}`"},
-                    "accessory": {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "削除"},
-                        "style": "danger",
-                        "action_id": "revoke_entry",
-                        "value": e,
-                        # Deliberately generic, not a repeat of `e` - same
-                        # reasoning as the grant buttons' confirm dialogs:
-                        # an arbitrarily long entry would blow past
-                        # confirm.text's 300-char cap and silently break
-                        # this whole list (the entry is already shown in
-                        # the section text directly above this button).
-                        "confirm": {
-                            "title": {"type": "plain_text", "text": "削除しますか?"},
-                            "text": {"type": "mrkdwn", "text": "上の項目を permissions.allow から削除します。"},
-                            "confirm": {"type": "plain_text", "text": "削除する"},
-                            "deny": {"type": "plain_text", "text": "キャンセル"},
-                        },
-                    },
-                }
-                for e in shown
-            ]
-            if hidden:
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"...ほか{len(hidden)}件は省略しました。"
-                                 "削除するには `/agy-permissions remove <エントリ>` を使ってください。",
-                    },
-                })
-            respond(text=f"現在の permissions.allow ({len(entries)}件):", blocks=blocks, response_type="ephemeral")
+            # Plain text, no per-entry buttons - simpler and doesn't depend
+            # on Slack's per-block length/count limits (a button+confirm
+            # per entry hit both of those already; see git history).
+            # Delete via `/agy-permissions remove <entry>` instead.
+            listing = "\n".join(f"{i}. `{e}`" for i, e in enumerate(entries, 1))
+            respond(
+                text=f"現在の permissions.allow ({len(entries)}件):\n{listing}\n\n"
+                     "削除するには `/agy-permissions remove <エントリ>` を使ってください。",
+                response_type="ephemeral",
+            )
         elif sub in ("add", "remove"):
             if not arg:
                 respond(text=f"使い方: `/agy-permissions {sub} <コマンド または kind(引数)>`",
