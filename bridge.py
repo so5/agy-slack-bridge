@@ -1143,9 +1143,36 @@ def build_app() -> App:
             )
         elif sub in ("add", "remove"):
             if not arg:
-                respond(text=f"使い方: `/agy-permissions {sub} <コマンド または kind(引数)>`",
+                respond(text=f"使い方: `/agy-permissions {sub} <コマンド または kind(引数)>`"
+                             + ("（`remove 1 3 5` のように `list` の番号を複数指定も可）" if sub == "remove" else ""),
                         response_type="ephemeral")
                 return
+
+            if sub == "remove":
+                # Accept one or more list numbers (as shown by `list`),
+                # space/comma-separated, so removing several entries
+                # doesn't mean retyping long command strings by hand on
+                # mobile. Resolved against a single fresh snapshot, then
+                # removed by exact entry string - safe regardless of
+                # order, even if the list changes mid-way.
+                tokens = [t for t in re.split(r"[,\s]+", arg.strip()) if t]
+                if tokens and all(t.isdigit() for t in tokens):
+                    snapshot = permissions.list_entries()
+                    removed, invalid = [], []
+                    for i in sorted({int(t) for t in tokens}):
+                        if 1 <= i <= len(snapshot):
+                            entry = snapshot[i - 1]
+                            if permissions.remove_entry(entry):
+                                removed.append(entry)
+                        else:
+                            invalid.append(i)
+                    text = (":wastebasket: 削除しました:\n" + "\n".join(f"- `{e}`" for e in removed)
+                            if removed else "該当エントリはありませんでした。")
+                    if invalid:
+                        text += f"\n無効な番号: {', '.join(map(str, invalid))}（`list` を確認してください）"
+                    respond(text=text, response_type="ephemeral")
+                    return
+
             # A bare shell command (no "kind(...)" wrapper typed) gets
             # wrapped as command(<that>), same as the old command-only
             # /agy-permissions; typing a full entry like read_url(example.com)

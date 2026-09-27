@@ -222,7 +222,10 @@ Two ways to act on `permissions.allow` without leaving Slack:
   - `/agy-permissions add <command>` — add it permanently. A bare command
     (no `kind(...)` wrapper typed) is wrapped as `command(<that>)`, same as
     before; typing a full entry like `read_url(example.com)` is used as-is.
-  - `/agy-permissions remove <command>` — same rules, removes it.
+  - `/agy-permissions remove <command>` — same rules, removes it. Also
+    accepts one or more of `list`'s numbers instead (space/comma-
+    separated, e.g. `/agy-permissions remove 1 3 5`), to delete several
+    at once without retyping long command strings.
 
 Both paths write straight to `~/.gemini/antigravity-cli/settings.json` (or
 wherever `AGY_SETTINGS_PATH` points, see below), preserving everything else
