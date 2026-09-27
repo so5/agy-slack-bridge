@@ -1143,6 +1143,13 @@ def build_app() -> App:
             if not entries:
                 respond(text="permissions.allow は現在空です。", response_type="ephemeral")
                 return
+            # Slack caps a message at 50 blocks total - one section+button
+            # per entry, uncapped, would silently break this whole listing
+            # (same invalid_blocks failure mode as the confirm-text length
+            # bugs) the day the allow-list grows past that. Leave headroom
+            # for the trailing "and N more" note.
+            MAX_LISTED = 45
+            shown, hidden = entries[:MAX_LISTED], entries[MAX_LISTED:]
             blocks = [
                 {
                     "type": "section",
@@ -1167,8 +1174,17 @@ def build_app() -> App:
                         },
                     },
                 }
-                for e in entries
+                for e in shown
             ]
+            if hidden:
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"...ほか{len(hidden)}件は省略しました。"
+                                 "削除するには `/agy-permissions remove <エントリ>` を使ってください。",
+                    },
+                })
             respond(text=f"現在の permissions.allow ({len(entries)}件):", blocks=blocks, response_type="ephemeral")
         elif sub in ("add", "remove"):
             if not arg:
