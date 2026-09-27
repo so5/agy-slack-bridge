@@ -744,6 +744,12 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                         "deny": {"type": "plain_text", "text": "キャンセル"},
                     },
                 },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "拒否"},
+                    "action_id": "deny_grant",
+                    "value": value,
+                },
             ],
         })
 
@@ -777,6 +783,12 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                         "confirm": {"type": "plain_text", "text": "許可する"},
                         "deny": {"type": "plain_text", "text": "キャンセル"},
                     },
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": f"表示された{len(entries)}件を全部拒否"},
+                    "action_id": "deny_grant",
+                    "value": value,
                 },
             ],
         })
@@ -1126,6 +1138,62 @@ def build_app() -> App:
         finally:
             store.delete_retry(retry_id)
 
+    def _deny_and_retry(body: dict, client) -> None:
+        action = body["actions"][0]
+        try:
+            payload = json.loads(action["value"])
+        except (KeyError, json.JSONDecodeError):
+            log.error("bad button value: %r", action.get("value"))
+            return
+        retry_id = payload.get("retry_id")
+        describe = payload.get("describe") or "?"
+        ctx = store.get_retry(retry_id) if retry_id else None
+
+        message = body.get("message") or {}
+        origin_channel_id = body["channel"]["id"]
+        message_ts = message.get("ts")
+
+        if not ctx:
+            if message_ts:
+                client.chat_update(
+                    channel=origin_channel_id, ts=message_ts,
+                    text=":warning: このボタンは期限切れです。もう一度メッセージを送ってください。",
+                    blocks=[],
+                )
+            return
+
+        clicker = (body.get("user") or {}).get("username") or (body.get("user") or {}).get("id") or "?"
+        log.info("denied grant for %r by user=%s", describe, clicker)
+
+        channel_cfg = channel_map.get(ctx["channel_id"], {})
+        persona = _persona_kwargs(channel_cfg)
+
+        if message_ts:
+            client.chat_update(
+                channel=origin_channel_id, ts=message_ts,
+                text=f":no_entry_sign: 拒否しました (`{describe}`)。別の方法を検討させています...",
+                blocks=[],
+            )
+
+        # Not just a no-op dismissal - tells agy explicitly not to retry
+        # this, so it can adapt (find another way, or give up on that one
+        # step and report back) instead of silently stalling on it again
+        # next time you ask it to continue.
+        deny_prompt = (
+            f"(次の操作はユーザーが許可しませんでした。実行せず、別の方法があれば検討するか、"
+            f"それが無理ならその旨を報告してください: `{describe}`)\n\n{ctx['prompt_text']}"
+        )
+
+        try:
+            _run_and_reply(
+                client, store, permissions, ctx["channel_id"], ctx["thread_ts"],
+                ctx["project_id"], ctx["conversation_id"], deny_prompt, persona,
+                status_text="拒否内容を伝えて再検討させています...",
+                remember_text=ctx["prompt_text"],
+            )
+        finally:
+            store.delete_retry(retry_id)
+
     @app.action("grant_once")
     def handle_grant_once(ack, body, client):  # noqa: ANN001 - Bolt signature
         ack()
@@ -1135,6 +1203,11 @@ def build_app() -> App:
     def handle_grant_permanent(ack, body, client):  # noqa: ANN001 - Bolt signature
         ack()
         _grant_and_retry(body, client, permanent=True)
+
+    @app.action("deny_grant")
+    def handle_deny_grant(ack, body, client):  # noqa: ANN001 - Bolt signature
+        ack()
+        _deny_and_retry(body, client)
 
     @app.command("/agy-permissions")
     def handle_permissions_command(ack, respond, command):  # noqa: ANN001 - Bolt signature

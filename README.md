@@ -215,6 +215,11 @@ Two ways to act on `permissions.allow` without leaving Slack:
     others.
   - A one-time grant is **not** torn down the instant its own retry
     finishes - see "Temporary grant lifetime" below.
+  - A third button, 拒否, is always there too: it grants nothing, updates
+    the message to say so, and tells agy explicitly not to retry that
+    action - so it can adapt (try another way, or give up on that step and
+    report back) instead of silently getting stuck on it again the next
+    time you ask it to continue.
 - **`/agy-permissions` slash command** (only in a bridged channel):
   - `/agy-permissions list` — every current entry as plain numbered text
     (no per-entry buttons - simpler, and doesn't depend on Slack's
