@@ -824,7 +824,14 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
 
     conversation_id = result["conversation_id"]
     store.put(channel_id, thread_key, conversation_id, project_id)
-    outgoing_text = markdown_to_mrkdwn(result.get("response")) or "(empty response)"
+    # Built up as separate parts and joined at the end, so "(empty
+    # response)" only ever shows up when there's truly nothing else to
+    # say - not as noise sitting above a warning/error section that
+    # already explains why the response was empty.
+    parts: list[str] = []
+    response_text = markdown_to_mrkdwn(result.get("response"))
+    if response_text:
+        parts.append(response_text)
 
     tool_errors = result.get("_tool_errors") or []
     if not tool_errors:
@@ -872,16 +879,16 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
     if other_errors:
         log.warning("agy non-permission tool errors: %r", other_errors)
         lines = "\n".join(f"- {_describe_tool_error(e)}" for e in other_errors)
-        outgoing_text += (
-            "\n\n:x: 一部のツール実行が失敗しました（権限の問題ではありません。"
+        parts.append(
+            ":x: 一部のツール実行が失敗しました（権限の問題ではありません。"
             "内容を確認してagyに指示し直してください）:\n"
             f"{lines}"
         )
     if permission_errors:
         log.warning("agy permission errors: %r", permission_errors)
         lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
-        outgoing_text += (
-            "\n\n:warning: 一部のツール実行が権限不足で拒否されました:\n"
+        parts.append(
+            ":warning: 一部のツール実行が権限不足で拒否されました:\n"
             f"{lines}\n"
             "下のボタンで許可して再実行するか、`~/.gemini/antigravity-cli/settings.json` の "
             "`permissions.allow` に直接追加してください。"
@@ -905,17 +912,19 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             # call had already captured its stream and returned - so there's
             # no earlier turn for anything to be "past" from; saying so
             # would be flatly wrong, not just imprecise.
-            outgoing_text += (
-                f"\n\n:grey_question: 今回の処理中に非同期実行されていた操作({denied_desc})が"
+            parts.append(
+                f":grey_question: 今回の処理中に非同期実行されていた操作({denied_desc})が"
                 "権限不足で拒否されたようですが、結果が確定する前にこのターンが終了したため詳細は表示できません。"
                 "もう一度はっきり「実行して」と頼むか、`/agy-permissions` で先に許可しておいてください。"
             )
         else:
-            outgoing_text += (
-                f"\n\n:grey_question: この会話には過去に拒否された操作({denied_desc})が残っていますが、"
+            parts.append(
+                f":grey_question: この会話には過去に拒否された操作({denied_desc})が残っていますが、"
                 "今回のターンでは新たなツール実行は発生しませんでした。"
                 "もう一度はっきり「実行して」と頼むか、`/agy-permissions` で先に許可しておいてください。"
             )
+
+    outgoing_text = "\n\n".join(parts) if parts else "(empty response)"
 
     blocks = None
     if permission_errors:
