@@ -274,6 +274,18 @@ stream and returned, so there's no fresh step_update to report even though
 happened but couldn't be captured in time, since there's no earlier turn for
 anything to actually be "past" from.
 
+Before showing that note at all, the bridge silently resends "実行して" on
+your behalf, up to `GREY_QUESTION_AUTO_RETRIES` (2) times - a log analysis
+across every occurrence seen so far found this clears up within 2 tries every
+time (usually the very next one), since it's often just the async-timing gap
+above rather than a real, persistent denial. Bounded on purpose, not looped
+until it stops happening, to cap the cost/time of a run that's stuck for a
+real reason - only shows the note (asking you to help) once that's
+exhausted. This can never fire back-to-back with a genuine, actionable
+denial in the same turn: a fresh denial always comes with real
+`_tool_errors`, and that alone routes to the permission_errors/other_errors
+handling above (buttons and all) instead, with no auto-retry involved.
+
 ## Configuration
 
 Copy the two example files somewhere **outside** this repo checkout (they

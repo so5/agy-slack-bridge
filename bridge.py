@@ -796,11 +796,15 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
     return blocks
 
 
+GREY_QUESTION_AUTO_RETRIES = 2
+
+
 def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
                     channel_id: str, thread_key: str, project_id: str,
                     conversation_id: Optional[str], text: str, persona_kwargs: dict,
                     status_text: str = "考え中です...",
-                    remember_text: Optional[str] = None) -> None:
+                    remember_text: Optional[str] = None,
+                    auto_retries_left: int = GREY_QUESTION_AUTO_RETRIES) -> None:
     """Runs one agy turn and posts the reply, attaching permission-grant
     buttons if a run_command call got denied. Shared by the normal message
     handler and by the grant_once/grant_permanent retry flow.
@@ -906,6 +910,31 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             "`permissions.allow` に直接追加してください。"
         )
     if not tool_errors and result.get("denied_actions") and not result.get("response"):
+        # Confirmed by testing (see GREY_QUESTION_AUTO_RETRIES and the log
+        # analysis behind its value): this situation usually clears up on
+        # its own if you just ask again, since it's often an async
+        # permission check that hadn't resolved yet rather than a real,
+        # persistent denial - so try that automatically first, silently,
+        # a bounded number of times, before bothering a human. Bounded
+        # deliberately (never looped until it stops happening) to cap the
+        # cost/time of a run that's stuck for a real reason. This can
+        # never fire back-to-back with a genuine denial in the *same*
+        # turn - tool_errors must be empty to get here at all, so the
+        # moment a real, actionable denial shows up, this whole branch is
+        # skipped in favor of the permission_errors/other_errors handling
+        # above, buttons and all, with no further auto-retry.
+        if auto_retries_left > 0:
+            log.info("empty response with stale denied_actions (num_turns=%s) - "
+                      "auto-retrying (%d left)", result.get("num_turns"), auto_retries_left)
+            _run_and_reply(
+                client, store, permissions, channel_id, thread_key, project_id,
+                conversation_id, "実行して", persona_kwargs,
+                status_text="反応が無かったので自動的に再試行しています...",
+                remember_text=remember_text if remember_text is not None else text,
+                auto_retries_left=auto_retries_left - 1,
+            )
+            return
+
         # `denied_actions` (like duration_seconds/usage in the same result)
         # is cumulative for the whole conversation, not scoped to this turn,
         # and never clears once set - confirmed by testing: it stays set on
