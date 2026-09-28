@@ -1075,6 +1075,20 @@ def build_app() -> App:
             if not mention_re.search(text):
                 return
             text = mention_re.sub("", text).strip()
+            if not text:
+                # Confirmed by testing: a mention with nothing else in the
+                # message leaves an empty prompt, which agy itself rejects
+                # outright ("error: Error: empty prompt") - run_agy() then
+                # raises, and the generic exception handler further down
+                # can only report a vague "invocation failed". Catch it
+                # here instead, with a message that actually explains it.
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_key,
+                    text="メンションだけじゃなくて、本文も書いてや。",
+                    **_persona_kwargs(channel_cfg),
+                )
+                return
 
         resume_match = _RESUME_RE.match(text) if is_activating else None
         if resume_match:
