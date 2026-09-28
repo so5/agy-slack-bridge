@@ -1057,18 +1057,26 @@ def build_app() -> App:
         is_reply = incoming_thread_ts is not None and incoming_thread_ts != ts
         thread_key = incoming_thread_ts if is_reply else ts
 
-        if not is_reply:
-            # Only start a *new* conversation when explicitly @-mentioned,
-            # so other traffic landing in the channel (a webhook's batch
-            # results, ordinary chatter) isn't treated as a prompt. Once a
-            # thread exists, replies in it don't need to repeat the mention.
+        conversation_id = store.get(channel_id, thread_key) if is_reply else None
+
+        # Confirmed by testing: replying to *any* message opens a Slack
+        # thread regardless of whether its root (or anything else in it)
+        # was ever mentioned, ignored or not - so gating only on `is_reply`
+        # let a reply to a completely un-mentioned message quietly start a
+        # conversation, defeating the whole "mention to activate" premise.
+        # A reply only skips the mention gate once its thread is already
+        # *activated* (has a stored conversation) - which only happens once
+        # some message in it passed this same gate - so replying in a
+        # brand-new/never-activated thread needs its own mention, exactly
+        # like a new top-level message; every later reply in that thread is
+        # then mention-free as before.
+        is_activating = not is_reply or conversation_id is None
+        if is_activating:
             if not mention_re.search(text):
                 return
             text = mention_re.sub("", text).strip()
 
-        conversation_id = store.get(channel_id, thread_key) if is_reply else None
-
-        resume_match = None if is_reply else _RESUME_RE.match(text)
+        resume_match = _RESUME_RE.match(text) if is_activating else None
         if resume_match:
             had_leading_backtick = resume_match.group(1) is not None
             conversation_id = resume_match.group(2)

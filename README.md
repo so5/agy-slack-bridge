@@ -11,20 +11,20 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   is sent to `agy`. The reply is posted as a thread on that message.
 - Replying inside that Slack thread continues the same `agy` conversation
   (looked up by the thread's root timestamp) — **no mention needed for
-  thread replies**, only for starting a new one. Replying in a thread the
-  bridge has no record of just starts a new conversation and adopts that
-  thread from then on.
-  - This also means a forgotten mention is recoverable: if a top-level
-    message without a mention got silently ignored (see above), **replying
-    to it** (not editing it - see below) works fine, even though the bridge
-    never reacted to the original message at all. The reply bypasses the
-    mention check entirely, its thread has no recorded conversation yet, so
-    a fresh one starts from that reply's text - mention or no mention,
-    Slack lets you reply-in-thread to any message regardless of whether its
-    original poster (bot or human) ever responded to it. One wrinkle: a
-    mention *inside* a reply, unlike in a new top-level message, is never
-    stripped out - it just rides along as literal `<@Uxxxx>` text in
-    whatever gets sent to agy, which is harmless but not pretty.
+  thread replies**, only for starting a new one - but only once that
+  thread is actually *activated* (has a stored conversation, i.e. some
+  message in it already passed the mention gate). Slack lets you
+  reply-in-thread to *any* message regardless of whether its original
+  poster (bot or human) ever got a response, so gating only on "is this a
+  reply" would let a reply to a message nobody ever mentioned quietly
+  start a conversation anyway - confirmed by testing, and a real UX
+  problem for an app whose whole premise is "mention it to activate it."
+  So a reply into an unactivated thread needs its own mention, exactly
+  like a new top-level message (mention required, then stripped); once
+  *any* message in a thread has passed that gate, every later reply in it
+  is mention-free from then on, same as before. (Also matches for
+  `resume <id>: ...` - see below - which now works the same way on a
+  reply into an unactivated thread, not just on a new top-level message.)
   - **Editing** a message to add a mention it didn't originally have does
     *not* work, for two independent reasons: (1) confirmed by testing -
     Slack itself only evaluates @-mentions for notification purposes at
@@ -34,8 +34,8 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
     message regardless (`subtype` is set to `"message_changed"` on any
     edit, and the handler returns immediately whenever `subtype` isn't
     `None` - originally added to ignore Incoming-Webhook bot posts, but it
-    catches edits the same way). Send a new message, or reply to the
-    ignored one, instead of editing it.
+    catches edits the same way). Send a new message, or reply **with a
+    mention** to the ignored one, instead of editing it.
 - A new top-level message can also graft onto an *existing* conversation
   instead of starting a fresh one — handy for continuing, from Slack, a
   conversation you started in the [Antigravity web UI](https://antigravity.google.com).
