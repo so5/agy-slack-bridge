@@ -14,6 +14,28 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   thread replies**, only for starting a new one. Replying in a thread the
   bridge has no record of just starts a new conversation and adopts that
   thread from then on.
+  - This also means a forgotten mention is recoverable: if a top-level
+    message without a mention got silently ignored (see above), **replying
+    to it** (not editing it - see below) works fine, even though the bridge
+    never reacted to the original message at all. The reply bypasses the
+    mention check entirely, its thread has no recorded conversation yet, so
+    a fresh one starts from that reply's text - mention or no mention,
+    Slack lets you reply-in-thread to any message regardless of whether its
+    original poster (bot or human) ever responded to it. One wrinkle: a
+    mention *inside* a reply, unlike in a new top-level message, is never
+    stripped out - it just rides along as literal `<@Uxxxx>` text in
+    whatever gets sent to agy, which is harmless but not pretty.
+  - **Editing** a message to add a mention it didn't originally have does
+    *not* work, for two independent reasons: (1) confirmed by testing -
+    Slack itself only evaluates @-mentions for notification purposes at
+    the moment a message is first sent, not on a later edit (this is also
+    true for mentioning a *human* this way - a known, if undocumented,
+    Slack behavior), and (2) the bridge explicitly ignores every edited
+    message regardless (`subtype` is set to `"message_changed"` on any
+    edit, and the handler returns immediately whenever `subtype` isn't
+    `None` - originally added to ignore Incoming-Webhook bot posts, but it
+    catches edits the same way). Send a new message, or reply to the
+    ignored one, instead of editing it.
 - A new top-level message can also graft onto an *existing* conversation
   instead of starting a fresh one — handy for continuing, from Slack, a
   conversation you started in the [Antigravity web UI](https://antigravity.google.com).
