@@ -506,7 +506,7 @@ def _describe_tool_error(err: dict) -> str:
     head = f"`{tool_name}`: `{detail}`" if detail else f"`{tool_name}`"
 
     message = err.get("message") or ""
-    if "permission" in message.lower():
+    if "denied permission" in message.lower():
         return head  # the grant button / surrounding text already covers this one
 
     # Not a permission issue (e.g. a file edit whose target text no longer
@@ -532,13 +532,23 @@ def _is_permission_error(err: dict) -> bool:
     """Distinguishes a genuine permission denial (grantable via
     permissions.allow) from some other tool failure - e.g.
     replace_file_content failing because its target text didn't match the
-    file's *current* content, which is a real bug in the edit, not a
-    permission problem. Confirmed by testing: every actual denial's own
-    message mentions "permission" (e.g. "permission check failed", "user
-    denied permission for ..."); unrelated tool errors don't. Reporting
-    the latter as "denied due to insufficient permission" is actively
-    misleading - no permissions.allow entry would fix it."""
-    return "permission" in (err.get("message") or "").lower()
+    file's *current* content, or view_file failing because the model
+    itself gave a wrong/nonexistent path, which are real bugs elsewhere,
+    not a permission problem.
+
+    Checks for the specific phrase "denied permission", not just
+    "permission" - confirmed live that a bare substring check is too loose
+    and produces false positives: a view_file failure's own message
+    ("declaring permissions: ... convert tool call for permissions: ...
+    failed to read file: stat ...: no such file or directory") mentions
+    "permissions" in its internal plumbing description, with nothing to do
+    with an actual denial, and got wrongly classified as one - shown with
+    the "権限不足で拒否されました" wording and a "click the button below"
+    instruction, but no button, since _grantable_entry correctly found
+    nothing grantable in it. Every confirmed real denial's message
+    literally says "user denied permission ..." (to run a command, or for
+    read_file(...)/read_url(...)), so anchor on that instead."""
+    return "denied permission" in (err.get("message") or "").lower()
 
 
 def _grantable_entry(err: dict) -> Optional[dict]:
