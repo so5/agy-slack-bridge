@@ -980,32 +980,10 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "今回だけ許可して再実行"},
+                    "text": {"type": "plain_text", "text": "許可して再実行"},
                     "style": "primary",
                     "action_id": "grant_once",
                     "value": value,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "恒久的に許可して再実行"},
-                    "style": "danger",
-                    "action_id": "grant_permanent",
-                    "value": value,
-                    # Deliberately generic/short, not a repeat of `entry` -
-                    # that's already shown in the message text above this
-                    # button, and an arbitrarily long command would blow
-                    # past confirm.text's 300-char cap (confirmed by
-                    # testing: that failure silently drops the *entire*
-                    # reply, not just this dialog).
-                    "confirm": {
-                        "title": {"type": "plain_text", "text": "恒久的に許可しますか?"},
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": "上のメッセージの操作を、今後ずっと許可します。",
-                        },
-                        "confirm": {"type": "plain_text", "text": "許可する"},
-                        "deny": {"type": "plain_text", "text": "キャンセル"},
-                    },
                 },
                 {
                     "type": "button",
@@ -1026,26 +1004,10 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": f"表示された{len(entries)}件を全部今回だけ許可して再実行"},
+                    "text": {"type": "plain_text", "text": f"表示された{len(entries)}件を全部許可して再実行"},
                     "style": "primary",
                     "action_id": "grant_once",
                     "value": value,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": f"{len(entries)}件を全部恒久的に許可して再実行"},
-                    "style": "danger",
-                    "action_id": "grant_permanent",
-                    "value": value,
-                    "confirm": {
-                        "title": {"type": "plain_text", "text": f"{len(entries)}件を恒久的に許可しますか?"},
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"上のメッセージに出ている{len(entries)}件すべてを、今後ずっと許可します。",
-                        },
-                        "confirm": {"type": "plain_text", "text": "許可する"},
-                        "deny": {"type": "plain_text", "text": "キャンセル"},
-                    },
                 },
                 {
                     "type": "button",
@@ -1351,8 +1313,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             parts.append(
                 ":warning: 一部のツール実行が権限不足で拒否されました:\n"
                 f"{lines}\n"
-                "下のボタンで許可して再実行するか、`~/.gemini/antigravity-cli/settings.json` の "
-                "`permissions.allow` に直接追加してください。"
+                "下のボタンでこの会話だけ許可して再実行するか、今後もずっと許可したい場合は "
+                "`/agy-permissions add <エントリ>` で恒久的に登録してください。"
             )
     if not tool_errors and result.get("denied_actions") and not result.get("response"):
         # Confirmed by testing (see GREY_QUESTION_AUTO_RETRIES and the log
@@ -1702,36 +1664,21 @@ def build_app() -> App:
         store.log_permission(ctx["channel_id"], ctx.get("conversation_id"), "denied",
                               payload.get("entries") or [describe], clicker)
 
-        channel_cfg = channel_map.get(ctx["channel_id"], {})
-        persona = _persona_kwargs(channel_cfg)
-
+        # Deliberately no agy turn here: the permission_errors text this
+        # button was attached to already told agy everything it knows about
+        # the denial. Sending it a "you were denied" prompt just invited it
+        # to guess at a workaround on its own initiative (exactly what
+        # agent-safety-rules.md #2 tells it not to do) instead of waiting
+        # for one from the user - so the thread simply sits here until the
+        # user replies with what to do next.
         if message_ts:
             client.chat_update(
                 channel=origin_channel_id, ts=message_ts,
-                text=f":no_entry_sign: 拒否しました (`{describe}`)。別の方法を検討させています...",
+                text=f":no_entry_sign: 拒否しました (`{describe}`)。"
+                     "このスレッドに返信して、次の指示を送ってください。",
                 blocks=[],
             )
-
-        # Not just a no-op dismissal - tells agy explicitly not to retry
-        # this, so it can adapt (find another way, or give up on that one
-        # step and report back) instead of silently stalling on it again
-        # next time you ask it to continue.
-        deny_prompt = (
-            f"(次の操作はユーザーが許可しませんでした。実行せず、別の方法があれば検討するか、"
-            f"それが無理ならその旨を報告してください: `{describe}`)\n\n{ctx['prompt_text']}"
-        )
-
-        model, effort = _effective_model_effort(store, ctx["channel_id"], channel_cfg)
-        try:
-            _run_and_reply(
-                client, store, permissions, ctx["channel_id"], ctx["thread_ts"],
-                ctx["project_id"], ctx["conversation_id"], deny_prompt, persona,
-                status_text="拒否内容を伝えて再検討させています...",
-                remember_text=ctx["prompt_text"],
-                model=model, effort=effort,
-            )
-        finally:
-            store.delete_retry(retry_id)
+        store.delete_retry(retry_id)
 
     @app.action("grant_once")
     def handle_grant_once(ack, body, client):  # noqa: ANN001 - Bolt signature

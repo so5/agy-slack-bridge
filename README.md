@@ -107,14 +107,14 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   Capped at 20MB and 5 files per reply.
 - When a reply comes back with a denied `run_command` call (see "Tool
   permissions" below), the message gets two buttons instead of just a text
-  warning: **今回だけ許可して再実行** (grant that exact command, retry the same
-  prompt, then revoke it again once the retry finishes) and **恒久的に許可して
-  再実行** (grant it permanently, with a native Slack confirm prompt first).
-  This makes a permission denial actionable straight from a phone, without
-  SSHing in to edit `settings.json` by hand. There's also a `/agy-permissions`
-  slash command (`list`, `add <command>`, `remove <command>`) for managing
-  the allow-list ahead of time or cleaning up stray entries — see "Managing
-  permissions from Slack" below.
+  warning: **許可して再実行** (grant that exact command for this conversation
+  only, retry the same prompt, then revoke it again once the retry finishes)
+  and **拒否**. This makes a permission denial actionable straight from a
+  phone, without SSHing in to edit `settings.json` by hand. Granting
+  something permanently is a deliberate, separate step — see "Managing
+  permissions from Slack" below — not a button click, since a button tied to
+  a command string would silently cover whatever that command's target file
+  contains *later*, not just what it contained when you clicked it.
 
 This is intentionally a thin process wrapper around `agy -p ... --output-format
 json`, not a reimplementation of anything agy does. It just routes Slack
@@ -242,27 +242,28 @@ always required an explicit match for every `run_command` call, full stop.
 
 Two ways to act on `permissions.allow` without leaving Slack:
 
-- **Buttons on a denial reply**: click 今回だけ許可して再実行 for a one-off, or
-  恒久的に許可して再実行 (confirm prompt first) to keep it. Either way the bridge
-  re-runs the *exact same prompt* against the *exact same conversation* right
-  after granting, so you see the real result instead of just "permission
-  added, try again yourself." Not just `run_command` - any denial whose own
-  message spells out the exact grantable entry gets a button too (confirmed
-  for `read_url_content`, e.g. `read_url(support.yayoi-kk.co.jp)` - note
-  that one's granted per-domain, not per-URL, since that's the granularity
-  agy itself uses).
+- **Buttons on a denial reply**: click 許可して再実行 to grant that entry for
+  *this conversation only* and immediately re-run the *exact same prompt*
+  against the *exact same conversation*, so you see the real result instead
+  of just "permission added, try again yourself." There is deliberately no
+  one-click permanent grant - see `/agy-permissions add` below for that. Not
+  just `run_command` - any denial whose own message spells out the exact
+  grantable entry gets a button too (confirmed for `read_url_content`, e.g.
+  `read_url(support.yayoi-kk.co.jp)` - note that one's granted per-domain,
+  not per-URL, since that's the granularity agy itself uses).
   - If a single turn hits **two or more distinct denials at once**, each
     gets its own button pair *and* one more pair appears offering to grant
     all of them together in one click - clicking the individual ones one at
     a time would only grant one and immediately retry, likely re-hitting the
     others.
-  - A one-time grant is **not** torn down the instant its own retry
-    finishes - see "Temporary grant lifetime" below.
-  - A third button, 拒否, is always there too: it grants nothing, updates
-    the message to say so, and tells agy explicitly not to retry that
-    action - so it can adapt (try another way, or give up on that step and
-    report back) instead of silently getting stuck on it again the next
-    time you ask it to continue.
+  - The grant is **not** torn down the instant its own retry finishes - see
+    "Temporary grant lifetime" below.
+  - A second button, 拒否, is always there too: it grants nothing and just
+    updates the message to say so, prompting you to reply in the thread with
+    what to do next. It does **not** send anything to agy - the denial
+    message already told it everything it knows, so there's nothing new to
+    report, and nudging it to "find another way" on its own only invited it
+    to work around the very thing you just said no to.
 - **`/agy-permissions` slash command** (only in a bridged channel):
   - `/agy-permissions list` — every current entry as plain numbered text
     (no per-entry buttons - simpler, and doesn't depend on Slack's
