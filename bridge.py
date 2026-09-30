@@ -254,6 +254,20 @@ class ThreadStore:
                 PRIMARY KEY (conversation_id, entry)
             )"""
         )
+        # Every permission ask and its outcome, args included, so that
+        # entries asked for over and over can be reviewed (see
+        # `/agy-permissions stats`) and promoted to a permanent grant.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS permission_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (datetime('now')),
+                channel_id TEXT,
+                conversation_id TEXT,
+                event TEXT NOT NULL,
+                entry TEXT NOT NULL,
+                user TEXT
+            )"""
+        )
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS channel_settings (
                 channel_id TEXT PRIMARY KEY,
@@ -296,6 +310,34 @@ class ThreadStore:
                 (channel_id,),
             ).fetchone()
             return row[0] if row else None
+
+    def log_permission(self, channel_id: Optional[str], conversation_id: Optional[str],
+                       event: str, entries: list, user: Optional[str] = None) -> None:
+        with self._lock:
+            self._conn.executemany(
+                "INSERT INTO permission_log (channel_id, conversation_id, event, entry, user) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [(channel_id, conversation_id, event, e, user) for e in entries],
+            )
+            self._conn.commit()
+
+    def permission_stats(self, days: int = 30, limit: int = 15) -> list:
+        """(entry, requested, granted_once, granted_permanent, denied) for the
+        most-asked-for entries in the last `days` days."""
+        with self._lock:
+            return self._conn.execute(
+                """SELECT entry,
+                          SUM(event IN ('requested', 'throttled')),
+                          SUM(event = 'granted_once'),
+                          SUM(event = 'granted_permanent'),
+                          SUM(event = 'denied')
+                   FROM permission_log
+                   WHERE ts >= datetime('now', ?)
+                   GROUP BY entry
+                   ORDER BY SUM(event IN ('requested', 'throttled')) DESC, MAX(id) DESC
+                   LIMIT ?""",
+                (f"-{int(days)} days", limit),
+            ).fetchall()
 
     def put_retry(self, retry_id: str, channel_id: str, thread_ts: str, project_id: str,
                    conversation_id: Optional[str], prompt_text: str) -> None:
@@ -601,6 +643,13 @@ def _is_permission_error(err: dict) -> bool:
     return "denied permission" in (err.get("message") or "").lower()
 
 
+def _is_deny_rule_error(err: dict) -> bool:
+    """A hard block from a permissions.deny rule (e.g. the bridge's own
+    source/config, off limits to agents). Not grantable - deny beats allow -
+    so it must get neither buttons nor the "not a permission problem" text."""
+    return "deny rule" in (err.get("message") or "").lower()
+
+
 def _grantable_entry(err: dict) -> Optional[dict]:
     """Figures out the literal permissions.allow entry that would have let
     one run_agy() tool error through, plus a short human-readable
@@ -828,6 +877,8 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     result = None
     tool_errors = []
     tool_steps = set()
+    raw_tool_events = []  # kept only for diagnostics (see _run_and_reply)
+    last_tool_step: dict = {}
     for line in proc.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -841,7 +892,15 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
         elif event.get("event") == "step_update":
             step = event.get("step_update", {})
             if step.get("step_type") == "tool":
-                tool_steps.add(step.get("step_index"))
+                raw_tool_events.append(step)
+                last_tool_step[step.get("step_index")] = step
+                # Only steps that actually finished count as progress -
+                # denied/cancelled ones (an agent probing for what it can
+                # get away with) must not keep the auto-retry going.
+                if step.get("state") == "DONE":
+                    tool_steps.add(step.get("step_index"))
+                else:
+                    tool_steps.discard(step.get("step_index"))
             if step.get("state") == "ERROR" and step.get("step_type") == "tool":
                 info = step.get("tool_info", {})
                 tool_errors.append({
@@ -852,8 +911,34 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
 
     if result is None:
         raise RuntimeError(f"agy produced no result event: {proc.stdout[-2000:]}")
+
+    # Confirmed by testing: a denied command normally comes back as an ERROR
+    # step carrying the command, but *sometimes* (same command, seemingly a
+    # race in agy's async permission check) as a step that just ends DONE
+    # with no error and - unlike every command that actually ran, which
+    # carries "output" - no output either, while agy's stderr says the
+    # command was "auto-denied". That silent form used to leave us with
+    # neither a button nor even the command. It's recoverable from the
+    # step's own parameters, so report it like the loud form.
+    if "auto-denied" in proc.stderr:
+        for idx, step in last_tool_step.items():
+            info = step.get("tool_info") or {}
+            cmd = (info.get("parameters") or {}).get("CommandLine")
+            if (step.get("tool_name") == "run_command" and step.get("state") == "DONE"
+                    and "output" not in info and cmd):
+                tool_errors.append({
+                    "tool_name": "run_command",
+                    "parameters": info.get("parameters"),
+                    "message": f'permission check failed for unsandboxed "{cmd}": '
+                               f"user denied permission to run command:\n{cmd}\n"
+                               "(inferred: agy ended the step DONE with no output, and auto-denied it)",
+                })
+                tool_steps.discard(idx)  # a denied command is not progress
+
     result["_tool_errors"] = tool_errors
     result["_tool_steps"] = len(tool_steps)
+    result["_tool_events"] = raw_tool_events
+    result["_stderr"] = proc.stderr.strip()[-1500:]
     return result
 
 
@@ -979,8 +1064,33 @@ GREY_QUESTION_AUTO_RETRIES = 2
 # right after a tool result, mid-task. If the turn still ran tools, the task
 # is progressing and the nudge is doing its job, so that doesn't spend the
 # budget above - only a hard cap of its own.
-GREY_QUESTION_PROGRESS_RETRIES = 10
-AUTO_RETRY_TEXT = "作業の続きをお願いします。直前のターンが途中で終わっているので、そのまま続行してください。"
+GREY_QUESTION_PROGRESS_RETRIES = 5
+# Permission buttons are a way for the agent to get a human to approve
+# something, so an agent can (and one did: it read this file, then ran
+# throwaway commands purely to make buttons appear) provoke denials on
+# purpose. After this many button-bearing denials in a conversation within
+# the window, stop offering buttons and say so instead.
+DENIAL_BUTTON_LIMIT = 3
+DENIAL_BUTTON_WINDOW_SEC = 600
+_denial_log: dict = {}
+
+
+def _denial_buttons_throttled(conversation_id: str) -> bool:
+    now = time.time()
+    recent = [t for t in _denial_log.get(conversation_id, []) if now - t < DENIAL_BUTTON_WINDOW_SEC]
+    throttled = len(recent) >= DENIAL_BUTTON_LIMIT
+    if not throttled:
+        recent.append(now)
+    _denial_log[conversation_id] = recent
+    return throttled
+
+
+AUTO_RETRY_TEXT = (
+    "作業の続きをお願いします。直前のターンが途中で終わっているので、そのまま続行してください。"
+    "ツールが「キャンセル」された場合は、権限が無いだけです。原因調査のために、"
+    "ブリッジやagyの内部（ソース・設定・ログ）を調べないでください。"
+    "必要な操作を実行しようとして、拒否されたらそれを報告してください。"
+)
 
 
 # --- usage (model quota) -------------------------------------------------
@@ -1123,7 +1233,16 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         )
         return
 
-    log.info("agy result=%r", result)
+    log.info("agy result=%r", {k: v for k, v in result.items() if k not in ("_tool_events", "_stderr")})
+    if result.get("denied_actions") and not result.get("_tool_errors"):
+        # agy says something was denied, yet no tool step came back as an
+        # error we can read (the "Tool execution was canceled" case): dump
+        # the raw tool events and stderr, to find out whether the denied
+        # command is recoverable from them (so a grant button could be
+        # offered) or agy simply doesn't say.
+        log.info("DIAG denied_actions without tool_errors: tool_events=%s stderr=%r",
+                  json.dumps(result.get("_tool_events", [])[-12:], ensure_ascii=False)[:6000],
+                  result.get("_stderr"))
     if result.get("status") != "SUCCESS":
         log.error("agy returned non-SUCCESS status: %r", result)
         client.chat_postMessage(
@@ -1177,7 +1296,9 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         return out
 
     permission_errors = _dedupe([e for e in tool_errors if _is_permission_error(e)])
-    other_errors = _dedupe([e for e in tool_errors if not _is_permission_error(e)])
+    blocked_errors = _dedupe([e for e in tool_errors if _is_deny_rule_error(e)])
+    other_errors = _dedupe([e for e in tool_errors
+                             if not _is_permission_error(e) and not _is_deny_rule_error(e)])
 
     # other_errors (no buttons) is deliberately placed *before*
     # permission_errors (which gets buttons) in the text, not after -
@@ -1195,15 +1316,34 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             "内容を確認してagyに指示し直してください）:\n"
             f"{lines}"
         )
-    if permission_errors:
-        log.warning("agy permission errors: %r", permission_errors)
-        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
+    if blocked_errors:
+        log.warning("agy hit deny rules: %r", blocked_errors)
+        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in blocked_errors)
         parts.append(
-            ":warning: 一部のツール実行が権限不足で拒否されました:\n"
-            f"{lines}\n"
-            "下のボタンで許可して再実行するか、`~/.gemini/antigravity-cli/settings.json` の "
-            "`permissions.allow` に直接追加してください。"
+            ":no_entry_sign: 次の操作は拒否ルール（`permissions.deny`）で禁止されているため実行できません"
+            "（許可はできません）:\n"
+            f"{lines}"
         )
+        store.log_permission(channel_id, conversation_id, "blocked",
+                              [_describe_tool_error(e) for e in blocked_errors])
+    buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
+    if permission_errors:
+        log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
+        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
+        if buttons_throttled:
+            parts.append(
+                ":no_entry: 短時間に権限拒否が続いたため、許可ボタンを一時停止しました"
+                "（エージェントが権限確認を繰り返している可能性があります）。拒否された操作:\n"
+                f"{lines}\n"
+                "本当に必要な操作だけ `/agy-permissions add` で明示的に許可してください。"
+            )
+        else:
+            parts.append(
+                ":warning: 一部のツール実行が権限不足で拒否されました:\n"
+                f"{lines}\n"
+                "下のボタンで許可して再実行するか、`~/.gemini/antigravity-cli/settings.json` の "
+                "`permissions.allow` に直接追加してください。"
+            )
     if not tool_errors and result.get("denied_actions") and not result.get("response"):
         # Confirmed by testing (see GREY_QUESTION_AUTO_RETRIES and the log
         # analysis behind its value): this situation usually clears up on
@@ -1277,8 +1417,17 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
 
     outgoing_text = "\n\n".join(parts) if parts else "(empty response)"
 
-    blocks = None
     if permission_errors:
+        asked = []
+        for e in permission_errors:
+            g = _grantable_entry(e)
+            if g and g["entry"] not in asked:
+                asked.append(g["entry"])
+        store.log_permission(channel_id, conversation_id,
+                              "throttled" if buttons_throttled else "requested", asked)
+
+    blocks = None
+    if permission_errors and not buttons_throttled:
         retry_id = uuid.uuid4().hex[:12]
         store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id,
                          remember_text if remember_text is not None else text)
@@ -1469,6 +1618,8 @@ def build_app() -> App:
         persona = _persona_kwargs(channel_cfg)
         label = "恒久的に許可" if permanent else "今回だけ許可"
         conversation_id = ctx["conversation_id"]
+        store.log_permission(ctx["channel_id"], conversation_id,
+                              "granted_permanent" if permanent else "granted_once", entries, clicker)
 
         for entry in entries:
             newly_added = permissions.add_entry(entry)
@@ -1495,8 +1646,8 @@ def build_app() -> App:
         # around it. Prefix an explicit instruction naming what was just
         # allowed, so the retry actually exercises the grant.
         retry_prompt = (
-            f"(先ほど権限不足で拒否された次を、今permissions.allowに追加したので、"
-            f"今すぐそのまま実行してください: `{describe}`)\n\n{ctx['prompt_text']}"
+            f"(先ほど拒否された次の操作が許可されました。実行してください: `{describe}`)\n\n"
+            f"{ctx['prompt_text']}"
         )
 
         model, effort = _effective_model_effort(store, ctx["channel_id"], channel_cfg)
@@ -1537,6 +1688,8 @@ def build_app() -> App:
 
         clicker = (body.get("user") or {}).get("username") or (body.get("user") or {}).get("id") or "?"
         log.info("denied grant for %r by user=%s", describe, clicker)
+        store.log_permission(ctx["channel_id"], ctx.get("conversation_id"), "denied",
+                              payload.get("entries") or [describe], clicker)
 
         channel_cfg = channel_map.get(ctx["channel_id"], {})
         persona = _persona_kwargs(channel_cfg)
@@ -1611,6 +1764,21 @@ def build_app() -> App:
                      "削除するには `/agy-permissions remove <エントリ>` を使ってください。",
                 response_type="ephemeral",
             )
+        elif sub == "stats":
+            days = int(arg) if arg.isdigit() else 30
+            rows = store.permission_stats(days)
+            if not rows:
+                respond(text=f"直近{days}日の許可リクエストはありません。", response_type="ephemeral")
+                return
+            listing = "\n".join(
+                f"{i}. 要求{req} / 今回{once} / 恒久{perm} / 拒否{den}  `{entry}`"
+                for i, (entry, req, once, perm, den) in enumerate(rows, 1)
+            )
+            respond(
+                text=f"直近{days}日に許可を求められた回数の多い順:\n{listing}\n\n"
+                     "頻繁に「今回だけ許可」しているものは、`/agy-permissions add <エントリ>` で恒久許可を検討できます。",
+                response_type="ephemeral",
+            )
         elif sub in ("add", "remove"):
             if not arg:
                 respond(text=f"使い方: `/agy-permissions {sub} <コマンド または kind(引数)>`"
@@ -1664,7 +1832,7 @@ def build_app() -> App:
                 )
         else:
             respond(
-                text="使い方: `/agy-permissions [list|add <コマンド>|remove <コマンド>]`",
+                text="使い方: `/agy-permissions [list|stats [日数]|add <コマンド>|remove <コマンド>]`",
                 response_type="ephemeral",
             )
 

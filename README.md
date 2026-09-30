@@ -274,10 +274,44 @@ Two ways to act on `permissions.allow` without leaving Slack:
     accepts one or more of `list`'s numbers instead (space/comma-
     separated, e.g. `/agy-permissions remove 1 3 5`), to delete several
     at once without retyping long command strings.
+  - `/agy-permissions stats [days]` — the most-asked-for entries (args
+    included) over the last N days (default 30), with how many times each
+    was requested / granted once / granted permanently / denied. Every
+    request and outcome is recorded in the bridge's state db, so entries you
+    keep granting "once" can be promoted to a permanent grant on evidence.
 
 Both paths write straight to `~/.gemini/antigravity-cli/settings.json` (or
 wherever `AGY_SETTINGS_PATH` points, see below), preserving everything else
 already in the file. Every add/remove is logged.
+
+### Keeping the agent inside its lane
+
+The agent runs as your OS user, so none of this is a hard security boundary,
+but these make the easy mistakes (and easy probing) fail loudly:
+
+- **`permissions.deny` in `settings.json`** (deny beats allow, and deny-read
+  implies deny-write): list the bridge's own source, its config/state dir
+  (which holds the Slack tokens), and agy's own `settings.json`/`config`, e.g.
+  `read_file(~/WORK/agy-slack-bridge)`, `read_file(~/.config/agy-slack-bridge)`.
+  This only covers agy's built-in file tools; a shell `cat` is a *command*, so
+  it still goes through the normal grant flow. The bridge treats a deny-rule
+  block as final: no grant buttons, a "blocked by a deny rule" note instead.
+  Also worth keeping `trustedWorkspaces` down to the actual project dirs.
+- **Keep the global allow list short.** Allow rules are prefix matches:
+  `echo` also allows `echo x > file`, `cat`/`grep`/`tail` read anything, `agy`
+  allows `agy --dangerously-skip-permissions ...`.
+- **Grant-button throttle**: more than 3 permission-button prompts in one
+  conversation within 10 minutes stops offering buttons (and says so), so an
+  agent can't cheaply provoke prompts hoping one gets clicked.
+- **A shared rules file in each project's `AGENTS.md`** telling the agent not
+  to investigate the bridge/agy internals and to just report a
+  cancelled/denied tool instead of working around it.
+- **Silent denials**: agy sometimes ends a denied `run_command` step as DONE
+  with no error and no output (its stderr says "auto-denied"). The bridge
+  recovers the command from the step itself and offers the normal grant
+  button; such a step also doesn't count as progress for the empty-response
+  auto-retry. A `DIAG` line is logged when agy reports a denial the bridge
+  can't otherwise see.
 
 ### Switching models from Slack
 
