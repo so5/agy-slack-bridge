@@ -154,21 +154,31 @@ mapping from Slack threads to `agy` conversation IDs.
 4. **Event Subscriptions**: enable it, and subscribe to bot events:
    - `message.channels` (public channels) and/or `message.groups` (private
      channels), matching the scopes above.
+   - `app_home_opened` — optional, only for the Home tab (see "Checking model
+     usage" below).
 5. **Interactivity & Shortcuts**: enable it. With Socket Mode already on,
    button clicks are delivered over the same websocket — no Request URL
    needed. This is required for the permission-grant/revoke buttons.
-6. **Slash Commands** (optional): create commands named `/agy-permissions`
-   (see "Managing permissions from Slack" below), `/agy-model` (see
-   "Switching models from Slack" below), `/agy-usage` (see "Checking model usage" below), `/agy` and/or `/agy-link` (see
-   "Passing agy slash commands through" below) — any description/usage hint
-   you like for each. Same as above, no Request URL needed with Socket Mode on.
-   Add the `commands` Bot Token Scope (shared by all of them, add it once).
-   - `files:write` — optional, only needed for the auto-upload-generated-
-     files feature below.
-7. Install the app to your workspace. Save the Bot User OAuth Token as
+   Optionally also create a **message shortcut** (Create New Shortcut -> On
+   messages) with callback ID `agy_open_web_ui`, for the "open this thread
+   in the Web UI" action (see "Passing agy slash commands through" below). In
+   Slack it shows up under "..." -> "Connect to apps" on a message.
+6. **Slash Commands** (all optional): create the ones you want, with any
+   description/usage hint you like. No Request URL needed with Socket Mode on.
+   - `/agy-permissions` — see "Managing permissions from Slack" below
+   - `/agy-model` — see "Switching models from Slack" below
+   - `/agy-usage` — see "Checking model usage" below
+   - `/agy` and `/agy-link` — see "Passing agy slash commands through" below
+
+   They all need the `commands` Bot Token Scope (add it once in step 3).
+   Also optional in step 3: `files:write`, only needed for the
+   auto-upload-generated-files feature below.
+7. **App Home** (optional): turn on "Home Tab" under App Home, to get the
+   usage/model overview described under "Checking model usage" below.
+8. Install the app to your workspace. Save the Bot User OAuth Token as
    `SLACK_BOT_TOKEN` (`xoxb-...`).
-8. Invite the bot to each channel you want to bridge (`/invite @your-bot`).
-9. Get each channel's ID from Slack ("View channel details" → bottom of the
+9. Invite the bot to each channel you want to bridge (`/invite @your-bot`).
+10. Get each channel's ID from Slack ("View channel details" → bottom of the
    panel).
 
 **Security note**: anyone who can post in a bridged channel can direct the
