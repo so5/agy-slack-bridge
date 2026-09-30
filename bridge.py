@@ -1069,7 +1069,8 @@ GREY_QUESTION_PROGRESS_RETRIES = 5
 # something, so an agent can (and one did: it read this file, then ran
 # throwaway commands purely to make buttons appear) provoke denials on
 # purpose. After this many button-bearing denials in a conversation within
-# the window, stop offering buttons and say so instead.
+# the window - without the user granting anything in between (see
+# _reset_denial_throttle) - stop offering buttons and say so instead.
 DENIAL_BUTTON_LIMIT = 3
 DENIAL_BUTTON_WINDOW_SEC = 600
 _denial_log: dict = {}
@@ -1083,6 +1084,15 @@ def _denial_buttons_throttled(conversation_id: str) -> bool:
         recent.append(now)
     _denial_log[conversation_id] = recent
     return throttled
+
+
+def _reset_denial_throttle(conversation_id: Optional[str]) -> None:
+    """A human just clicked a grant in this conversation: they're watching
+    and engaged, so it isn't an unattended agent provoking prompts. Restart
+    the count (a legit trial-and-error session used to trip the limit while
+    the user was approving every step)."""
+    if conversation_id:
+        _denial_log.pop(conversation_id, None)
 
 
 AUTO_RETRY_TEXT = (
@@ -1620,6 +1630,7 @@ def build_app() -> App:
         conversation_id = ctx["conversation_id"]
         store.log_permission(ctx["channel_id"], conversation_id,
                               "granted_permanent" if permanent else "granted_once", entries, clicker)
+        _reset_denial_throttle(conversation_id)
 
         for entry in entries:
             newly_added = permissions.add_entry(entry)

@@ -302,7 +302,9 @@ but these make the easy mistakes (and easy probing) fail loudly:
   allows `agy --dangerously-skip-permissions ...`.
 - **Grant-button throttle**: more than 3 permission-button prompts in one
   conversation within 10 minutes stops offering buttons (and says so), so an
-  agent can't cheaply provoke prompts hoping one gets clicked.
+  agent can't cheaply provoke prompts hoping one gets clicked. Granting
+  something yourself in that conversation resets the count (you're evidently
+  watching), so a legitimate trial-and-error session isn't cut off.
 - **A shared rules file in each project's `AGENTS.md`** telling the agent not
   to investigate the bridge/agy internals and to just report a
   cancelled/denied tool instead of working around it.
