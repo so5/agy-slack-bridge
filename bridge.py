@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -826,6 +827,7 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
 
     result = None
     tool_errors = []
+    tool_steps = set()
     for line in proc.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -838,6 +840,8 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
             result = event.get("result")
         elif event.get("event") == "step_update":
             step = event.get("step_update", {})
+            if step.get("step_type") == "tool":
+                tool_steps.add(step.get("step_index"))
             if step.get("state") == "ERROR" and step.get("step_type") == "tool":
                 info = step.get("tool_info", {})
                 tool_errors.append({
@@ -849,6 +853,7 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     if result is None:
         raise RuntimeError(f"agy produced no result event: {proc.stdout[-2000:]}")
     result["_tool_errors"] = tool_errors
+    result["_tool_steps"] = len(tool_steps)
     return result
 
 
@@ -970,6 +975,104 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
 
 
 GREY_QUESTION_AUTO_RETRIES = 2
+# The model (esp. the Flash tier) sometimes ends a turn with an empty response
+# right after a tool result, mid-task. If the turn still ran tools, the task
+# is progressing and the nudge is doing its job, so that doesn't spend the
+# budget above - only a hard cap of its own.
+GREY_QUESTION_PROGRESS_RETRIES = 10
+AUTO_RETRY_TEXT = "作業の続きをお願いします。直前のターンが途中で終わっているので、そのまま続行してください。"
+
+
+# --- usage (model quota) -------------------------------------------------
+# `/usage` is answered locally by agy (no model call, no quota spent), so it
+# is cheap - but still a ~4s process start, hence the short cache.
+USAGE_CACHE_TTL_SEC = 60
+USAGE_WARN_PCT = 10            # warn under a reply once a window drops to this
+USAGE_WARN_CACHE_SEC = 300     # ...checked against data at most this old
+USAGE_WARN_INTERVAL_SEC = 3600  # ...and at most once per hour per model group
+JST = timezone(timedelta(hours=9))
+_agy_usage_cache: dict = {"ts": 0.0, "rows": []}
+_usage_warned: dict = {}
+_USAGE_GROUP_LABEL = {"Gemini Models": "Gemini", "Claude and GPT models": "Claude / GPT"}
+
+
+def _fetch_agy_usage(project_id: str, max_age: float = USAGE_CACHE_TTL_SEC) -> list[dict]:
+    now = time.time()
+    if _agy_usage_cache["rows"] and now - _agy_usage_cache["ts"] < max_age:
+        return _agy_usage_cache["rows"]
+    try:
+        res = run_agy("/usage", project_id, None)
+        rows = []
+        for line in (res.get("response") or "").splitlines():
+            cols = line.split("\t")
+            if len(cols) < 4:
+                continue
+            m = re.match(r"(\d+)", cols[2])
+            rows.append({"group": cols[0], "window": cols[1],
+                          "pct": int(m.group(1)) if m else None, "reset": cols[3]})
+        if rows:
+            _agy_usage_cache["ts"] = now
+            _agy_usage_cache["rows"] = rows
+            return rows
+    except Exception:
+        log.warning("failed to fetch agy usage", exc_info=True)
+    return _agy_usage_cache["rows"]
+
+
+def _usage_group_for_model(model: Optional[str]) -> str:
+    # agy's own default (no --model) is a Gemini model.
+    return "Claude and GPT models" if (model or "").lower().startswith(("claude", "gpt")) else "Gemini Models"
+
+
+def _usage_window_label(window: str) -> str:
+    return "5時間枠" if "Five Hour" in window else "週次枠" if "Weekly" in window else window
+
+
+def _format_reset(reset_iso: str) -> str:
+    try:
+        dt = datetime.fromisoformat(reset_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return reset_iso
+    jst = dt.astimezone(JST).strftime("%m/%d %H:%M")
+    secs = int((dt - datetime.now(timezone.utc)).total_seconds())
+    if secs <= 0:
+        return f"リセット {jst}（経過済み・表示は更新待ちの可能性）"
+    hours, minutes = divmod(secs // 60, 60)
+    rel = f"{hours // 24}日{hours % 24}時間" if hours >= 48 else f"{hours}時間{minutes}分"
+    return f"リセットまで {rel}（{jst} JST）"
+
+
+def _format_usage(rows: list[dict], highlight_group: Optional[str] = None) -> str:
+    if not rows:
+        return "(利用状況を取得できませんでした)"
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(r["group"], []).append(r)
+    out = []
+    for group, items in groups.items():
+        mark = "  ← このチャンネルのモデル" if group == highlight_group else ""
+        out.append(f"*{_USAGE_GROUP_LABEL.get(group, group)}*{mark}")
+        for r in items:
+            pct = r["pct"]
+            icon = (":white_circle:" if pct is None else ":large_green_circle:" if pct >= 30
+                    else ":large_yellow_circle:" if pct >= USAGE_WARN_PCT else ":red_circle:")
+            out.append(f"{icon} {_usage_window_label(r['window'])}: *{'?' if pct is None else pct}%*"
+                       f"　{_format_reset(r['reset'])}")
+        out.append("")
+    return "\n".join(out).strip()
+
+
+def _low_quota_warning(model: Optional[str], project_id: str) -> Optional[str]:
+    group = _usage_group_for_model(model)
+    low = [r for r in _fetch_agy_usage(project_id, max_age=USAGE_WARN_CACHE_SEC)
+           if r["group"] == group and r["pct"] is not None and r["pct"] <= USAGE_WARN_PCT]
+    now = time.time()
+    if not low or now - _usage_warned.get(group, 0.0) < USAGE_WARN_INTERVAL_SEC:
+        return None
+    _usage_warned[group] = now
+    detail = " / ".join(f"{_usage_window_label(r['window'])} {r['pct']}%" for r in low)
+    return (f":warning: {_USAGE_GROUP_LABEL.get(group, group)} の残り枠が少なくなっています（{detail}）。"
+            "`/agy-usage` で詳細、`/agy-model` で別系統のモデルに切り替えられます。")
 
 
 _QUOTA_RESET_RE = re.compile(r"Resets in (\w+)")
@@ -994,6 +1097,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
                     status_text: str = "考え中です...",
                     remember_text: Optional[str] = None,
                     auto_retries_left: int = GREY_QUESTION_AUTO_RETRIES,
+                    progress_retries_left: int = GREY_QUESTION_PROGRESS_RETRIES,
                     model: Optional[str] = None, effort: Optional[str] = None) -> None:
     """Runs one agy turn and posts the reply, attaching permission-grant
     buttons if a run_command call got denied. Shared by the normal message
@@ -1114,15 +1218,19 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         # moment a real, actionable denial shows up, this whole branch is
         # skipped in favor of the permission_errors/other_errors handling
         # above, buttons and all, with no further auto-retry.
-        if auto_retries_left > 0:
-            log.info("empty response with stale denied_actions (num_turns=%s) - "
-                      "auto-retrying (%d left)", result.get("num_turns"), auto_retries_left)
+        made_progress = (result.get("_tool_steps") or 0) > 0
+        if (progress_retries_left > 0) if made_progress else (auto_retries_left > 0):
+            log.info("empty response with stale denied_actions (num_turns=%s, tool_steps=%s) - "
+                      "auto-retrying (no-progress left=%d, progress left=%d)",
+                      result.get("num_turns"), result.get("_tool_steps"),
+                      auto_retries_left, progress_retries_left)
             _run_and_reply(
                 client, store, permissions, channel_id, thread_key, project_id,
-                conversation_id, "実行して", persona_kwargs,
+                conversation_id, AUTO_RETRY_TEXT, persona_kwargs,
                 status_text="反応が無かったので自動的に再試行しています...",
                 remember_text=remember_text if remember_text is not None else text,
-                auto_retries_left=auto_retries_left - 1,
+                auto_retries_left=auto_retries_left if made_progress else auto_retries_left - 1,
+                progress_retries_left=progress_retries_left - 1 if made_progress else progress_retries_left,
                 model=model, effort=effort,
             )
             return
@@ -1138,7 +1246,17 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         denied_desc = ", ".join(
             d.get("display_name") or d.get("action") or "?" for d in result["denied_actions"]
         )
-        if result.get("num_turns") == 1:
+        if made_progress:
+            # Empty response, but tools did run this turn: the model just
+            # keeps ending its turns early mid-task, and the automatic
+            # nudges ran out. The old "past denial" wording would be
+            # misleading here - the denial flag is stale, not the cause.
+            parts.append(
+                ":hourglass: モデルが作業の途中で空の応答を返してターンを終えることを繰り返しました"
+                "（自動で続行を促しましたが、まだ作業の途中のようです）。"
+                "「続けて」と送ると再開します。"
+            )
+        elif result.get("num_turns") == 1:
             # Confirmed by testing: this can happen on a conversation's
             # very first turn, when a tool call ran async (WaitMsBeforeAsync)
             # and its permission check only resolved *after* this print-mode
@@ -1201,6 +1319,14 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             log.info("uploaded generated file to slack: %s", path)
         except Exception:
             log.exception("failed to upload generated file %s", path)
+
+    try:
+        warning = _low_quota_warning(model, project_id)
+        if warning:
+            client.chat_postMessage(channel=channel_id, thread_ts=thread_key,
+                                     text=warning, **persona_kwargs)
+    except Exception:
+        log.exception("low-quota check failed")
 
 
 def build_app() -> App:
@@ -1723,6 +1849,42 @@ def build_app() -> App:
                 text = (f"<{url}|Web UI で開く>\n会話ID: `{conversation_id}`" if url
                         else _NO_INSTANCE_TEXT)
         client.chat_postEphemeral(channel=channel_id, user=user_id, thread_ts=thread_key, text=text)
+
+    @app.command("/agy-usage")
+    def handle_usage_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
+        ack()
+        channel_id = command.get("channel_id")
+        channel_cfg = channel_map.get(channel_id)
+        if not channel_cfg:
+            respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
+            return
+        model, _ = _effective_model_effort(store, channel_id, channel_cfg)
+        rows = _fetch_agy_usage(channel_cfg["project"])
+        respond(text=f"*モデル利用枠*（このチャンネル: `{model or 'agyのデフォルト'}`）\n"
+                     + _format_usage(rows, _usage_group_for_model(model)),
+                response_type="ephemeral")
+
+    @app.event("app_home_opened")
+    def handle_home_opened(event, client):  # noqa: ANN001 - Bolt signature
+        if event.get("tab") != "home" or not channel_map:
+            return
+        try:
+            rows = _fetch_agy_usage(next(iter(channel_map.values()))["project"])
+            lines = []
+            for cid, cfg in channel_map.items():
+                model, effort = _effective_model_effort(store, cid, cfg)
+                lines.append(f"<#{cid}>  `{model or 'agyのデフォルト'}`" + (f"  (effort={effort})" if effort else ""))
+            client.views_publish(user_id=event["user"], view={"type": "home", "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "agy 利用状況"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": _format_usage(rows)}},
+                {"type": "divider"},
+                {"type": "section", "text": {"type": "mrkdwn",
+                                              "text": "*チャンネルごとの現在のモデル*\n" + "\n".join(lines)}},
+                {"type": "context", "elements": [{"type": "mrkdwn",
+                    "text": f"取得: {datetime.now(JST):%H:%M} JST（開くたびに更新、最大1分キャッシュ）"}]},
+            ]})
+        except Exception:
+            log.exception("failed to publish app home")
 
     return app
 

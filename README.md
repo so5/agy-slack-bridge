@@ -159,7 +159,7 @@ mapping from Slack threads to `agy` conversation IDs.
    needed. This is required for the permission-grant/revoke buttons.
 6. **Slash Commands** (optional): create commands named `/agy-permissions`
    (see "Managing permissions from Slack" below), `/agy-model` (see
-   "Switching models from Slack" below), `/agy` and/or `/agy-link` (see
+   "Switching models from Slack" below), `/agy-usage` (see "Checking model usage" below), `/agy` and/or `/agy-link` (see
    "Passing agy slash commands through" below) — any description/usage hint
    you like for each. Same as above, no Request URL needed with Socket Mode on.
    Add the `commands` Bot Token Scope (shared by all of them, add it once).
@@ -323,6 +323,21 @@ with callback ID `agy_open_web_ui`. It then shows up in the "..." menu of any
 message in a bridged channel's thread and replies (only to you, in that
 thread) with that thread's conversation link. No Request URL needed with
 Socket Mode, and it rides on the same Interactivity setting as the buttons.
+
+### Checking model usage (quota)
+
+- `/agy-usage` — remaining quota per model group (Gemini / Claude+GPT, each
+  with a 5-hour and a weekly window), with the reset time in JST and the
+  group your channel's current model draws from highlighted. Data comes from
+  agy's own `/usage` (no model call, so it costs no quota), cached for 60s.
+- **Low-quota warning**: after a reply, if the channel's model group has a
+  window at or below 10%, the bridge adds a one-line warning in the thread
+  (at most once an hour per group), pointing at `/agy-model`.
+- **App Home tab**: opening the app's Home tab shows the same usage plus each
+  channel's current model. To enable it: Slack app -> App Home -> turn on
+  "Home Tab", and under Event Subscriptions -> Subscribe to bot events add
+  `app_home_opened`. Opening the tab costs one cached `agy /usage` at most
+  per minute.
 
 **Temporary grant lifetime**: a one-time grant used to be removed the
 instant its own retry finished, which turned out to be actively wrong for a
