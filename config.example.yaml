@@ -9,6 +9,14 @@
 # bot post under a different name/avatar in each channel, instead of always
 # showing up as whatever the Slack app's own bot user is named. Requires the
 # chat:write.customize bot token scope; harmless (just ignored) without it.
+#
+# model/effort are also optional, passed straight through as agy's own
+# `--model`/`--effort` flags for every turn in that channel (see `agy models`
+# for the current list). Some model names already bake in a reasoning tier
+# (e.g. "-high"/"-low" suffix) and error out if combined with `effort` - set
+# one or the other, not both, for those. A channel with no real project (see
+# "default-cli-project" below) plus a high-reasoning model makes a plain
+# thinking-mode chat channel with no workspace/file access.
 channels:
   C0123ABCD456:
     project: "11111111-1111-1111-1111-111111111111"
@@ -20,3 +28,9 @@ channels:
     name: "secretary"
     display_name: "secretary"
     icon_emoji: ":memo:"
+  C0999GEMINI1:
+    project: "default-cli-project"  # agy's built-in no-workspace project
+    name: "gemini-chat"
+    display_name: "Gemini"
+    icon_emoji: ":sparkles:"
+    model: "gemini-3.1-pro-high"

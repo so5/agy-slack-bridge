@@ -31,6 +31,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import yaml
 from slack_bolt import App
@@ -252,6 +253,14 @@ class ThreadStore:
                 PRIMARY KEY (conversation_id, entry)
             )"""
         )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS channel_settings (
+                channel_id TEXT PRIMARY KEY,
+                model TEXT,
+                effort TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
         self._conn.commit()
 
     def get(self, channel_id: str, thread_ts: str) -> Optional[str]:
@@ -274,6 +283,18 @@ class ThreadStore:
                 (channel_id, thread_ts, conversation_id, project_id),
             )
             self._conn.commit()
+
+    def latest_conversation(self, channel_id: str) -> Optional[str]:
+        """The most recently active conversation in a channel - what
+        `/agy-link` means by "current", since Slack won't deliver a slash
+        command from inside a thread."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT conversation_id FROM threads WHERE channel_id=? "
+                "ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+                (channel_id,),
+            ).fetchone()
+            return row[0] if row else None
 
     def put_retry(self, retry_id: str, channel_id: str, thread_ts: str, project_id: str,
                    conversation_id: Optional[str], prompt_text: str) -> None:
@@ -372,6 +393,34 @@ class ThreadStore:
                 if remaining == 0:
                     to_revoke.append(entry)
             return to_revoke
+
+    def get_channel_settings(self, channel_id: str) -> Optional[dict]:
+        """The per-channel model/effort override set via `/agy-model set`,
+        if any - takes precedence over that channel's static `model`/`effort`
+        in config.yaml. None means "no override, use the config default"."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT model, effort FROM channel_settings WHERE channel_id=?",
+                (channel_id,),
+            ).fetchone()
+        return {"model": row[0], "effort": row[1]} if row else None
+
+    def set_channel_settings(self, channel_id: str, model: Optional[str], effort: Optional[str]) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO channel_settings (channel_id, model, effort, updated_at)
+                   VALUES (?, ?, ?, datetime('now'))
+                   ON CONFLICT(channel_id) DO UPDATE SET
+                     model=excluded.model, effort=excluded.effort, updated_at=excluded.updated_at""",
+                (channel_id, model, effort),
+            )
+            self._conn.commit()
+
+    def clear_channel_settings(self, channel_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM channel_settings WHERE channel_id=?", (channel_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
 
 
 class PermissionsFile:
@@ -640,7 +689,117 @@ def _extract_uploadable_files(response_text: str, project_id: str, conversation_
     return found
 
 
-def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
+# How long a fetched `agy models` list is trusted before refetching, for
+# /agy-model's validation and listing - that call shells out and can be slow,
+# and the model catalog doesn't change within the lifetime of one bridge run.
+AGY_MODELS_CACHE_TTL_SEC = 300
+_agy_models_cache: dict = {"ts": 0.0, "models": []}
+
+
+def _fetch_agy_models() -> list[tuple[str, str]]:
+    """Runs `agy models` and parses its tab-separated "id<TAB>label" stdout
+    lines. Best-effort: on any failure, returns the last good cached list
+    (possibly empty) rather than raising, since this only feeds a UX nicety
+    (listing/validating choices in /agy-model), not the actual --model flag
+    passed to run_agy."""
+    now = time.time()
+    if _agy_models_cache["models"] and now - _agy_models_cache["ts"] < AGY_MODELS_CACHE_TTL_SEC:
+        return _agy_models_cache["models"]
+    try:
+        proc = subprocess.run([AGY_BIN, "models"], capture_output=True, text=True, timeout=30)
+        models = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            model_id, _, label = line.partition("\t")
+            models.append((model_id, label.strip() or model_id))
+        if models:
+            _agy_models_cache["ts"] = now
+            _agy_models_cache["models"] = models
+        return models
+    except Exception:
+        log.warning("failed to fetch agy models", exc_info=True)
+        return _agy_models_cache["models"]
+
+
+def _effective_model_effort(store: "ThreadStore", channel_id: str, channel_cfg: dict) -> tuple:
+    """A /agy-model override for this channel, if set, otherwise the
+    channel's static model/effort from config.yaml."""
+    override = store.get_channel_settings(channel_id)
+    if override:
+        return override.get("model"), override.get("effort")
+    return channel_cfg.get("model"), channel_cfg.get("effort")
+
+
+_AGY_INSTALL_UUID_RE = re.compile(r'installation_uuid:\s*"([0-9a-fA-F-]+)"')
+AGY_STATE_PBTXT = Path.home() / ".gemini" / "antigravity-cli" / "antigravity_state.pbtxt"
+
+
+def _remote_instance_id() -> Optional[str]:
+    """The <instance> in antigravity.google.com/r/<instance>. It's not the
+    human-readable name `agy remote-control status` prints; it's the CLI's
+    installation uuid plus "-v2" (the id the daemon logs as its
+    remote-control connection). AGY_REMOTE_INSTANCE overrides it."""
+    override = os.environ.get("AGY_REMOTE_INSTANCE")
+    if override:
+        return override
+    try:
+        m = _AGY_INSTALL_UUID_RE.search(AGY_STATE_PBTXT.read_text())
+        return f"{m.group(1)}-v2" if m else None
+    except Exception:
+        log.warning("failed to read agy installation uuid", exc_info=True)
+        return None
+
+
+def _web_ui_link(conversation_id: str) -> Optional[str]:
+    instance = _remote_instance_id()
+    if not instance:
+        return None
+    return f"https://antigravity.google.com/r/{instance}?p={quote('c/' + conversation_id, safe='')}"
+
+
+_NO_INSTANCE_TEXT = ":x: agy のインスタンスID（installation_uuid）が取得できません。"
+
+
+# agy's built-in slash commands (the ones handled locally by the CLI itself,
+# as opposed to skill commands like /plan or /boost, which are just prompts
+# for the agent) come back instantly with a `command` field in the result
+# and no conversation. `/agy <name>` uses this set to decide between
+# "answer right here, ephemerally" and "run it as a normal agent turn".
+# Fetched from `/help` so it tracks the installed agy; this is only the
+# fallback for when that fetch fails.
+_AGY_BUILTIN_FALLBACK = frozenset({
+    "agents", "changelog", "config", "settings", "credits", "effort", "help",
+    "hooks", "model", "permissions", "skills", "usage", "quota",
+})
+_agy_builtin_cache: dict = {"ts": 0.0, "names": frozenset()}
+_HELP_LINE_RE = re.compile(r"^/(\S+)(?: \(([^)]*)\))?\t")
+
+
+def _fetch_agy_builtin_commands(project_id: str) -> frozenset:
+    now = time.time()
+    if _agy_builtin_cache["names"] and now - _agy_builtin_cache["ts"] < AGY_MODELS_CACHE_TTL_SEC:
+        return _agy_builtin_cache["names"]
+    try:
+        result = run_agy("/help", project_id, None)
+        names = set()
+        for line in (result.get("response") or "").splitlines():
+            m = _HELP_LINE_RE.match(line)
+            if m:
+                names.add(m.group(1).lower())
+                names.update(a.strip().lower() for a in (m.group(2) or "").split(",") if a.strip())
+        if names:
+            _agy_builtin_cache["ts"] = now
+            _agy_builtin_cache["names"] = frozenset(names)
+            return _agy_builtin_cache["names"]
+    except Exception:
+        log.warning("failed to fetch agy builtin slash commands", exc_info=True)
+    return _agy_builtin_cache["names"] or _AGY_BUILTIN_FALLBACK
+
+
+def run_agy(text: str, project_id: str, conversation_id: Optional[str],
+            model: Optional[str] = None, effort: Optional[str] = None) -> dict:
     # --output-format json only gives denied_actions as a bare
     # {"action": "command", "display_name": "RunCommand"} - not what was
     # actually denied. stream-json emits a step_update per tool call, so a
@@ -656,6 +815,10 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str]) -> dict:
     ]
     if conversation_id:
         cmd += ["--conversation", conversation_id]
+    if model:
+        cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
     log.info("running agy for project=%s conversation=%s", project_id, conversation_id or "(new)")
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=AGY_TIMEOUT_SEC)
     if proc.returncode != 0:
@@ -809,12 +972,29 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
 GREY_QUESTION_AUTO_RETRIES = 2
 
 
+_QUOTA_RESET_RE = re.compile(r"Resets in (\w+)")
+
+
+def _agy_failure_text(err: str) -> str:
+    """Slack text for a failed agy invocation. A model-quota 429 is common
+    enough (and fixable from Slack) to deserve its own explanation instead
+    of the generic "check the logs"."""
+    if "RESOURCE_EXHAUSTED" in err:
+        m = _QUOTA_RESET_RE.search(err)
+        reset = f"（回復まであと {m.group(1)}）" if m else ""
+        return (f":x: モデルの利用枠を使い切りました{reset}。\n"
+                "別系統の枠のモデルに切り替えれば続けられます（例: `/agy-model set claude-sonnet-4-6`）。"
+                "枠の残りは `/agy usage` で確認できます。")
+    return ":x: agy invocation failed. Check the bridge's logs."
+
+
 def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
                     channel_id: str, thread_key: str, project_id: str,
                     conversation_id: Optional[str], text: str, persona_kwargs: dict,
                     status_text: str = "考え中です...",
                     remember_text: Optional[str] = None,
-                    auto_retries_left: int = GREY_QUESTION_AUTO_RETRIES) -> None:
+                    auto_retries_left: int = GREY_QUESTION_AUTO_RETRIES,
+                    model: Optional[str] = None, effort: Optional[str] = None) -> None:
     """Runs one agy turn and posts the reply, attaching permission-grant
     buttons if a run_command call got denied. Shared by the normal message
     handler and by the grant_once/grant_permanent retry flow.
@@ -828,12 +1008,13 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         result = _run_with_status(
             client, channel_id, thread_key, status_text, persona_kwargs,
             run_agy, text, project_id, conversation_id,
+            model=model, effort=effort,
         )
-    except Exception:
+    except Exception as exc:
         log.exception("agy invocation failed")
         client.chat_postMessage(
             channel=channel_id, thread_ts=thread_key,
-            text=":x: agy invocation failed. Check the bridge's logs.",
+            text=_agy_failure_text(str(exc)),
             **persona_kwargs,
         )
         return
@@ -942,6 +1123,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
                 status_text="反応が無かったので自動的に再試行しています...",
                 remember_text=remember_text if remember_text is not None else text,
                 auto_retries_left=auto_retries_left - 1,
+                model=model, effort=effort,
             )
             return
 
@@ -1120,10 +1302,12 @@ def build_app() -> App:
                   text, channel_id, thread_key, conversation_id,
                   " (resumed)" if resume_match else "")
 
+        model, effort = _effective_model_effort(store, channel_id, channel_cfg)
         with locks.get((channel_id, thread_key)):
             _run_and_reply(
                 client, store, permissions, channel_id, thread_key, project_id,
                 conversation_id, text, _persona_kwargs(channel_cfg),
+                model=model, effort=effort,
             )
 
     def _grant_and_retry(body: dict, client, permanent: bool) -> None:
@@ -1189,12 +1373,14 @@ def build_app() -> App:
             f"今すぐそのまま実行してください: `{describe}`)\n\n{ctx['prompt_text']}"
         )
 
+        model, effort = _effective_model_effort(store, ctx["channel_id"], channel_cfg)
         try:
             _run_and_reply(
                 client, store, permissions, ctx["channel_id"], ctx["thread_ts"],
                 ctx["project_id"], conversation_id, retry_prompt, persona,
                 status_text="許可して再実行しています...",
                 remember_text=ctx["prompt_text"],
+                model=model, effort=effort,
             )
         finally:
             store.delete_retry(retry_id)
@@ -1245,12 +1431,14 @@ def build_app() -> App:
             f"それが無理ならその旨を報告してください: `{describe}`)\n\n{ctx['prompt_text']}"
         )
 
+        model, effort = _effective_model_effort(store, ctx["channel_id"], channel_cfg)
         try:
             _run_and_reply(
                 client, store, permissions, ctx["channel_id"], ctx["thread_ts"],
                 ctx["project_id"], ctx["conversation_id"], deny_prompt, persona,
                 status_text="拒否内容を伝えて再検討させています...",
                 remember_text=ctx["prompt_text"],
+                model=model, effort=effort,
             )
         finally:
             store.delete_retry(retry_id)
@@ -1353,6 +1541,188 @@ def build_app() -> App:
                 text="使い方: `/agy-permissions [list|add <コマンド>|remove <コマンド>]`",
                 response_type="ephemeral",
             )
+
+    @app.command("/agy-model")
+    def handle_model_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
+        ack()
+        channel_id = command.get("channel_id")
+        channel_cfg = channel_map.get(channel_id)
+        if not channel_cfg:
+            respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
+            return
+
+        tokens = (command.get("text") or "").split()
+        sub = tokens[0].lower() if tokens else "list"
+        rest = tokens[1:]
+
+        if sub in ("", "list"):
+            override = store.get_channel_settings(channel_id)
+            if override:
+                current = override.get("model") or "(agyのデフォルト)"
+                if override.get("effort"):
+                    current += f" (effort={override['effort']})"
+                note = "このチャンネル専用に切り替え中。config.yaml の既定に戻すには `/agy-model clear`"
+            else:
+                current = channel_cfg.get("model") or "(agyのデフォルト)"
+                if channel_cfg.get("effort"):
+                    current += f" (effort={channel_cfg['effort']})"
+                note = "config.yaml の既定のまま"
+            models = _fetch_agy_models()
+            listing = "\n".join(f"- `{mid}`  {label}" for mid, label in models) if models else "(一覧の取得に失敗しました)"
+            respond(
+                text=f"現在のモデル: `{current}`\n({note})\n\n選べるモデル:\n{listing}\n\n"
+                     "切り替え: `/agy-model set <モデルID> [low|medium|high|max]`\n"
+                     "config.yaml の既定に戻す: `/agy-model clear`",
+                response_type="ephemeral",
+            )
+        elif sub == "set":
+            if not rest:
+                respond(text="使い方: `/agy-model set <モデルID> [low|medium|high|max]`", response_type="ephemeral")
+                return
+            model_id = rest[0]
+            effort = rest[1].lower() if len(rest) > 1 else None
+            models = _fetch_agy_models()
+            valid_ids = {mid for mid, _ in models}
+            if models and model_id not in valid_ids:
+                respond(
+                    text=f":x: `{model_id}` は `agy models` に無いモデルIDです。`/agy-model list` で確認してください。",
+                    response_type="ephemeral",
+                )
+                return
+            if effort and effort not in ("low", "medium", "high", "max"):
+                respond(text=":x: effort は low/medium/high/max のいずれかで指定してください。",
+                         response_type="ephemeral")
+                return
+            store.set_channel_settings(channel_id, model_id, effort)
+            respond(
+                text=f":white_check_mark: このチャンネルのモデルを `{model_id}`"
+                     + (f" (effort={effort})" if effort else "")
+                     + " に切り替えました。次のメッセージから反映されます。",
+                response_type="ephemeral",
+            )
+        elif sub == "clear":
+            had = store.clear_channel_settings(channel_id)
+            respond(
+                text=(":leftwards_arrow_with_hook: config.yaml の既定モデルに戻しました。" if had
+                      else "このチャンネルにモデルの切り替えはありませんでした（すでに既定のままです）。"),
+                response_type="ephemeral",
+            )
+        else:
+            respond(
+                text="使い方: `/agy-model [list|set <モデルID> [effort]|clear]`",
+                response_type="ephemeral",
+            )
+
+    @app.command("/agy")
+    def handle_agy_command(ack, respond, command, client):  # noqa: ANN001 - Bolt signature
+        """Transparent passthrough to agy's own slash commands:
+        `/agy usage`, `/agy plan <task>`, `/agy boost <task>` ...
+
+        agy's built-ins (usage/credits/skills/...) are answered ephemerally
+        right here; anything else (skill commands like /plan) is sent to the
+        agent as a normal turn in a fresh thread, exactly as if the same
+        text had been typed after an @mention - so replies, permission
+        buttons and the per-channel model all behave the same."""
+        ack()
+        channel_id = command.get("channel_id")
+        channel_cfg = channel_map.get(channel_id)
+        if not channel_cfg:
+            respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
+            return
+
+        project_id = channel_cfg["project"]
+        raw = (command.get("text") or "").strip().lstrip("/").strip()
+        model, effort = _effective_model_effort(store, channel_id, channel_cfg)
+
+        def _ephemeral_agy(cmd_text: str) -> str:
+            try:
+                res = run_agy(cmd_text, project_id, None, model=model, effort=effort)
+            except Exception:
+                log.exception("agy slash command failed: %r", cmd_text)
+                return ":x: agy の実行に失敗しました。bridge のログを確認してください。"
+            if res.get("status") != "SUCCESS":
+                return f":x: {res.get('error') or res.get('status')}"
+            out = (res.get("response") or "").strip() or "(出力なし)"
+            if len(out) > 3500:
+                out = out[:3500] + "\n... (省略)"
+            return f"```\n{out}\n```"
+
+        if not raw:
+            respond(
+                text="*agy のスラッシュコマンド*\n"
+                     f"{_ephemeral_agy('/help')}\n"
+                     f"スキル:\n{_ephemeral_agy('/skills')}\n"
+                     "使い方: `/agy <コマンド> [引数]`（例: `/agy usage`, `/agy plan 〇〇を整理して`）\n"
+                     "上の組み込みコマンドはここに表示、それ以外は通常の会話として新しいスレッドで実行します。"
+                     "モデル切り替えは `/agy-model`。",
+                response_type="ephemeral",
+            )
+            return
+
+        name, _, args = raw.partition(" ")
+        if name.lower() in _fetch_agy_builtin_commands(project_id):
+            if name.lower() in ("model", "effort") and args.strip():
+                respond(text="モデル/effort の切り替えは `/agy-model set <モデルID> [effort]` を使ってください。",
+                         response_type="ephemeral")
+                return
+            respond(text=f"`/{raw}`\n{_ephemeral_agy('/' + raw)}", response_type="ephemeral")
+            return
+
+        shown = raw if len(raw) <= 200 else raw[:200] + "..."
+        root = client.chat_postMessage(
+            channel=channel_id,
+            text=f"<@{command.get('user_id')}> が `/{shown}` を実行します",
+            **_persona_kwargs(channel_cfg),
+        )
+        thread_key = root["ts"]
+        log.info("slash passthrough text=%r channel=%s thread_key=%s", "/" + raw, channel_id, thread_key)
+        with locks.get((channel_id, thread_key)):
+            _run_and_reply(
+                client, store, permissions, channel_id, thread_key, project_id,
+                None, "/" + raw, _persona_kwargs(channel_cfg),
+                model=model, effort=effort,
+            )
+
+    @app.command("/agy-link")
+    def handle_link_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
+        ack()
+        channel_id = command.get("channel_id")
+        if channel_id not in channel_map:
+            respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
+            return
+        # Slack doesn't allow slash commands inside a thread, so "current"
+        # = this channel's most recently active conversation; an explicit
+        # conversation id (as shown by `resume <id>`) picks any other one.
+        conversation_id = (command.get("text") or "").strip() or store.latest_conversation(channel_id)
+        if not conversation_id:
+            respond(text="このチャンネルにはまだ会話がありません。", response_type="ephemeral")
+            return
+        url = _web_ui_link(conversation_id)
+        if not url:
+            respond(text=_NO_INSTANCE_TEXT, response_type="ephemeral")
+            return
+        respond(text=f"<{url}|Web UI で開く>\n会話ID: `{conversation_id}`", response_type="ephemeral")
+
+    @app.message_shortcut("agy_open_web_ui")
+    def handle_open_web_ui_shortcut(ack, shortcut, client):  # noqa: ANN001 - Bolt signature
+        """Message shortcut ("..." menu on a message in a thread): unlike
+        /agy-link this knows exactly which thread it was invoked on."""
+        ack()
+        channel_id = (shortcut.get("channel") or {}).get("id")
+        user_id = (shortcut.get("user") or {}).get("id")
+        message = shortcut.get("message") or {}
+        thread_key = message.get("thread_ts") or message.get("ts")
+        if channel_id not in channel_map or not thread_key:
+            text = "このチャンネルは agy-slack-bridge の対象外です。"
+        else:
+            conversation_id = store.get(channel_id, thread_key)
+            if not conversation_id:
+                text = "このスレッドにはまだ agy の会話がありません（メンションして会話を始めると作られます）。"
+            else:
+                url = _web_ui_link(conversation_id)
+                text = (f"<{url}|Web UI で開く>\n会話ID: `{conversation_id}`" if url
+                        else _NO_INSTANCE_TEXT)
+        client.chat_postEphemeral(channel=channel_id, user=user_id, thread_ts=thread_key, text=text)
 
     return app
 

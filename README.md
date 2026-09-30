@@ -142,16 +142,27 @@ mapping from Slack threads to `agy` conversation IDs.
      `display_name`/`icon_emoji` per channel in `config.yaml` (see below) to
      make the bot post under a different name/avatar per project instead of
      one fixed bot identity everywhere.
+
+   A channel entry can also set `model`/`effort`, passed straight through as
+   agy's own `--model`/`--effort` flags (`agy models` lists the current
+   options). Some model names already bake in a reasoning tier via a
+   `-high`/`-low` suffix and conflict with `effort` if both are set. Pointing
+   a channel at agy's built-in `default-cli-project` (no workspace attached)
+   plus a high-reasoning model like `gemini-3.1-pro-high` turns it into a
+   plain thinking-mode chat channel with no file/tool access tied to a repo -
+   e.g. a general Gemini Q&A channel alongside the accountant/secretary ones.
 4. **Event Subscriptions**: enable it, and subscribe to bot events:
    - `message.channels` (public channels) and/or `message.groups` (private
      channels), matching the scopes above.
 5. **Interactivity & Shortcuts**: enable it. With Socket Mode already on,
    button clicks are delivered over the same websocket — no Request URL
    needed. This is required for the permission-grant/revoke buttons.
-6. **Slash Commands** (optional, only for `/agy-permissions` — see "Managing
-   permissions from Slack" below): create a command named `/agy-permissions`
-   (any description/usage hint you like). Same as above, no Request URL
-   needed with Socket Mode on. Add the `commands` Bot Token Scope.
+6. **Slash Commands** (optional): create commands named `/agy-permissions`
+   (see "Managing permissions from Slack" below), `/agy-model` (see
+   "Switching models from Slack" below), `/agy` and/or `/agy-link` (see
+   "Passing agy slash commands through" below) — any description/usage hint
+   you like for each. Same as above, no Request URL needed with Socket Mode on.
+   Add the `commands` Bot Token Scope (shared by all of them, add it once).
    - `files:write` — optional, only needed for the auto-upload-generated-
      files feature below.
 7. Install the app to your workspace. Save the Bot User OAuth Token as
@@ -257,6 +268,61 @@ Two ways to act on `permissions.allow` without leaving Slack:
 Both paths write straight to `~/.gemini/antigravity-cli/settings.json` (or
 wherever `AGY_SETTINGS_PATH` points, see below), preserving everything else
 already in the file. Every add/remove is logged.
+
+### Switching models from Slack
+
+A channel's `model`/`effort` in `config.yaml` (see above) is just the
+default. `/agy-model` (only in a bridged channel) overrides it per channel,
+at runtime, without editing `config.yaml` or restarting the bridge:
+
+- `/agy-model` or `/agy-model list` — shows the channel's current
+  model/effort (override or config default) and the full list of choices
+  (from `agy models`, cached for 5 minutes).
+- `/agy-model set <model id> [low|medium|high|max]` — switches that channel
+  to it from the next message onward. Rejected if the model id isn't one
+  `agy models` lists. Some model ids already bake in a reasoning tier via a
+  `-high`/`-low`/etc. suffix and conflict with `effort` if both are set —
+  leave `effort` off for those.
+- `/agy-model clear` — drops the override, back to `config.yaml`'s default.
+
+The override is stored per channel in the bridge's own state db (survives a
+restart) and never touches `config.yaml` itself.
+
+### Passing agy slash commands through
+
+`/agy <command> [args]` (only in a bridged channel) hands any of agy's own
+slash commands straight to `agy`, so each one doesn't need a dedicated Slack
+command. `/agy` alone lists what's available.
+
+- agy's built-ins (`/agy usage`, `credits`, `skills`, `permissions`,
+  `config`, `changelog`, ...; the set is read from agy's own `/help`) are
+  answered instantly, only visible to you.
+- Anything else — skill commands such as `/agy plan <task>` or
+  `/agy boost <task>` — runs as a normal agent turn in a new thread, as if
+  the same text were typed after an @mention (same channel model, permission
+  buttons, thread continuation).
+- Commands agy only offers interactively (e.g. `/context`) come back with
+  agy's own "not available in print mode" error. Changing the model isn't
+  passed through - use `/agy-model`.
+
+When one of these turns out to be used a lot, give it its own Slack command
+(like `/agy-model`) instead.
+
+`/agy-link [conversation id]` replies (only to you) with a link that opens the
+channel's most recently active conversation in the antigravity.google.com web
+UI (Slack can't send slash commands from inside a thread, so "current" means
+"latest in this channel"; pass a conversation id to pick another). It needs
+the `agy remote-control` daemon registered and signed in with the same Google
+account. The URL's `<instance>` is the CLI's installation uuid + `-v2` (read
+from `~/.gemini/antigravity-cli/antigravity_state.pbtxt`; NOT the friendly name
+`agy remote-control status` prints) - set `AGY_REMOTE_INSTANCE` to override.
+
+To get the link for one specific thread, register a **message shortcut**
+(Slack app -> Interactivity & Shortcuts -> Create New Shortcut -> On messages)
+with callback ID `agy_open_web_ui`. It then shows up in the "..." menu of any
+message in a bridged channel's thread and replies (only to you, in that
+thread) with that thread's conversation link. No Request URL needed with
+Socket Mode, and it rides on the same Interactivity setting as the buttons.
 
 **Temporary grant lifetime**: a one-time grant used to be removed the
 instant its own retry finished, which turned out to be actively wrong for a
