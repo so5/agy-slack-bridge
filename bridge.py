@@ -19,6 +19,7 @@ and systemd/agy-slack-bridge.service for how this is meant to run.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import logging
@@ -136,11 +137,40 @@ def _config_drift_blocks(rel_path: str, abs_path: str, text: str) -> list[dict]:
     return blocks
 
 
+CONFIG_PREVIEW_MAX_CHARS = 2500  # leaves room for the notice line so the
+# whole message (notice + fence + preview) stays under _text_to_section_blocks'
+# own 2900-char chunk size - otherwise a long preview could get split mid-fence.
+
+
+def _read_text_preview(path: Path, max_chars: int = CONFIG_PREVIEW_MAX_CHARS) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"(読み取り失敗: {exc})"
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n... (省略、全{len(text)}文字)"
+    return text
+
+
+def _config_diff_preview(old_text: str, new_text: str, max_chars: int = CONFIG_PREVIEW_MAX_CHARS) -> str:
+    diff = "\n".join(difflib.unified_diff(
+        old_text.splitlines(), new_text.splitlines(),
+        fromfile="確定済み", tofile="現在", lineterm="",
+    ))
+    if not diff:
+        return "(差分なし - 改行コード等、見た目に出ない違いの可能性があります)"
+    if len(diff) > max_chars:
+        diff = diff[:max_chars] + f"\n... (省略、全{len(diff)}文字)"
+    return diff
+
+
 def _check_config_drift(store: "ThreadStore", client, channel_id: str, channel_cfg: dict) -> None:
     """Hashes each of this channel's `watched_config_files` (relative to its
     agy project's workspace root) against the last sealed baseline, and
-    posts a one-time (per hash) Slack message with seal/restore buttons if
-    it's unsealed or has drifted. A clean match is silent."""
+    posts a one-time (per hash) Slack message - with the actual content (or
+    a diff) attached, not just a bare notice, so sealing isn't a blind click
+    - with seal/restore buttons if it's unsealed or has drifted. A clean
+    match is silent."""
     rel_paths = channel_cfg.get("watched_config_files") or []
     if not rel_paths:
         return
@@ -161,11 +191,17 @@ def _check_config_drift(store: "ThreadStore", client, channel_id: str, channel_c
             continue  # already notified about this exact state; don't spam
         try:
             if baseline is None:
-                text = f":new: `{rel_path}` はまだ内容が確定(seal)されていません。"
+                notice = f":new: `{rel_path}` はまだ内容が確定(seal)されていません。内容:"
+                preview = _read_text_preview(abs_path)
+                text = f"{notice}\n```\n{preview}\n```"
                 blocks = _config_seal_blocks(rel_path, abs_str, text)
             else:
-                text = (f":warning: `{rel_path}` の内容が、最後に確定した内容と一致しません"
-                        f"（{baseline['sealed_at']} に {baseline['sealed_by'] or '?'} が確定）。")
+                notice = (f":warning: `{rel_path}` の内容が、最後に確定した内容と一致しません"
+                          f"（{baseline['sealed_at']} に {baseline['sealed_by'] or '?'} が確定）。差分:")
+                old_text = _read_text_preview(Path(baseline["backup_path"]))
+                new_text = _read_text_preview(abs_path)
+                diff = _config_diff_preview(old_text, new_text)
+                text = f"{notice}\n```\n{diff}\n```"
                 blocks = _config_drift_blocks(rel_path, abs_str, text)
             client.chat_postMessage(channel=channel_id, text=text, blocks=blocks, **persona)
             store.mark_config_notified(abs_str, cur_hash)
