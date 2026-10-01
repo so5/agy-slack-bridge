@@ -1038,18 +1038,64 @@ def _project_root(project_id: str) -> Optional[Path]:
 
 PERMANENT_COMMANDS_REL = Path(".agents") / ".permanent-commands.json"
 
+_SCRIPT_INTERPRETER_BASENAMES = {
+    "python", "python3", "python3.10", "python3.11", "python3.12", "python3.13",
+    "python3.14", "bash", "sh", "zsh", "node", "ruby", "perl",
+}
+_SCRIPT_EXTS = (".py", ".sh", ".js", ".mjs", ".rb", ".pl")
+
+
+def _resolve_permanent_script_path(entry: str, root: Path) -> Optional[str]:
+    """Extracts the script a `command(...)` permission entry would run and
+    resolves it to an absolute, normalized path under `root` - mirrors
+    script_integrity.py's own find_script_targets so the two stay in
+    agreement. Matching between the hook and this manifest is by resolved
+    script path, not raw command text (text would miss the same script
+    invoked a different way - absolute path, `./`-relative, ...). Returns
+    None for anything that isn't "run this script" (e.g. a bare command
+    with no script argument, or a non-command() entry kind like
+    read_url(...)) - there's no script path to track for those."""
+    if not (entry.startswith("command(") and entry.endswith(")")):
+        return None
+    cmdline = entry[len("command("):-1]
+    try:
+        tokens = shlex.split(cmdline)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    head = tokens[0]
+    head_base = os.path.basename(head)
+    candidate = None
+    if head_base in _SCRIPT_INTERPRETER_BASENAMES:
+        for tok in tokens[1:]:
+            if tok.startswith("-"):
+                continue
+            candidate = tok
+            break
+    elif head.endswith(_SCRIPT_EXTS):
+        candidate = head
+    if not candidate or not candidate.endswith(_SCRIPT_EXTS):
+        return None
+    return os.path.normpath(candidate if os.path.isabs(candidate) else os.path.join(str(root), candidate))
+
 
 def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
     """Keeps a project's `.agents/.permanent-commands.json` in sync with
     its *permanent* permissions.allow entries (never its one-time/temp
     grants) - the project-local manifest script_integrity.py (the
     PreToolUse hook) reads to decide whether a run_command target needs
-    git-commit enforcement or just the lighter hash-ledger check. Called
-    from /agy-permissions add/remove and from setup_agy_project.py's own
-    direct settings.json edits (gdrive grants), so either path keeps this
-    manifest accurate regardless of how the permanent grant was made."""
+    git-commit enforcement or just the lighter hash-ledger check. Stores
+    resolved script paths (see _resolve_permanent_script_path), not the
+    raw entry text. Called from /agy-permissions add/remove and from
+    setup_agy_project.py's own direct settings.json edits (gdrive
+    grants), so either path keeps this manifest accurate regardless of
+    how the permanent grant was made."""
     root = _project_root(project_id)
     if not root:
+        return
+    script_path = _resolve_permanent_script_path(entry, root)
+    if script_path is None:
         return
     path = root / PERMANENT_COMMANDS_REL
     try:
@@ -1057,9 +1103,9 @@ def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
     except (json.JSONDecodeError, OSError):
         entries = set()
     if present:
-        entries.add(entry)
+        entries.add(script_path)
     else:
-        entries.discard(entry)
+        entries.discard(script_path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(sorted(entries), indent=1, ensure_ascii=False) + "\n", encoding="utf-8")

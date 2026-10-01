@@ -1,2 +1,6 @@
 slack-bolt>=1.20,<2
 PyYAML>=6.0,<7
+
+# Optional: only needed to render ```mermaid blocks to PNG (see "Mermaid
+# diagrams" in README). Without it, those blocks are just left as text.
+# playwright>=1.55,<2
