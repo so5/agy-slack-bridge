@@ -19,6 +19,7 @@ and systemd/agy-slack-bridge.service for how this is meant to run.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -68,6 +69,190 @@ AGY_BRAIN_DIR = Path("~/.gemini/antigravity-cli/brain").expanduser()
 # into a generic "fetch me any file on the box" primitive.
 UPLOADABLE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf", ".csv", ".xlsx", ".md", ".txt"}
 UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+
+# --- Locally-operated config drift detection -------------------------------
+# "Category B" files (local-tools.md's content, a project's own Drive/API
+# access setup, ...) are deliberately NOT distributed from a shared
+# template - they're specific to whoever runs this bridge and what they've
+# installed/authorized. There's nothing upstream to diff against, so the
+# trusted baseline is whatever a human last explicitly confirmed via the
+# config_seal/config_restore Slack buttons (see _check_config_drift).
+AGY_CONFIG_BACKUP_DIR = Path(
+    os.environ.get("AGY_CONFIG_BACKUP_DIR", str(Path.home() / ".config" / "agy-slack-bridge" / "config-backups"))
+)
+AGY_CONFIG_DRIFT_CHECK_INTERVAL_SEC = int(os.environ.get("AGY_CONFIG_DRIFT_CHECK_INTERVAL_SEC", "1800"))
+
+
+def _file_hash(path: Path) -> Optional[str]:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _config_backup_path(abs_path: str) -> Path:
+    name = hashlib.sha256(abs_path.encode("utf-8")).hexdigest()[:20]
+    return AGY_CONFIG_BACKUP_DIR / f"{name}.bak"
+
+
+def _config_seal_blocks(rel_path: str, abs_path: str, text: str) -> list[dict]:
+    value = json.dumps({"path": abs_path, "rel_path": rel_path})
+    blocks = _text_to_section_blocks(text)
+    blocks.append({
+        "type": "actions",
+        "elements": [{
+            "type": "button",
+            "text": {"type": "plain_text", "text": "この内容を正として確定"},
+            "style": "primary",
+            "action_id": "config_seal",
+            "value": value,
+        }],
+    })
+    return blocks
+
+
+def _config_drift_blocks(rel_path: str, abs_path: str, text: str) -> list[dict]:
+    value = json.dumps({"path": abs_path, "rel_path": rel_path})
+    blocks = _text_to_section_blocks(text)
+    blocks.append({
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "今の内容を新しく確定"},
+                "style": "primary",
+                "action_id": "config_seal",
+                "value": value,
+            },
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "確定済みの内容に戻す"},
+                "style": "danger",
+                "action_id": "config_restore",
+                "value": value,
+            },
+        ],
+    })
+    return blocks
+
+
+def _check_config_drift(store: "ThreadStore", client, channel_id: str, channel_cfg: dict) -> None:
+    """Hashes each of this channel's `watched_config_files` (relative to its
+    agy project's workspace root) against the last sealed baseline, and
+    posts a one-time (per hash) Slack message with seal/restore buttons if
+    it's unsealed or has drifted. A clean match is silent."""
+    rel_paths = channel_cfg.get("watched_config_files") or []
+    if not rel_paths:
+        return
+    proj_root = _project_root(channel_cfg["project"])
+    if not proj_root:
+        return
+    persona = _persona_kwargs(channel_cfg)
+    for rel_path in rel_paths:
+        abs_path = proj_root / rel_path
+        cur_hash = _file_hash(abs_path)
+        if cur_hash is None:
+            continue  # doesn't exist (yet) - nothing to protect
+        abs_str = str(abs_path)
+        baseline = store.get_config_baseline(abs_str)
+        if baseline and baseline["content_hash"] == cur_hash:
+            continue  # matches the sealed baseline - clean
+        if store.get_last_notified_hash(abs_str) == cur_hash:
+            continue  # already notified about this exact state; don't spam
+        try:
+            if baseline is None:
+                text = f":new: `{rel_path}` はまだ内容が確定(seal)されていません。"
+                blocks = _config_seal_blocks(rel_path, abs_str, text)
+            else:
+                text = (f":warning: `{rel_path}` の内容が、最後に確定した内容と一致しません"
+                        f"（{baseline['sealed_at']} に {baseline['sealed_by'] or '?'} が確定）。")
+                blocks = _config_drift_blocks(rel_path, abs_str, text)
+            client.chat_postMessage(channel=channel_id, text=text, blocks=blocks, **persona)
+            store.mark_config_notified(abs_str, cur_hash)
+        except Exception:
+            log.exception("failed to post config-drift notice for %s", abs_str)
+
+
+# --- Mermaid diagram rendering --------------------------------------------
+# agy is fond of putting diagrams in a ```mermaid fenced block, which Slack
+# can only ever show as literal text - nobody reading Slack has a Mermaid
+# renderer. Render each one to a PNG with a headless Chromium (already on
+# this box for the accountant project's browser automation) and upload the
+# image instead; requires the optional `playwright` package (see README).
+_MERMAID_FENCE_RE = re.compile(r"```mermaid[ \t]*\r?\n(.*?)```", re.IGNORECASE | re.DOTALL)
+MERMAID_JS_URL = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+MERMAID_JS_CACHE = Path(
+    os.environ.get("AGY_BRIDGE_CACHE_DIR", str(Path.home() / ".cache" / "agy-slack-bridge"))
+) / "mermaid.min.js"
+MERMAID_RENDER_TIMEOUT_SEC = 20
+
+
+def _get_mermaid_js() -> str:
+    """Fetched once and cached on disk - every later render reuses the
+    cached copy instead of hitting the CDN again."""
+    if MERMAID_JS_CACHE.exists():
+        return MERMAID_JS_CACHE.read_text(encoding="utf-8")
+    import urllib.request
+    data = urllib.request.urlopen(MERMAID_JS_URL, timeout=30).read().decode("utf-8")
+    MERMAID_JS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    MERMAID_JS_CACHE.write_text(data, encoding="utf-8")
+    return data
+
+
+def _render_mermaid_png(diagram: str, out_path: Path) -> None:
+    """Renders one Mermaid diagram to a PNG via `mermaid.render()` (returns
+    an SVG string - never parses `diagram` as HTML, so labels containing
+    `<`/`>`/`&` or an intentional `<br/>` all come through correctly) run
+    inside a headless Chromium, then screenshots just that SVG element."""
+    from playwright.sync_api import sync_playwright  # optional dependency
+    js = _get_mermaid_js()
+    html = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        "<style>body{margin:0;background:#fff;}</style>"
+        f"<script>{js}</script></head><body><div id=\"d\"></div></body></html>"
+    )
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        try:
+            page = browser.new_page(viewport={"width": 1600, "height": 1200}, device_scale_factor=2)
+            page.set_content(html)
+            page.evaluate(
+                "async (src) => { mermaid.initialize({startOnLoad:false}); "
+                "const {svg} = await mermaid.render('g1', src); "
+                "document.getElementById('d').innerHTML = svg; }",
+                diagram,
+            )
+            svg = page.query_selector("#d svg")
+            if svg is None:
+                raise RuntimeError("mermaid.render() produced no <svg>")
+            svg.screenshot(path=str(out_path))
+        finally:
+            browser.close()
+
+
+def _extract_and_render_mermaid(response_text: str, out_dir: Path) -> tuple[str, list[Path]]:
+    """Pulls every ```mermaid block out of agy's response, renders each to a
+    PNG under `out_dir`, and returns (text with those blocks replaced by a
+    short marker, the list of rendered PNGs) - a block that fails to render
+    (bad syntax, no playwright installed, ...) is left as plain text instead
+    of silently vanishing."""
+    images: list[Path] = []
+
+    def repl(m: "re.Match") -> str:
+        diagram = m.group(1)
+        idx = len(images) + 1
+        out_path = out_dir / f"mermaid_{idx}.png"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            _render_mermaid_png(diagram, out_path)
+        except Exception:
+            log.warning("mermaid render failed, leaving as text", exc_info=True)
+            return m.group(0)
+        images.append(out_path)
+        return f"_(図を画像として添付しました: {out_path.name})_"
+
+    new_text = _MERMAID_FENCE_RE.sub(repl, response_text or "")
+    return new_text, images
 
 
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
@@ -143,6 +328,26 @@ def _convert_markdown_tables(text: str) -> str:
     return "\n".join(out)
 
 
+_FENCE_RE = re.compile(r"```[ \t]*([\w.+-]*)[ \t]*\r?\n(.*?)```", re.DOTALL)
+# A fence tagged with one of these isn't really code - it's agy using a
+# fenced block just to set off a block of prose (often the whole answer).
+# GitHub hides the tag; Slack's mrkdwn code blocks don't support a language
+# tag at all, so it used to show up as a literal first line inside the
+# block (the exact "markdown"/"text" residue this fixes). Unwrap these
+# entirely instead, so headers/bold/tables inside render normally rather
+# than sitting frozen in monospace.
+_PROSE_FENCE_LANGS = {"", "markdown", "md", "text", "txt", "plain", "plaintext"}
+
+
+def _normalize_fences(text: str) -> str:
+    def repl(m: "re.Match") -> str:
+        lang, body = m.group(1).strip().lower(), m.group(2)
+        if lang in _PROSE_FENCE_LANGS:
+            return body
+        return f"```\n{body}```"  # real code - keep the block, drop the tag
+    return _FENCE_RE.sub(repl, text)
+
+
 def markdown_to_mrkdwn(text: str) -> str:
     """Best-effort conversion of the GitHub-flavored Markdown agy returns
     into Slack's "mrkdwn" dialect, so bold/links/tables actually render
@@ -150,6 +355,7 @@ def markdown_to_mrkdwn(text: str) -> str:
     if not text:
         return text
 
+    text = _normalize_fences(text)
     text = _convert_markdown_tables(text)
 
     # Protect code spans/blocks so the substitutions below don't mangle
@@ -276,6 +482,25 @@ class ThreadStore:
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )"""
         )
+        # "Category B" locally-operated config files (local-tools.md, Drive
+        # access config, ...) have no published upstream to re-fetch and
+        # diff against, unlike the GitHub-distributed safety rules/hooks -
+        # so the trusted baseline here is whatever a human last explicitly
+        # "sealed" via the config_seal/config_restore buttons (see
+        # _check_config_drift). last_notified_hash exists only so an
+        # unresolved drift doesn't re-post the same Slack message every
+        # sweep interval - it's set whenever we post, and compared against
+        # on the next sweep so only an actual *change* re-notifies.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS config_baselines (
+                path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                backup_path TEXT,
+                sealed_at TEXT,
+                sealed_by TEXT,
+                last_notified_hash TEXT
+            )"""
+        )
         self._conn.commit()
 
     def get(self, channel_id: str, thread_ts: str) -> Optional[str]:
@@ -310,6 +535,53 @@ class ThreadStore:
                 (channel_id,),
             ).fetchone()
             return row[0] if row else None
+
+    def get_config_baseline(self, path: str) -> Optional[dict]:
+        """None only if this path has never been sealed - it may still have
+        a row (just to remember `last_notified_hash` pre-seal; see
+        mark_config_notified) with content_hash NULL, which doesn't count
+        as a real baseline."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT content_hash, backup_path, sealed_at, sealed_by, last_notified_hash "
+                "FROM config_baselines WHERE path=? AND content_hash IS NOT NULL",
+                (path,),
+            ).fetchone()
+        if not row:
+            return None
+        return {"content_hash": row[0], "backup_path": row[1], "sealed_at": row[2],
+                "sealed_by": row[3], "last_notified_hash": row[4]}
+
+    def seal_config(self, path: str, content_hash: str, backup_path: str, sealed_by: Optional[str]) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO config_baselines (path, content_hash, backup_path, sealed_at, sealed_by, last_notified_hash)
+                   VALUES (?, ?, ?, datetime('now'), ?, ?)
+                   ON CONFLICT(path) DO UPDATE SET
+                     content_hash=excluded.content_hash, backup_path=excluded.backup_path,
+                     sealed_at=excluded.sealed_at, sealed_by=excluded.sealed_by,
+                     last_notified_hash=excluded.last_notified_hash""",
+                (path, content_hash, backup_path, sealed_by, content_hash),
+            )
+            self._conn.commit()
+
+    def get_last_notified_hash(self, path: str) -> Optional[str]:
+        """Works pre-seal too (unlike get_config_baseline), so an unsealed
+        file's "still not sealed" notice doesn't repeat every sweep."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT last_notified_hash FROM config_baselines WHERE path=?", (path,),
+            ).fetchone()
+            return row[0] if row else None
+
+    def mark_config_notified(self, path: str, content_hash: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO config_baselines (path, last_notified_hash) VALUES (?, ?)
+                   ON CONFLICT(path) DO UPDATE SET last_notified_hash=excluded.last_notified_hash""",
+                (path, content_hash),
+            )
+            self._conn.commit()
 
     def log_permission(self, channel_id: Optional[str], conversation_id: Optional[str],
                        event: str, entries: list, user: Optional[str] = None) -> None:
@@ -684,7 +956,11 @@ def _project_root(project_id: str) -> Optional[Path]:
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
     for res in (data.get("projectResources") or {}).get("resources", []):
-        uri = (res.get("gitFolder") or {}).get("folderUri")
+        # A project can be registered either as a plain folder or a git
+        # checkout - confirmed by inspection: this bridge's own two
+        # projects use different forms (one bare `folderUri`, the other
+        # wrapped in `gitFolder`), so both need checking.
+        uri = res.get("folderUri") or (res.get("gitFolder") or {}).get("folderUri")
         if uri and uri.startswith("file://"):
             return Path(uri[len("file://"):])
     return None
@@ -1226,12 +1502,20 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
 
     conversation_id = result["conversation_id"]
     store.put(channel_id, thread_key, conversation_id, project_id)
+    # Pull out ```mermaid blocks and render them to PNGs *before* markdown
+    # conversion - the placeholder text _extract_and_render_mermaid leaves
+    # behind is plain prose, not something markdown_to_mrkdwn needs to
+    # touch, and the images themselves are uploaded below, after the text
+    # post, same as any other generated-file upload.
+    raw_response, mermaid_images = _extract_and_render_mermaid(
+        result.get("response"), AGY_BRAIN_DIR / conversation_id / "scratch" / "mermaid"
+    )
     # Built up as separate parts and joined at the end, so "(empty
     # response)" only ever shows up when there's truly nothing else to
     # say - not as noise sitting above a warning/error section that
     # already explains why the response was empty.
     parts: list[str] = []
-    response_text = markdown_to_mrkdwn(result.get("response"))
+    response_text = markdown_to_mrkdwn(raw_response)
     if response_text:
         parts.append(response_text)
 
@@ -1441,6 +1725,16 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         except Exception:
             log.exception("failed to upload generated file %s", path)
 
+    for path in mermaid_images:
+        try:
+            client.files_upload_v2(
+                channel=channel_id, thread_ts=thread_key,
+                file=str(path), filename=path.name, title="diagram",
+            )
+            log.info("uploaded rendered mermaid diagram to slack: %s", path)
+        except Exception:
+            log.exception("failed to upload mermaid diagram %s", path)
+
     try:
         warning = _low_quota_warning(model, project_id)
         if warning:
@@ -1473,6 +1767,21 @@ def build_app() -> App:
     self_user_id = app.client.auth_test()["user_id"]
     mention_re = re.compile(rf"<@{re.escape(self_user_id)}>\s*")
     log.info("bridge bot user id=%s (mention required to start a new conversation)", self_user_id)
+
+    def _check_all_config_drift() -> None:
+        for channel_id, channel_cfg in channel_map.items():
+            try:
+                _check_config_drift(store, app.client, channel_id, channel_cfg)
+            except Exception:
+                log.exception("config-drift check failed for channel=%s", channel_id)
+
+    def _config_drift_loop() -> None:
+        _check_all_config_drift()  # once at startup, not just after the first interval
+        while True:
+            time.sleep(AGY_CONFIG_DRIFT_CHECK_INTERVAL_SEC)
+            _check_all_config_drift()
+
+    threading.Thread(target=_config_drift_loop, daemon=True).start()
 
     @app.event("message")
     def handle_message(event, client, logger):  # noqa: ANN001 - Bolt signature
@@ -1694,6 +2003,73 @@ def build_app() -> App:
     def handle_deny_grant(ack, body, client):  # noqa: ANN001 - Bolt signature
         ack()
         _deny_and_retry(body, client)
+
+    @app.action("config_seal")
+    def handle_config_seal(ack, body, client):  # noqa: ANN001 - Bolt signature
+        """Confirms the file's *current* on-disk content as the trusted
+        baseline - the same action whether this is the first-ever seal or
+        accepting a deliberate edit after a drift notice."""
+        ack()
+        action = body["actions"][0]
+        try:
+            payload = json.loads(action["value"])
+        except (KeyError, json.JSONDecodeError):
+            log.error("bad config_seal button value: %r", action.get("value"))
+            return
+        abs_path, rel_path = payload["path"], payload["rel_path"]
+        clicker = (body.get("user") or {}).get("username") or (body.get("user") or {}).get("id") or "?"
+        message, channel_id, ts = body.get("message") or {}, body["channel"]["id"], (body.get("message") or {}).get("ts")
+        try:
+            content = Path(abs_path).read_bytes()
+        except OSError as exc:
+            client.chat_update(channel=channel_id, ts=ts, text=f":x: 読み取りに失敗しました: {exc}", blocks=[])
+            return
+        content_hash = hashlib.sha256(content).hexdigest()
+        backup_path = _config_backup_path(abs_path)
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path.write_bytes(content)
+        store.seal_config(abs_path, content_hash, str(backup_path), clicker)
+        log.info("config sealed: %s by %s", abs_path, clicker)
+        client.chat_update(
+            channel=channel_id, ts=ts,
+            text=f":white_check_mark: `{rel_path}` の現在の内容を正として確定しました（{clicker}）。",
+            blocks=[],
+        )
+
+    @app.action("config_restore")
+    def handle_config_restore(ack, body, client):  # noqa: ANN001 - Bolt signature
+        """Overwrites the live file with the last sealed backup - for when
+        the drift was unwanted rather than a deliberate edit to accept."""
+        ack()
+        action = body["actions"][0]
+        try:
+            payload = json.loads(action["value"])
+        except (KeyError, json.JSONDecodeError):
+            log.error("bad config_restore button value: %r", action.get("value"))
+            return
+        abs_path, rel_path = payload["path"], payload["rel_path"]
+        clicker = (body.get("user") or {}).get("username") or (body.get("user") or {}).get("id") or "?"
+        channel_id, ts = body["channel"]["id"], (body.get("message") or {}).get("ts")
+        baseline = store.get_config_baseline(abs_path)
+        if not baseline:
+            client.chat_update(channel=channel_id, ts=ts,
+                                text=":warning: 確定済みの内容がありません（先に「正として確定」してください）。",
+                                blocks=[])
+            return
+        try:
+            backup_content = Path(baseline["backup_path"]).read_bytes()
+            Path(abs_path).write_bytes(backup_content)
+        except OSError as exc:
+            client.chat_update(channel=channel_id, ts=ts, text=f":x: 復元に失敗しました: {exc}", blocks=[])
+            return
+        store.mark_config_notified(abs_path, baseline["content_hash"])
+        log.info("config restored from backup: %s by %s", abs_path, clicker)
+        client.chat_update(
+            channel=channel_id, ts=ts,
+            text=f":leftwards_arrow_with_hook: `{rel_path}` を確定済みの内容（{baseline['sealed_at']} / "
+                 f"{baseline['sealed_by'] or '?'}）に復元しました（{clicker}）。",
+            blocks=[],
+        )
 
     @app.command("/agy-permissions")
     def handle_permissions_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
