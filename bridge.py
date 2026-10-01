@@ -1036,6 +1036,37 @@ def _project_root(project_id: str) -> Optional[Path]:
     return None
 
 
+PERMANENT_COMMANDS_REL = Path(".agents") / ".permanent-commands.json"
+
+
+def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
+    """Keeps a project's `.agents/.permanent-commands.json` in sync with
+    its *permanent* permissions.allow entries (never its one-time/temp
+    grants) - the project-local manifest script_integrity.py (the
+    PreToolUse hook) reads to decide whether a run_command target needs
+    git-commit enforcement or just the lighter hash-ledger check. Called
+    from /agy-permissions add/remove and from setup_agy_project.py's own
+    direct settings.json edits (gdrive grants), so either path keeps this
+    manifest accurate regardless of how the permanent grant was made."""
+    root = _project_root(project_id)
+    if not root:
+        return
+    path = root / PERMANENT_COMMANDS_REL
+    try:
+        entries = set(json.loads(path.read_text(encoding="utf-8"))) if path.exists() else set()
+    except (json.JSONDecodeError, OSError):
+        entries = set()
+    if present:
+        entries.add(entry)
+    else:
+        entries.discard(entry)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(sorted(entries), indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError:
+        log.exception("failed to update %s", path)
+
+
 def _extract_uploadable_files(response_text: str, project_id: str, conversation_id: str) -> list[Path]:
     """Finds file:// links in agy's response (e.g. "generated this chart:
     file:///.../chart.png") that point at real, safely-scoped local files,
@@ -2168,9 +2199,11 @@ def build_app() -> App:
     @app.command("/agy-permissions")
     def handle_permissions_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
         ack()
-        if command.get("channel_id") not in channel_map:
+        channel_cfg = channel_map.get(command.get("channel_id"))
+        if not channel_cfg:
             respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
             return
+        project_id = channel_cfg["project"]
 
         text = (command.get("text") or "").strip()
         parts = text.split(maxsplit=1)
@@ -2230,6 +2263,7 @@ def build_app() -> App:
                             entry = snapshot[i - 1]
                             if permissions.remove_entry(entry):
                                 removed.append(entry)
+                                _mark_permanent_command(project_id, entry, present=False)
                         else:
                             invalid.append(i)
                     text = (":wastebasket: 削除しました:\n" + "\n".join(f"- `{e}`" for e in removed)
@@ -2246,6 +2280,7 @@ def build_app() -> App:
             entry = arg if _FULL_ENTRY_RE.match(arg) else f"command({arg})"
             if sub == "add":
                 ok = permissions.add_entry(entry)
+                _mark_permanent_command(project_id, entry, present=True)
                 respond(
                     text=(f":white_check_mark: `{entry}` を追加しました。" if ok
                           else f"`{entry}` はすでに登録されています。"),
@@ -2253,6 +2288,7 @@ def build_app() -> App:
                 )
             else:
                 ok = permissions.remove_entry(entry)
+                _mark_permanent_command(project_id, entry, present=False)
                 respond(
                     text=(f":wastebasket: `{entry}` を削除しました。" if ok
                           else f"`{entry}` は登録されていません。"),
