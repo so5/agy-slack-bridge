@@ -17,12 +17,22 @@
 # one or the other, not both, for those. A channel with no real project (see
 # "default-cli-project" below) plus a high-reasoning model makes a plain
 # thinking-mode chat channel with no workspace/file access.
+#
+# watched_config_files is also optional: paths (relative to that agy
+# project's own workspace root) to locally-operated files you want drift-
+# protected - e.g. a local-tools.md describing what's installed on this
+# machine, or a project's own external-API access setup. These have no
+# published upstream to diff against, so the bridge tracks whatever a
+# human last confirmed via Slack buttons (see "Config drift detection" in
+# the README) rather than fetching a canonical copy from anywhere.
 channels:
   C0123ABCD456:
     project: "11111111-1111-1111-1111-111111111111"
     name: "accountant"  # for your own reference only, not read by the bridge
     display_name: "accountant"
     icon_emoji: ":abacus:"
+    watched_config_files:
+      - ".agents/local-tools.md"
   C0678WXYZ789:
     project: "22222222-2222-2222-2222-222222222222"
     name: "secretary"

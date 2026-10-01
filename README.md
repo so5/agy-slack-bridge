@@ -105,6 +105,16 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   not "any absolute path agy happens to mention," to avoid ever turning a
   response into a way to exfiltrate an arbitrary file elsewhere on the box.
   Capped at 20MB and 5 files per reply.
+- A fenced block agy tagged with a non-code language (` ```markdown `,
+  ` ```text `, or no tag at all) isn't really code - Slack's mrkdwn code
+  blocks don't support a language tag anyway, so it used to show up as a
+  literal "markdown"/"text" line at the top of the block. That kind of
+  fence is unwrapped entirely instead, so headers/bold/links/tables inside
+  render normally; a fence tagged with a real language (python, bash, ...)
+  keeps its monospace block, just with the now-useless tag dropped.
+- A ` ```mermaid ` block is rendered to a PNG and uploaded as a file,
+  instead of showing up as a fenced wall of diagram syntax nobody in Slack
+  can read - see "Mermaid diagrams" below.
 - When a reply comes back with a denied `run_command` call (see "Tool
   permissions" below), the message gets two buttons instead of just a text
   warning: **許可して再実行** (grant that exact command for this conversation
@@ -127,6 +137,8 @@ mapping from Slack threads to `agy` conversation IDs.
   the project(s) you want to bridge already created (`--project <id>`).
 - Python 3.10+ with `venv`.
 - A Slack workspace where you can create and install a custom app.
+- Optional: `playwright` + a Chromium install, only for rendering `mermaid`
+  diagrams to an image - see "Mermaid diagrams" below.
 
 ## Slack app setup
 
@@ -435,6 +447,66 @@ exhausted. This can never fire back-to-back with a genuine, actionable
 denial in the same turn: a fresh denial always comes with real
 `_tool_errors`, and that alone routes to the permission_errors/other_errors
 handling above (buttons and all) instead, with no auto-retry involved.
+
+### Mermaid diagrams
+
+A ` ```mermaid ` fenced block in agy's response is rendered to a PNG and
+uploaded to the thread as a file, instead of being posted as raw diagram
+syntax (which Slack has no way to render). This needs the optional
+`playwright` package and a Chromium install:
+
+```
+.venv/bin/pip install playwright
+.venv/bin/python -m playwright install chromium
+```
+
+If a machine already has Playwright's Chromium cached for another project
+(e.g. under `~/.cache/ms-playwright`), installing the same `playwright`
+version here reuses that cache instead of downloading a second copy.
+
+- Renders via `mermaid.render()` (the official JS API, fetched once from a
+  CDN and cached at `~/.cache/agy-slack-bridge/mermaid.min.js` or
+  `$AGY_BRIDGE_CACHE_DIR/mermaid.min.js` - set that env var to change where
+  it's cached) inside a headless Chromium - never by parsing the diagram
+  source as HTML, so a label containing `<`, `>`, `&`, or an intentional
+  `<br/>` all come through correctly instead of breaking the page.
+- Without `playwright` installed, or if a given diagram fails to render
+  (bad syntax, a render timeout, ...), the block is left as plain text
+  instead of silently disappearing - nothing is lost, it just isn't
+  rendered.
+- Rendered PNGs are written under that conversation's own
+  `~/.gemini/antigravity-cli/brain/<id>/scratch/mermaid/` and not cleaned
+  up automatically; they're small, but worth an occasional `find` if
+  diagrams are a frequent part of your usage.
+
+### Config drift detection
+
+Some files an agy project depends on are deliberately **not** published
+anywhere - what's actually installed on this machine, how a project
+authenticates to an external API, and similar locally-operated setup.
+There's no canonical copy to re-fetch and diff against, so instead the
+bridge tracks whatever a human last explicitly confirmed as correct.
+
+Set `watched_config_files` on a channel (paths relative to that agy
+project's own workspace root - see `config.example.yaml`) to turn this on
+for it. A background check (at startup, then every
+`AGY_CONFIG_DRIFT_CHECK_INTERVAL_SEC` seconds, default 1800) hashes each
+watched file and compares it against the last confirmed baseline:
+
+- **Never confirmed yet**: posts to the channel with one button,
+  **この内容を正として確定** - click it to accept the current content as
+  the trusted baseline (hash + a backup copy, both kept by the bridge).
+- **Changed since the last confirmation**: posts a warning with two
+  buttons - the same **この内容を正として確定** (a deliberate edit; accept
+  it as the new baseline) and **確定済みの内容に戻す** (restore the file
+  from the last confirmed backup instead, e.g. if an agent changed it
+  without you asking).
+- **Unchanged**: silent. An unresolved state isn't re-posted every check
+  interval - only a *further* change (a new hash) notifies again.
+
+Backups and baselines live under `AGY_CONFIG_BACKUP_DIR` (default
+`~/.config/agy-slack-bridge/config-backups/`) and the bridge's own state
+db - not in the watched project's own git history.
 
 ## Configuration
 
