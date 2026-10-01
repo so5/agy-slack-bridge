@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -958,6 +959,39 @@ def _is_deny_rule_error(err: dict) -> bool:
     return "deny rule" in (err.get("message") or "").lower()
 
 
+def _stuck_denial_reason(err: dict, permissions: "PermissionsFile") -> Optional[str]:
+    """For a run_command denial that *looks* like an ordinary permission
+    gap (passes _is_permission_error) but almost certainly isn't - clicking
+    "grant and retry" can't fix either case, so it shouldn't get a button:
+
+    - The command doesn't even parse as a shell command (e.g. an unclosed
+      quote). Confirmed by testing: agy reports this with the exact same
+      "auto-denied, needs permission" wording as a genuine denial - it
+      can't tell "malformed" from "not yet granted" apart either. Almost
+      always means the model's own output got cut off mid-string while
+      writing a long argument (e.g. a long commit message); re-running the
+      same (truncated) text verbatim can never succeed.
+    - The exact command is already in permissions.allow. Whatever's wrong,
+      it isn't a missing grant - re-granting what's already granted does
+      nothing. (Confirmed live: a previously-granted, unmodified command
+      kept failing identically across multiple grant/retry cycles.)
+    """
+    if err.get("tool_name") != "run_command":
+        return None
+    cmd = (err.get("parameters") or {}).get("CommandLine")
+    if not cmd:
+        return None
+    try:
+        list(shlex.shlex(cmd, posix=True, punctuation_chars=True))
+    except ValueError:
+        return ("コマンドの構文が壊れています（例: 引用符が閉じていない）。"
+                "モデルの出力が途中で切れた可能性が高く、同じ内容を再試行しても直りません。")
+    grantable = _grantable_entry(err)
+    if grantable and grantable["entry"] in permissions.list_entries():
+        return "このコマンドはすでに許可リストに入っています。権限不足ではなく、別の理由で失敗しています。"
+    return None
+
+
 def _grantable_entry(err: dict) -> Optional[dict]:
     """Figures out the literal permissions.allow entry that would have let
     one run_agy() tool error through, plus a short human-readable
@@ -1587,10 +1621,23 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
             out.append(e)
         return out
 
-    permission_errors = _dedupe([e for e in tool_errors if _is_permission_error(e)])
+    permission_candidates = _dedupe([e for e in tool_errors if _is_permission_error(e)])
     blocked_errors = _dedupe([e for e in tool_errors if _is_deny_rule_error(e)])
     other_errors = _dedupe([e for e in tool_errors
                              if not _is_permission_error(e) and not _is_deny_rule_error(e)])
+
+    # Split off denials that only *look* like an ordinary permission gap -
+    # a button offering to "grant and retry" would be actively misleading
+    # for these, since granting (again) can't fix either cause (see
+    # _stuck_denial_reason).
+    stuck_errors: list[tuple[dict, str]] = []
+    permission_errors: list[dict] = []
+    for e in permission_candidates:
+        reason = _stuck_denial_reason(e, permissions)
+        if reason:
+            stuck_errors.append((e, reason))
+        else:
+            permission_errors.append(e)
 
     # other_errors (no buttons) is deliberately placed *before*
     # permission_errors (which gets buttons) in the text, not after -
@@ -1618,6 +1665,17 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         )
         store.log_permission(channel_id, conversation_id, "blocked",
                               [_describe_tool_error(e) for e in blocked_errors])
+    if stuck_errors:
+        log.warning("agy denials that aren't really a permission gap: %r", stuck_errors)
+        lines = "\n".join(f"- {_describe_tool_error(e)}\n  → {reason}" for e, reason in stuck_errors)
+        parts.append(
+            ":grey_question: 権限不足のように見えますが、許可しても直らないと判断したため、"
+            "ボタンは出していません:\n"
+            f"{lines}\n"
+            "内容を確認し、別の指示を出してください。"
+        )
+        store.log_permission(channel_id, conversation_id, "stuck",
+                              [_describe_tool_error(e) for e, _ in stuck_errors])
     buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
