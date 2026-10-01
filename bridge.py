@@ -1272,7 +1272,8 @@ def _fetch_agy_builtin_commands(project_id: str) -> frozenset:
 
 
 def run_agy(text: str, project_id: str, conversation_id: Optional[str],
-            model: Optional[str] = None, effort: Optional[str] = None) -> dict:
+            model: Optional[str] = None, effort: Optional[str] = None,
+            permissions: Optional["PermissionsFile"] = None) -> dict:
     # --output-format json only gives denied_actions as a bare
     # {"action": "command", "display_name": "RunCommand"} - not what was
     # actually denied. stream-json emits a step_update per tool call, so a
@@ -1343,20 +1344,37 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     # command was "auto-denied". That silent form used to leave us with
     # neither a button nor even the command. It's recoverable from the
     # step's own parameters, so report it like the loud form.
+    #
+    # But "no output" is structurally ambiguous: a command that's silent on
+    # *success* (git add, git status -s/git diff with nothing to report,
+    # rm -f, ...) looks identical to one that never ran because it was
+    # denied - both simply lack an "output" key. Confirmed live: granting
+    # an already-silent command and retrying kept reporting it as denied
+    # again, forever, even though (being silent on success) there's no way
+    # to tell from this step alone that it didn't just quietly succeed. If
+    # the command is already in permissions.allow, a fresh denial of the
+    # exact same text is far less likely than it simply having run and said
+    # nothing - so skip the inference for those and let them count as the
+    # progress they almost certainly are, instead of looping a grant that
+    # can't fix a command that was never actually the problem.
+    already_allowed = set(permissions.list_entries()) if permissions else set()
     if "auto-denied" in proc.stderr:
         for idx, step in last_tool_step.items():
             info = step.get("tool_info") or {}
             cmd = (info.get("parameters") or {}).get("CommandLine")
-            if (step.get("tool_name") == "run_command" and step.get("state") == "DONE"
+            if not (step.get("tool_name") == "run_command" and step.get("state") == "DONE"
                     and "output" not in info and cmd):
-                tool_errors.append({
-                    "tool_name": "run_command",
-                    "parameters": info.get("parameters"),
-                    "message": f'permission check failed for unsandboxed "{cmd}": '
-                               f"user denied permission to run command:\n{cmd}\n"
-                               "(inferred: agy ended the step DONE with no output, and auto-denied it)",
-                })
-                tool_steps.discard(idx)  # a denied command is not progress
+                continue
+            if f"command({cmd})" in already_allowed:
+                continue  # almost certainly a silent success, not a denial
+            tool_errors.append({
+                "tool_name": "run_command",
+                "parameters": info.get("parameters"),
+                "message": f'permission check failed for unsandboxed "{cmd}": '
+                           f"user denied permission to run command:\n{cmd}\n"
+                           "(inferred: agy ended the step DONE with no output, and auto-denied it)",
+            })
+            tool_steps.discard(idx)  # a denied command is not progress
 
     result["_tool_errors"] = tool_errors
     result["_tool_steps"] = len(tool_steps)
@@ -1617,7 +1635,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         result = _run_with_status(
             client, channel_id, thread_key, status_text, persona_kwargs,
             run_agy, text, project_id, conversation_id,
-            model=model, effort=effort,
+            model=model, effort=effort, permissions=permissions,
         )
     except Exception as exc:
         log.exception("agy invocation failed")
@@ -1676,6 +1694,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         # conversations: clear_temp_grants only returns entries no other
         # conversation still needs.
         for entry in store.clear_temp_grants(conversation_id):
+            log.info("auto-releasing temp grant (clean turn, conversation=%s): %r",
+                      conversation_id, entry)
             permissions.remove_entry(entry)
 
     # Not every tool-step error is a permission denial - e.g.
