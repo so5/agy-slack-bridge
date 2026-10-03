@@ -1090,7 +1090,8 @@ def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
     raw entry text. Called from /agy-permissions add/remove and from
     setup_agy_project.py's own direct settings.json edits (gdrive
     grants), so either path keeps this manifest accurate regardless of
-    how the permanent grant was made."""
+    how the permanent grant was made. Each path maps to the sha256 of the
+    script content approved at grant time (the seal); re-adding re-seals."""
     root = _project_root(project_id)
     if not root:
         return
@@ -1099,16 +1100,22 @@ def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
         return
     path = root / PERMANENT_COMMANDS_REL
     try:
-        entries = set(json.loads(path.read_text(encoding="utf-8"))) if path.exists() else set()
+        pins = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (json.JSONDecodeError, OSError):
-        entries = set()
+        pins = {}
+    if not isinstance(pins, dict):
+        pins = {}
     if present:
-        entries.add(script_path)
+        digest = _file_hash(Path(script_path))
+        if digest is None:
+            log.warning("not sealing %s: cannot read it", script_path)
+            return
+        pins[script_path] = digest
     else:
-        entries.discard(script_path)
+        pins.pop(script_path, None)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(sorted(entries), indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(dict(sorted(pins.items())), indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     except OSError:
         log.exception("failed to update %s", path)
 
