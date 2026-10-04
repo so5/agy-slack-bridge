@@ -445,13 +445,13 @@ def _persona_kwargs(channel_cfg: dict) -> dict:
     return kwargs
 
 
-TELEMETRY_FEATURES = ("agy_slash", "permission_stats")
+TELEMETRY_FEATURES = ("permission_stats",)
 TELEMETRY_DEFAULTS = {feature: False for feature in TELEMETRY_FEATURES}
 CHANNEL_TELEMETRY: dict = {}
 
 
 def _set_yaml_value(text: str, path: list, value: str) -> str:
-    """Sets `path` (e.g. ["channels", "C1", "telemetry", "agy_slash"]) to a
+    """Sets `path` (e.g. ["channels", "C1", "telemetry", "permission_stats"]) to a
     scalar in a block-style YAML document, editing only that line (or
     inserting the missing keys) so every other line and comment stays as it
     was. Indentation is taken from the existing lines."""
@@ -631,35 +631,7 @@ class ThreadStore:
                 last_notified_hash TEXT
             )"""
         )
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS slash_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT NOT NULL DEFAULT (datetime('now')),
-                channel_id TEXT,
-                command TEXT NOT NULL
-            )"""
-        )
         self._conn.commit()
-
-    def log_slash(self, channel_id: Optional[str], command: str) -> None:
-        with self._lock:
-            self._conn.execute(
-                "INSERT INTO slash_usage (channel_id, command) VALUES (?, ?)", (channel_id, command),
-            )
-            self._conn.commit()
-
-    def slash_stats(self, days: int = 30, limit: int = 15, channel_id: Optional[str] = None) -> list:
-        """(command, count) most-used first; channel_id None means all channels."""
-        where, params = "ts >= datetime('now', ?)", [f"-{int(days)} days"]
-        if channel_id is not None:
-            where += " AND channel_id = ?"
-            params.append(channel_id)
-        with self._lock:
-            return self._conn.execute(
-                f"""SELECT command, COUNT(*) FROM slash_usage WHERE {where}
-                   GROUP BY command ORDER BY COUNT(*) DESC, MAX(id) DESC LIMIT ?""",
-                (*params, limit),
-            ).fetchall()
 
     def get(self, channel_id: str, thread_ts: str) -> Optional[str]:
         with self._lock:
@@ -2676,8 +2648,6 @@ def build_app() -> App:
 
         project_id = channel_cfg["project"]
         raw = (command.get("text") or "").strip().lstrip("/").strip()
-        if telemetry_enabled(channel_id, "agy_slash"):
-            store.log_slash(channel_id, "agy " + (raw.split(" ", 1)[0].lower() or "(help)"))
         model, effort = _effective_model_effort(store, channel_id, channel_cfg)
 
         def _ephemeral_agy(cmd_text: str) -> str:
@@ -2733,9 +2703,8 @@ def build_app() -> App:
     def handle_stats_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
         """`/agy-stats` shows which features record usage for this channel and
         what they've recorded. `on|off <feature>` switches one on or off for
-        this channel; add `all` to change the top-level default for every
-        channel. `slash|buttons [days] [all]` shows the stats for this channel,
-        or for every channel with `all`."""
+        this channel; add `all` to change it for every channel.
+        `buttons [days]` shows the permission button stats for this channel."""
         ack()
         channel_id = command.get("channel_id")
         args = (command.get("text") or "").strip().split()
@@ -2768,19 +2737,6 @@ def build_app() -> App:
             return
 
         days = next((int(a) for a in rest if a.isdigit()), 30)
-        target = None if scope_all else channel_id
-        scope_label = "全チャンネル" if scope_all else "このチャンネル"
-
-        if sub == "slash":
-            rows = store.slash_stats(days, channel_id=target)
-            if not rows:
-                respond(text=f"直近{days}日の agy スラッシュコマンドの記録はありません（{scope_label}）。",
-                        response_type="ephemeral")
-                return
-            listing = "\n".join(f"{i}. `/{name}` {count}回" for i, (name, count) in enumerate(rows, 1))
-            respond(text=f"直近{days}日の agy スラッシュコマンド（{scope_label}、使われた回数順）:\n{listing}",
-                    response_type="ephemeral")
-            return
 
         if sub == "buttons":
             rows = store.permission_stats(days, channel_id=channel_id)
@@ -2804,7 +2760,7 @@ def build_app() -> App:
                 source = "全体"
             state = "有効" if telemetry_enabled(channel_id, feature) else "無効"
             lines.append(f"- `{feature}`: {state}（{source}）")
-        lines.append("集計: `/agy-stats slash [日数] [all]`、`/agy-stats buttons [日数]`")
+        lines.append("集計: `/agy-stats buttons [日数]`")
         respond(text="\n".join(lines), response_type="ephemeral")
 
     @app.command("/agy-link")
@@ -2814,8 +2770,6 @@ def build_app() -> App:
         if channel_id not in channel_map:
             respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
             return
-        if telemetry_enabled(channel_id, "agy_slash"):
-            store.log_slash(channel_id, "agy-link")
         # Slack doesn't allow slash commands inside a thread, so "current"
         # = this channel's most recently active conversation; an explicit
         # conversation id (as shown by `resume <id>`) picks any other one.

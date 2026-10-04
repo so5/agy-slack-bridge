@@ -451,11 +451,9 @@ handling above (buttons and all) instead, with no auto-retry involved.
 
 ### Usage statistics
 
-Two opt-in features record usage in the bridge's local state DB. Both are
+An opt-in feature records usage in the bridge's local state DB. It's
 off by default, and nothing is sent anywhere:
 
-- `agy_slash`: which `/agy` and `/agy-link` subcommand was used, and how often.
-  Only the subcommand name is kept, never its arguments.
 - `permission_stats`: each one-time/permanent permission button request and
   its outcome.
 
@@ -469,10 +467,9 @@ read on its own. Settings can be set per channel or for all channels:
   channel's own setting. Either way, the change is written back to
   `config.yaml` and takes effect immediately.
 
-Usage stats show this channel by default. `slash` also takes `all` for every channel; the permission stats are always this channel only:
+Stats show this channel only:
 
 - `/agy-stats` — the current on/off state for this channel, and where it comes from.
-- `/agy-stats slash [days] [all]` — `/agy` and `/agy-link` subcommands, most used first (default 30 days).
 - `/agy-stats buttons [days]` — permission requests, one-time grants, permanent grants and denials per entry. This channel only.
 - `/agy-permissions stats [days]` — the same permission counts, for the "add a permanent grant" decision. This channel only.
 
