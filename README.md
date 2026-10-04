@@ -460,8 +460,9 @@ off by default, and nothing is sent anywhere:
   its outcome, the same data `/agy-permissions stats` reads.
 
 Turn them on in `config.yaml` under `telemetry:`, or from Slack with
-`/agy-stats on <feature>` / `/agy-stats off <feature>`. A Slack setting
-overrides the config until it's changed again.
+`/agy-stats on <feature>` / `/agy-stats off <feature>`. The Slack command
+writes the same `telemetry:` entry in `config.yaml`, so there's only one
+place the setting lives; it takes effect immediately, no restart needed.
 
 - `/agy-stats` — current on/off state and where each setting came from.
 - `/agy-stats slash [days]` — `/agy` and `/agy-link` subcommands, most used first (default 30 days).

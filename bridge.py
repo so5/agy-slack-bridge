@@ -449,6 +449,33 @@ TELEMETRY_FEATURES = ("agy_slash", "permission_stats")
 TELEMETRY_DEFAULTS = {feature: False for feature in TELEMETRY_FEATURES}
 
 
+def set_telemetry_flag(feature: str, enabled: bool) -> None:
+    """Writes one `telemetry:` entry into config.yaml, leaving every other
+    line (and its comments) as it was, then updates the running value."""
+    lines = CONFIG_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
+    entry = f"  {feature}: {'true' if enabled else 'false'}\n"
+    start = next((i for i, line in enumerate(lines)
+                  if re.match(r"^telemetry:\s*(#.*)?$", line)), None)
+    if start is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines += ["\n", "telemetry:\n", entry]
+    else:
+        end = start + 1
+        while end < len(lines) and lines[end].strip() and lines[end][0] in " \t":
+            end += 1
+        for i in range(start + 1, end):
+            if re.match(rf"^\s+{re.escape(feature)}:", lines[i]):
+                lines[i] = entry
+                break
+        else:
+            lines.insert(end, entry)
+    tmp = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+    tmp.write_text("".join(lines), encoding="utf-8")
+    os.replace(tmp, CONFIG_PATH)
+    TELEMETRY_DEFAULTS[feature] = enabled
+
+
 def load_channel_map() -> dict:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
@@ -547,13 +574,6 @@ class ThreadStore:
             )"""
         )
         self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS telemetry_flags (
-                feature TEXT PRIMARY KEY,
-                enabled INTEGER NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )"""
-        )
-        self._conn.execute(
             """CREATE TABLE IF NOT EXISTS slash_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts TEXT NOT NULL DEFAULT (datetime('now')),
@@ -562,29 +582,6 @@ class ThreadStore:
             )"""
         )
         self._conn.commit()
-
-    def feature_enabled(self, feature: str) -> bool:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT enabled FROM telemetry_flags WHERE feature=?", (feature,),
-            ).fetchone()
-        return bool(row[0]) if row else TELEMETRY_DEFAULTS.get(feature, False)
-
-    def feature_source(self, feature: str) -> str:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT 1 FROM telemetry_flags WHERE feature=?", (feature,),
-            ).fetchone()
-        return "Slack で変更" if row else "config.yaml"
-
-    def set_feature(self, feature: str, enabled: bool) -> None:
-        with self._lock:
-            self._conn.execute(
-                """INSERT INTO telemetry_flags (feature, enabled, updated_at) VALUES (?, ?, datetime('now'))
-                   ON CONFLICT(feature) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at""",
-                (feature, int(enabled)),
-            )
-            self._conn.commit()
 
     def log_slash(self, channel_id: Optional[str], command: str) -> None:
         with self._lock:
@@ -684,7 +681,7 @@ class ThreadStore:
 
     def log_permission(self, channel_id: Optional[str], conversation_id: Optional[str],
                        event: str, entries: list, user: Optional[str] = None) -> None:
-        if not self.feature_enabled("permission_stats"):
+        if not TELEMETRY_DEFAULTS.get("permission_stats"):
             return
         with self._lock:
             self._conn.executemany(
@@ -2611,7 +2608,7 @@ def build_app() -> App:
 
         project_id = channel_cfg["project"]
         raw = (command.get("text") or "").strip().lstrip("/").strip()
-        if store.feature_enabled("agy_slash"):
+        if TELEMETRY_DEFAULTS.get("agy_slash"):
             store.log_slash(channel_id, "agy " + (raw.split(" ", 1)[0].lower() or "(help)"))
         model, effort = _effective_model_effort(store, channel_id, channel_cfg)
 
@@ -2678,8 +2675,8 @@ def build_app() -> App:
                 respond(text=f"使い方: `/agy-stats {sub} <{'|'.join(TELEMETRY_FEATURES)}>`",
                         response_type="ephemeral")
                 return
-            store.set_feature(args[1], sub == "on")
-            respond(text=f"`{args[1]}` の記録を{'有効' if sub == 'on' else '無効'}にしました。",
+            set_telemetry_flag(args[1], sub == "on")
+            respond(text=f"`{args[1]}` の記録を{'有効' if sub == 'on' else '無効'}にして config.yaml に保存しました。",
                     response_type="ephemeral")
             return
 
@@ -2709,8 +2706,8 @@ def build_app() -> App:
 
         lines = [f"*記録の設定*（`on|off <機能>` で切替）"]
         for feature in TELEMETRY_FEATURES:
-            state = "有効" if store.feature_enabled(feature) else "無効"
-            lines.append(f"- `{feature}`: {state}（{store.feature_source(feature)}）")
+            state = "有効" if TELEMETRY_DEFAULTS.get(feature) else "無効"
+            lines.append(f"- `{feature}`: {state}（config.yaml）")
         lines.append("集計: `/agy-stats slash [日数]`、`/agy-stats buttons [日数]`")
         respond(text="\n".join(lines), response_type="ephemeral")
 
@@ -2721,7 +2718,7 @@ def build_app() -> App:
         if channel_id not in channel_map:
             respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
             return
-        if store.feature_enabled("agy_slash"):
+        if TELEMETRY_DEFAULTS.get("agy_slash"):
             store.log_slash(channel_id, "agy-link")
         # Slack doesn't allow slash commands inside a thread, so "current"
         # = this channel's most recently active conversation; an explicit
