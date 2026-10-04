@@ -31,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1120,6 +1121,58 @@ def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
         log.exception("failed to update %s", path)
 
 
+INBOX_MAX_FILES = 5
+INBOX_MAX_BYTES = 20 * 1024 * 1024
+INBOX_DIR_NAME = "inbox"
+
+
+def _save_slack_attachments(event: dict, project_id: str, thread_key: str) -> Optional[str]:
+    """Downloads a message's Slack attachments into this project's
+    `inbox/<thread>/` directory so agy can read them as ordinary workspace
+    files, and returns a note naming the saved paths (or None if there's
+    nothing to note). Only files.slack.com URLs are fetched, with the bot
+    token, so the token is never sent anywhere else. Filenames are reduced
+    to their basename, so an attachment can't escape the inbox."""
+    files = event.get("files") or []
+    if not files:
+        return None
+    root = _project_root(project_id)
+    if not root:
+        return "（添付ファイルの保存先となるプロジェクトが見つからず、添付は取得できなかった）"
+    dest_dir = root / INBOX_DIR_NAME / thread_key
+    token = os.environ["SLACK_BOT_TOKEN"]
+    saved, failed = [], []
+    for f in files[:INBOX_MAX_FILES]:
+        name = re.sub(r"[^\w.\-]", "_", Path(f.get("name") or "file").name)[:120] or "file"
+        url = f.get("url_private_download") or f.get("url_private")
+        size = f.get("size") or 0
+        if not url or size > INBOX_MAX_BYTES:
+            failed.append(name)
+            continue
+        if not url.startswith("https://files.slack.com/"):
+            failed.append(name)
+            continue
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read(INBOX_MAX_BYTES + 1)
+            if len(data) > INBOX_MAX_BYTES:
+                failed.append(name)
+                continue
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            (dest_dir / name).write_bytes(data)
+            saved.append(f"{INBOX_DIR_NAME}/{thread_key}/{name}")
+        except Exception:
+            log.exception("failed to download Slack attachment %s", name)
+            failed.append(name)
+    parts = []
+    if saved:
+        parts.append("添付ファイル（プロジェクト直下の相対パス）: " + ", ".join(saved))
+    if failed:
+        parts.append("取得できなかった添付: " + ", ".join(failed))
+    return "\n".join(parts) or None
+
+
 def _extract_uploadable_files(response_text: str, project_id: str, conversation_id: str) -> list[Path]:
     """Finds file:// links in agy's response (e.g. "generated this chart:
     file:///.../chart.png") that point at real, safely-scoped local files,
@@ -1987,8 +2040,9 @@ def build_app() -> App:
         # A plain human message has no "subtype". This also quietly ignores
         # messages posted via an Incoming Webhook (e.g. a batch job posting
         # its results into the same channel) - those arrive with
-        # subtype="bot_message".
-        if event.get("subtype") is not None:
+        # subtype="bot_message". A message posted with a file attached has
+        # subtype="file_share" and is still a human message, so let it through.
+        if event.get("subtype") not in (None, "file_share"):
             return
 
         channel_id = event.get("channel")
@@ -2055,6 +2109,10 @@ def build_app() -> App:
         log.info("incoming text=%r channel=%s thread_key=%s conversation=%s%s",
                   text, channel_id, thread_key, conversation_id,
                   " (resumed)" if resume_match else "")
+
+        attachment_note = _save_slack_attachments(event, project_id, thread_key)
+        if attachment_note:
+            text = f"{text}\n\n{attachment_note}".strip()
 
         model, effort = _effective_model_effort(store, channel_id, channel_cfg)
         with locks.get((channel_id, thread_key)):
