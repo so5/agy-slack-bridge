@@ -469,12 +469,12 @@ read on its own. Settings can be set per channel or for all channels:
   channel's own setting. Either way, the change is written back to
   `config.yaml` and takes effect immediately.
 
-Stats commands show this channel by default; add `all` for every channel:
+Usage stats show this channel by default. `slash` also takes `all` for every channel; the permission stats are always this channel only:
 
 - `/agy-stats` — the current on/off state for this channel, and where it comes from.
 - `/agy-stats slash [days] [all]` — `/agy` and `/agy-link` subcommands, most used first (default 30 days).
-- `/agy-stats buttons [days] [all]` — permission requests, one-time grants, permanent grants and denials per entry.
-- `/agy-permissions stats [days] [all]` — the same permission counts, for the "add a permanent grant" decision.
+- `/agy-stats buttons [days]` — permission requests, one-time grants, permanent grants and denials per entry. This channel only.
+- `/agy-permissions stats [days]` — the same permission counts, for the "add a permanent grant" decision. This channel only.
 
 Turning a feature off stops new records; existing records stay in the DB.
 
