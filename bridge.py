@@ -1126,22 +1126,31 @@ INBOX_MAX_BYTES = 20 * 1024 * 1024
 INBOX_DIR_NAME = "inbox"
 
 
-def _save_slack_attachments(event: dict, project_id: str, thread_key: str) -> Optional[str]:
+ATTACHMENT_OVERFLOW_HINT = (
+    "取り込めなかったファイルがあります（1メッセージ{files}件まで、1件{mb}MBまで）。"
+    "大きいファイルや多数のファイルは Google Drive などに置いて、共有URLをこのスレッドに貼ってください。"
+    "agy がそのURLから取得します。"
+)
+
+
+def _save_slack_attachments(event: dict, project_id: str, thread_key: str) -> tuple[Optional[str], Optional[str]]:
     """Downloads a message's Slack attachments into this project's
     `inbox/<thread>/` directory so agy can read them as ordinary workspace
-    files, and returns a note naming the saved paths (or None if there's
-    nothing to note). Only files.slack.com URLs are fetched, with the bot
+    files. Returns (note for agy's prompt, notice for the Slack thread); the
+    notice is set only when something couldn't be taken in, and says how to
+    work around it. Only files.slack.com URLs are fetched, with the bot
     token, so the token is never sent anywhere else. Filenames are reduced
     to their basename, so an attachment can't escape the inbox."""
     files = event.get("files") or []
     if not files:
-        return None
+        return None, None
     root = _project_root(project_id)
     if not root:
-        return "（添付ファイルの保存先となるプロジェクトが見つからず、添付は取得できなかった）"
+        return None, "添付ファイルの保存先となるプロジェクトが見つからず、添付は取得できなかった。"
     dest_dir = root / INBOX_DIR_NAME / thread_key
     token = os.environ["SLACK_BOT_TOKEN"]
     saved, failed = [], []
+    overflow = len(files) > INBOX_MAX_FILES
     for f in files[:INBOX_MAX_FILES]:
         name = re.sub(r"[^\w.\-]", "_", Path(f.get("name") or "file").name)[:120] or "file"
         url = f.get("url_private_download") or f.get("url_private")
@@ -1170,7 +1179,18 @@ def _save_slack_attachments(event: dict, project_id: str, thread_key: str) -> Op
         parts.append("添付ファイル（プロジェクト直下の相対パス）: " + ", ".join(saved))
     if failed:
         parts.append("取得できなかった添付: " + ", ".join(failed))
-    return "\n".join(parts) or None
+    agent_note = "\n".join(parts) or None
+
+    notice = None
+    if overflow or failed:
+        reasons = []
+        if overflow:
+            reasons.append(f"{len(files) - INBOX_MAX_FILES}件は件数の上限超過")
+        if failed:
+            reasons.append("サイズ超過または取得失敗: " + ", ".join(failed))
+        notice = (":warning: 添付の一部を取り込めませんでした（" + "／".join(reasons) + "）。\n"
+                  + ATTACHMENT_OVERFLOW_HINT.format(files=INBOX_MAX_FILES, mb=INBOX_MAX_BYTES // (1024 * 1024)))
+    return agent_note, notice
 
 
 def _extract_uploadable_files(response_text: str, project_id: str, conversation_id: str) -> list[Path]:
@@ -2110,9 +2130,16 @@ def build_app() -> App:
                   text, channel_id, thread_key, conversation_id,
                   " (resumed)" if resume_match else "")
 
-        attachment_note = _save_slack_attachments(event, project_id, thread_key)
+        attachment_note, attachment_notice = _save_slack_attachments(event, project_id, thread_key)
         if attachment_note:
             text = f"{text}\n\n{attachment_note}".strip()
+        if attachment_notice:
+            client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_key,
+                text=attachment_notice,
+                **_persona_kwargs(channel_cfg),
+            )
 
         model, effort = _effective_model_effort(store, channel_id, channel_cfg)
         with locks.get((channel_id, thread_key)):
