@@ -180,6 +180,7 @@ mapping from Slack threads to `agy` conversation IDs.
    - `/agy-permissions` — see "Managing permissions from Slack" below
    - `/agy-model` — see "Switching models from Slack" below
    - `/agy-usage` — see "Checking model usage" below
+   - `/agy-stats` — see "Usage statistics" below
    - `/agy` and `/agy-link` — see "Passing agy slash commands through" below
 
    They all need the `commands` Bot Token Scope (add it once in step 3).
@@ -447,6 +448,26 @@ exhausted. This can never fire back-to-back with a genuine, actionable
 denial in the same turn: a fresh denial always comes with real
 `_tool_errors`, and that alone routes to the permission_errors/other_errors
 handling above (buttons and all) instead, with no auto-retry involved.
+
+### Usage statistics
+
+Two opt-in features record usage in the bridge's local state DB. Both are
+off by default, and nothing is sent anywhere:
+
+- `agy_slash`: which `/agy` and `/agy-link` subcommand was used, and how often.
+  Only the subcommand name is kept, never its arguments.
+- `permission_stats`: each one-time/permanent permission button request and
+  its outcome, the same data `/agy-permissions stats` reads.
+
+Turn them on in `config.yaml` under `telemetry:`, or from Slack with
+`/agy-stats on <feature>` / `/agy-stats off <feature>`. A Slack setting
+overrides the config until it's changed again.
+
+- `/agy-stats` — current on/off state and where each setting came from.
+- `/agy-stats slash [days]` — `/agy` and `/agy-link` subcommands, most used first (default 30 days).
+- `/agy-stats buttons [days]` — permission requests, one-time grants, permanent grants and denials per entry.
+
+Turning a feature off stops new records; existing records stay in the DB.
 
 ### Mermaid diagrams
 

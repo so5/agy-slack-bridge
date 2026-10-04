@@ -445,9 +445,16 @@ def _persona_kwargs(channel_cfg: dict) -> dict:
     return kwargs
 
 
+TELEMETRY_FEATURES = ("agy_slash", "permission_stats")
+TELEMETRY_DEFAULTS = {feature: False for feature in TELEMETRY_FEATURES}
+
+
 def load_channel_map() -> dict:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
+    for feature, enabled in (cfg.get("telemetry") or {}).items():
+        if feature in TELEMETRY_DEFAULTS:
+            TELEMETRY_DEFAULTS[feature] = bool(enabled)
     channel_map = cfg.get("channels") or {}
     if not channel_map:
         raise SystemExit(f"No channels configured in {CONFIG_PATH}")
@@ -539,7 +546,61 @@ class ThreadStore:
                 last_notified_hash TEXT
             )"""
         )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS telemetry_flags (
+                feature TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS slash_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (datetime('now')),
+                channel_id TEXT,
+                command TEXT NOT NULL
+            )"""
+        )
         self._conn.commit()
+
+    def feature_enabled(self, feature: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT enabled FROM telemetry_flags WHERE feature=?", (feature,),
+            ).fetchone()
+        return bool(row[0]) if row else TELEMETRY_DEFAULTS.get(feature, False)
+
+    def feature_source(self, feature: str) -> str:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM telemetry_flags WHERE feature=?", (feature,),
+            ).fetchone()
+        return "Slack で変更" if row else "config.yaml"
+
+    def set_feature(self, feature: str, enabled: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO telemetry_flags (feature, enabled, updated_at) VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(feature) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at""",
+                (feature, int(enabled)),
+            )
+            self._conn.commit()
+
+    def log_slash(self, channel_id: Optional[str], command: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO slash_usage (channel_id, command) VALUES (?, ?)", (channel_id, command),
+            )
+            self._conn.commit()
+
+    def slash_stats(self, days: int = 30, limit: int = 15) -> list:
+        with self._lock:
+            return self._conn.execute(
+                """SELECT command, COUNT(*) FROM slash_usage
+                   WHERE ts >= datetime('now', ?)
+                   GROUP BY command ORDER BY COUNT(*) DESC, MAX(id) DESC LIMIT ?""",
+                (f"-{int(days)} days", limit),
+            ).fetchall()
 
     def get(self, channel_id: str, thread_ts: str) -> Optional[str]:
         with self._lock:
@@ -623,6 +684,8 @@ class ThreadStore:
 
     def log_permission(self, channel_id: Optional[str], conversation_id: Optional[str],
                        event: str, entries: list, user: Optional[str] = None) -> None:
+        if not self.feature_enabled("permission_stats"):
+            return
         with self._lock:
             self._conn.executemany(
                 "INSERT INTO permission_log (channel_id, conversation_id, event, entry, user) "
@@ -2548,6 +2611,8 @@ def build_app() -> App:
 
         project_id = channel_cfg["project"]
         raw = (command.get("text") or "").strip().lstrip("/").strip()
+        if store.feature_enabled("agy_slash"):
+            store.log_slash(channel_id, "agy " + (raw.split(" ", 1)[0].lower() or "(help)"))
         model, effort = _effective_model_effort(store, channel_id, channel_cfg)
 
         def _ephemeral_agy(cmd_text: str) -> str:
@@ -2599,6 +2664,56 @@ def build_app() -> App:
                 model=model, effort=effort,
             )
 
+    @app.command("/agy-stats")
+    def handle_stats_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
+        """`/agy-stats` shows which features record usage and what they've
+        recorded. `on|off <feature>` switches one on or off at runtime
+        (overrides config.yaml's `telemetry:` until changed again)."""
+        ack()
+        args = (command.get("text") or "").strip().split()
+        sub = args[0].lower() if args else "status"
+
+        if sub in ("on", "off"):
+            if len(args) < 2 or args[1] not in TELEMETRY_FEATURES:
+                respond(text=f"使い方: `/agy-stats {sub} <{'|'.join(TELEMETRY_FEATURES)}>`",
+                        response_type="ephemeral")
+                return
+            store.set_feature(args[1], sub == "on")
+            respond(text=f"`{args[1]}` の記録を{'有効' if sub == 'on' else '無効'}にしました。",
+                    response_type="ephemeral")
+            return
+
+        days = int(args[1]) if len(args) > 1 and args[1].isdigit() else 30
+        if sub == "slash":
+            rows = store.slash_stats(days)
+            if not rows:
+                respond(text=f"直近{days}日の agy スラッシュコマンドの記録はありません。", response_type="ephemeral")
+                return
+            listing = "\n".join(f"{i}. `/{name}` {count}回" for i, (name, count) in enumerate(rows, 1))
+            respond(text=f"直近{days}日の agy スラッシュコマンド（使われた回数順）:\n{listing}",
+                    response_type="ephemeral")
+            return
+
+        if sub == "buttons":
+            rows = store.permission_stats(days)
+            if not rows:
+                respond(text=f"直近{days}日の一時許可ボタンの記録はありません。", response_type="ephemeral")
+                return
+            listing = "\n".join(
+                f"{i}. 要求{req} / 今回{once} / 恒久{perm} / 拒否{den}  `{entry}`"
+                for i, (entry, req, once, perm, den) in enumerate(rows, 1)
+            )
+            respond(text=f"直近{days}日の一時許可ボタンの記録（要求の多い順）:\n{listing}",
+                    response_type="ephemeral")
+            return
+
+        lines = [f"*記録の設定*（`on|off <機能>` で切替）"]
+        for feature in TELEMETRY_FEATURES:
+            state = "有効" if store.feature_enabled(feature) else "無効"
+            lines.append(f"- `{feature}`: {state}（{store.feature_source(feature)}）")
+        lines.append("集計: `/agy-stats slash [日数]`、`/agy-stats buttons [日数]`")
+        respond(text="\n".join(lines), response_type="ephemeral")
+
     @app.command("/agy-link")
     def handle_link_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
         ack()
@@ -2606,6 +2721,8 @@ def build_app() -> App:
         if channel_id not in channel_map:
             respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
             return
+        if store.feature_enabled("agy_slash"):
+            store.log_slash(channel_id, "agy-link")
         # Slack doesn't allow slash commands inside a thread, so "current"
         # = this channel's most recently active conversation; an explicit
         # conversation id (as shown by `resume <id>`) picks any other one.
