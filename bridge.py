@@ -2511,18 +2511,23 @@ def build_app() -> App:
                 response_type="ephemeral",
             )
         elif sub == "stats":
-            days = int(arg) if arg.isdigit() else 30
-            rows = store.permission_stats(days)
+            stat_args = arg.split()
+            scope_all = "all" in [a.lower() for a in stat_args]
+            days = next((int(a) for a in stat_args if a.isdigit()), 30)
+            scope_channel = None if scope_all else command.get("channel_id")
+            scope_label = "全チャンネル" if scope_all else "このチャンネル"
+            rows = store.permission_stats(days, channel_id=scope_channel)
             if not rows:
-                respond(text=f"直近{days}日の許可リクエストはありません。", response_type="ephemeral")
+                respond(text=f"直近{days}日の許可リクエストはありません（{scope_label}）。", response_type="ephemeral")
                 return
             listing = "\n".join(
                 f"{i}. 要求{req} / 今回{once} / 恒久{perm} / 拒否{den}  `{entry}`"
                 for i, (entry, req, once, perm, den) in enumerate(rows, 1)
             )
             respond(
-                text=f"直近{days}日に許可を求められた回数の多い順:\n{listing}\n\n"
-                     "頻繁に「今回だけ許可」しているものは、`/agy-permissions add <エントリ>` で恒久許可を検討できます。",
+                text=f"直近{days}日に許可を求められた回数の多い順（{scope_label}）:\n{listing}\n\n"
+                     "頻繁に「今回だけ許可」しているものは、`/agy-permissions add <エントリ>` で恒久許可を検討できます。"
+                     "（`/agy-permissions stats [日数] [all]`）",
                 response_type="ephemeral",
             )
         elif sub in ("add", "remove"):
@@ -2752,7 +2757,9 @@ def build_app() -> App:
             enabled = sub == "on"
             if scope_all:
                 set_telemetry_flag(feature, enabled)
-                where = "全チャンネル（top-level）"
+                for cid in channel_map:
+                    set_telemetry_flag(feature, enabled, channel_id=cid)
+                where = f"全チャンネル（{len(channel_map)}件、全体の既定値も含む）"
             else:
                 if channel_id not in channel_map:
                     respond(text="このチャンネルは対象外です。全体の設定は `all` を付けてください。",

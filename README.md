@@ -464,18 +464,19 @@ read on its own. Settings can be set per channel or for all channels:
 
 - In `config.yaml`, under a channel's own `telemetry:` block, or at the top
   level for every channel. A channel's own setting wins over the top-level one.
-- From Slack, `/agy-stats on|off <feature>` changes this channel only;
-  add `all` to change the top-level default. Either way, the change is
-  written back to `config.yaml` and takes effect immediately.
+- From Slack, `/agy-stats on|off <feature>` changes this channel only.
+  Add `all` to set it everywhere: the top-level default and every configured
+  channel's own setting. Either way, the change is written back to
+  `config.yaml` and takes effect immediately.
 
 Stats commands show this channel by default; add `all` for every channel:
 
 - `/agy-stats` — the current on/off state for this channel, and where it comes from.
 - `/agy-stats slash [days] [all]` — `/agy` and `/agy-link` subcommands, most used first (default 30 days).
 - `/agy-stats buttons [days] [all]` — permission requests, one-time grants, permanent grants and denials per entry.
+- `/agy-permissions stats [days] [all]` — the same permission counts, for the "add a permanent grant" decision.
 
 Turning a feature off stops new records; existing records stay in the DB.
-`/agy-permissions stats` is unchanged and still counts across all channels.
 
 ### Mermaid diagrams
 
