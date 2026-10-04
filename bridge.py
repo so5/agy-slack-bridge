@@ -2664,8 +2664,8 @@ def build_app() -> App:
     @app.command("/agy-stats")
     def handle_stats_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
         """`/agy-stats` shows which features record usage and what they've
-        recorded. `on|off <feature>` switches one on or off at runtime
-        (overrides config.yaml's `telemetry:` until changed again)."""
+        recorded. `on|off <feature>` switches one on or off and writes it to
+        config.yaml's `telemetry:` block."""
         ack()
         args = (command.get("text") or "").strip().split()
         sub = args[0].lower() if args else "status"
