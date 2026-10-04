@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -1450,6 +1451,37 @@ def _fetch_agy_builtin_commands(project_id: str) -> frozenset:
     return _agy_builtin_cache["names"] or _AGY_BUILTIN_FALLBACK
 
 
+def _descendant_pids(pid: int) -> list[int]:
+    children: dict[int, list[int]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", encoding="utf-8") as f:
+                ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        children.setdefault(ppid, []).append(int(entry))
+    found, stack = [], [pid]
+    while stack:
+        for child in children.get(stack.pop(), []):
+            found.append(child)
+            stack.append(child)
+    return found
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Kills agy and everything it started. Tool children (e.g. a script that
+    opens a local OAuth callback server) can call setsid and survive a plain
+    kill of agy, then keep holding their ports and files."""
+    targets = _descendant_pids(pid) + [pid]
+    for target in targets:
+        try:
+            os.kill(target, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def run_agy(text: str, project_id: str, conversation_id: Optional[str],
             model: Optional[str] = None, effort: Optional[str] = None,
             permissions: Optional["PermissionsFile"] = None) -> dict:
@@ -1473,7 +1505,14 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     if effort:
         cmd += ["--effort", effort]
     log.info("running agy for project=%s conversation=%s", project_id, conversation_id or "(new)")
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=AGY_TIMEOUT_SEC)
+    child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        out, err = child.communicate(timeout=AGY_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(child.pid)
+        child.communicate()
+        raise RuntimeError(f"agy timed out after {AGY_TIMEOUT_SEC}s")
+    proc = subprocess.CompletedProcess(cmd, child.returncode, out, err)
     if proc.returncode != 0:
         raise RuntimeError(f"agy exited {proc.returncode}: {proc.stderr.strip()[-2000:]}")
 
@@ -1784,6 +1823,10 @@ def _agy_failure_text(err: str) -> str:
     """Slack text for a failed agy invocation. A model-quota 429 is common
     enough (and fixable from Slack) to deserve its own explanation instead
     of the generic "check the logs"."""
+    if "timed out after" in err:
+        minutes = AGY_TIMEOUT_SEC // 60
+        return (f":x: agy が {minutes} 分で打ち切られました。途中で止まっていた処理（認証待ちなど）が無いか確認してください。"
+                "止まっていた処理は、この bridge が停止させています。")
     if "RESOURCE_EXHAUSTED" in err:
         m = _QUOTA_RESET_RE.search(err)
         reset = f"（回復まであと {m.group(1)}）" if m else ""
