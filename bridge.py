@@ -2714,11 +2714,12 @@ def build_app() -> App:
         rest = [a for a in rest if a != "all"]
 
         if sub in ("on", "off"):
-            if not rest or rest[0] not in TELEMETRY_FEATURES:
+            # With a single feature there's nothing to choose, so the name is optional.
+            feature = rest[0] if rest else (TELEMETRY_FEATURES[0] if len(TELEMETRY_FEATURES) == 1 else None)
+            if feature not in TELEMETRY_FEATURES:
                 respond(text=f"使い方: `/agy-stats {sub} <{'|'.join(TELEMETRY_FEATURES)}> [all]`",
                         response_type="ephemeral")
                 return
-            feature = rest[0]
             enabled = sub == "on"
             if scope_all:
                 set_telemetry_flag(feature, enabled)
@@ -2752,7 +2753,7 @@ def build_app() -> App:
                     response_type="ephemeral")
             return
 
-        lines = ["*記録の設定*（`on|off <機能> [all]` で切替）"]
+        lines = ["*記録の設定*（`on|off [all]` で切替）"]
         for feature in TELEMETRY_FEATURES:
             if channel_id in CHANNEL_TELEMETRY and feature in CHANNEL_TELEMETRY[channel_id]:
                 source = "このチャンネル"
