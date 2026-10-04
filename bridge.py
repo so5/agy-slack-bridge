@@ -447,33 +447,85 @@ def _persona_kwargs(channel_cfg: dict) -> dict:
 
 TELEMETRY_FEATURES = ("agy_slash", "permission_stats")
 TELEMETRY_DEFAULTS = {feature: False for feature in TELEMETRY_FEATURES}
+CHANNEL_TELEMETRY: dict = {}
 
 
-def set_telemetry_flag(feature: str, enabled: bool) -> None:
-    """Writes one `telemetry:` entry into config.yaml, leaving every other
-    line (and its comments) as it was, then updates the running value."""
-    lines = CONFIG_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
-    entry = f"  {feature}: {'true' if enabled else 'false'}\n"
-    start = next((i for i, line in enumerate(lines)
-                  if re.match(r"^telemetry:\s*(#.*)?$", line)), None)
-    if start is None:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines += ["\n", "telemetry:\n", entry]
-    else:
-        end = start + 1
-        while end < len(lines) and lines[end].strip() and lines[end][0] in " \t":
-            end += 1
-        for i in range(start + 1, end):
-            if re.match(rf"^\s+{re.escape(feature)}:", lines[i]):
-                lines[i] = entry
+def _set_yaml_value(text: str, path: list, value: str) -> str:
+    """Sets `path` (e.g. ["channels", "C1", "telemetry", "agy_slash"]) to a
+    scalar in a block-style YAML document, editing only that line (or
+    inserting the missing keys) so every other line and comment stays as it
+    was. Indentation is taken from the existing lines."""
+    lines = text.splitlines(keepends=True)
+
+    def indent_of(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    def content_lines(start: int, end: int):
+        return [i for i in range(start, end)
+                if lines[i].strip() and not lines[i].lstrip().startswith("#")]
+
+    region_start, region_end, parent_indent = 0, len(lines), -1
+    for depth, key in enumerate(path[:-1]):
+        found = None
+        idx = content_lines(region_start, region_end)
+        level_indent = indent_of(lines[idx[0]]) if idx else (parent_indent + 2 if parent_indent >= 0 else 0)
+        for i in idx:
+            if indent_of(lines[i]) == level_indent and re.match(r"^\s*" + re.escape(key) + r":(\s|$)", lines[i]):
+                found = i
                 break
-        else:
-            lines.insert(end, entry)
+        if found is None:
+            child_indent = parent_indent + 2 if parent_indent >= 0 else 0
+            new = []
+            for k in path[depth:]:
+                new.append(" " * child_indent + k + ":" + ("" if k != path[-1] else " " + value) + "\n")
+                child_indent += 2
+            if region_end > 0 and not lines[region_end - 1].endswith("\n"):
+                lines[region_end - 1] += "\n"
+            lines[region_end:region_end] = new
+            return "".join(lines)
+        k_indent = indent_of(lines[found])
+        end = found + 1
+        while end < region_end and (not lines[end].strip() or indent_of(lines[end]) > k_indent):
+            end += 1
+        region_start, region_end, parent_indent = found + 1, end, k_indent
+
+    key = path[-1]
+    idx = content_lines(region_start, region_end)
+    child_indent = indent_of(lines[idx[0]]) if idx else (parent_indent + 2 if parent_indent >= 0 else 0)
+    for i in idx:
+        if indent_of(lines[i]) == child_indent and re.match(r"^\s*" + re.escape(key) + r":(\s|$)", lines[i]):
+            lines[i] = " " * child_indent + key + ": " + value + "\n"
+            return "".join(lines)
+    insert_at = region_end
+    if insert_at > 0 and not lines[insert_at - 1].endswith("\n"):
+        lines[insert_at - 1] += "\n"
+    lines.insert(insert_at, " " * child_indent + key + ": " + value + "\n")
+    return "".join(lines)
+
+
+def set_telemetry_flag(feature: str, enabled: bool, channel_id: Optional[str] = None) -> None:
+    """Writes one telemetry entry into config.yaml - under the channel's own
+    `telemetry:` block when channel_id is given, otherwise the top-level
+    one - then updates the running value. Everything else in the file is
+    left as it was."""
+    path = (["telemetry", feature] if channel_id is None
+            else ["channels", channel_id, "telemetry", feature])
+    text = CONFIG_PATH.read_text(encoding="utf-8")
+    new_text = _set_yaml_value(text, path, "true" if enabled else "false")
     tmp = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
-    tmp.write_text("".join(lines), encoding="utf-8")
+    tmp.write_text(new_text, encoding="utf-8")
     os.replace(tmp, CONFIG_PATH)
-    TELEMETRY_DEFAULTS[feature] = enabled
+    if channel_id is None:
+        TELEMETRY_DEFAULTS[feature] = enabled
+    else:
+        CHANNEL_TELEMETRY.setdefault(channel_id, {})[feature] = enabled
+
+
+def telemetry_enabled(channel_id: Optional[str], feature: str) -> bool:
+    """A channel's own setting wins, then the top-level one, then off."""
+    if channel_id is not None and feature in CHANNEL_TELEMETRY.get(channel_id, {}):
+        return CHANNEL_TELEMETRY[channel_id][feature]
+    return TELEMETRY_DEFAULTS.get(feature, False)
 
 
 def load_channel_map() -> dict:
@@ -483,6 +535,12 @@ def load_channel_map() -> dict:
         if feature in TELEMETRY_DEFAULTS:
             TELEMETRY_DEFAULTS[feature] = bool(enabled)
     channel_map = cfg.get("channels") or {}
+    for channel_id, entry in channel_map.items():
+        CHANNEL_TELEMETRY[channel_id] = {
+            feature: bool(enabled)
+            for feature, enabled in ((entry or {}).get("telemetry") or {}).items()
+            if feature in TELEMETRY_DEFAULTS
+        }
     if not channel_map:
         raise SystemExit(f"No channels configured in {CONFIG_PATH}")
     for channel_id, entry in channel_map.items():
@@ -590,13 +648,17 @@ class ThreadStore:
             )
             self._conn.commit()
 
-    def slash_stats(self, days: int = 30, limit: int = 15) -> list:
+    def slash_stats(self, days: int = 30, limit: int = 15, channel_id: Optional[str] = None) -> list:
+        """(command, count) most-used first; channel_id None means all channels."""
+        where, params = "ts >= datetime('now', ?)", [f"-{int(days)} days"]
+        if channel_id is not None:
+            where += " AND channel_id = ?"
+            params.append(channel_id)
         with self._lock:
             return self._conn.execute(
-                """SELECT command, COUNT(*) FROM slash_usage
-                   WHERE ts >= datetime('now', ?)
+                f"""SELECT command, COUNT(*) FROM slash_usage WHERE {where}
                    GROUP BY command ORDER BY COUNT(*) DESC, MAX(id) DESC LIMIT ?""",
-                (f"-{int(days)} days", limit),
+                (*params, limit),
             ).fetchall()
 
     def get(self, channel_id: str, thread_ts: str) -> Optional[str]:
@@ -681,7 +743,7 @@ class ThreadStore:
 
     def log_permission(self, channel_id: Optional[str], conversation_id: Optional[str],
                        event: str, entries: list, user: Optional[str] = None) -> None:
-        if not TELEMETRY_DEFAULTS.get("permission_stats"):
+        if not telemetry_enabled(channel_id, "permission_stats"):
             return
         with self._lock:
             self._conn.executemany(
@@ -691,22 +753,27 @@ class ThreadStore:
             )
             self._conn.commit()
 
-    def permission_stats(self, days: int = 30, limit: int = 15) -> list:
+    def permission_stats(self, days: int = 30, limit: int = 15, channel_id: Optional[str] = None) -> list:
         """(entry, requested, granted_once, granted_permanent, denied) for the
-        most-asked-for entries in the last `days` days."""
+        most-asked-for entries in the last `days` days; channel_id None means
+        all channels."""
+        where, params = "ts >= datetime('now', ?)", [f"-{int(days)} days"]
+        if channel_id is not None:
+            where += " AND channel_id = ?"
+            params.append(channel_id)
         with self._lock:
             return self._conn.execute(
-                """SELECT entry,
+                f"""SELECT entry,
                           SUM(event IN ('requested', 'throttled')),
                           SUM(event = 'granted_once'),
                           SUM(event = 'granted_permanent'),
                           SUM(event = 'denied')
                    FROM permission_log
-                   WHERE ts >= datetime('now', ?)
+                   WHERE {where}
                    GROUP BY entry
                    ORDER BY SUM(event IN ('requested', 'throttled')) DESC, MAX(id) DESC
                    LIMIT ?""",
-                (f"-{int(days)} days", limit),
+                (*params, limit),
             ).fetchall()
 
     def put_retry(self, retry_id: str, channel_id: str, thread_ts: str, project_id: str,
@@ -2608,7 +2675,7 @@ def build_app() -> App:
 
         project_id = channel_cfg["project"]
         raw = (command.get("text") or "").strip().lstrip("/").strip()
-        if TELEMETRY_DEFAULTS.get("agy_slash"):
+        if telemetry_enabled(channel_id, "agy_slash"):
             store.log_slash(channel_id, "agy " + (raw.split(" ", 1)[0].lower() or "(help)"))
         model, effort = _effective_model_effort(store, channel_id, channel_cfg)
 
@@ -2663,52 +2730,78 @@ def build_app() -> App:
 
     @app.command("/agy-stats")
     def handle_stats_command(ack, respond, command):  # noqa: ANN001 - Bolt signature
-        """`/agy-stats` shows which features record usage and what they've
-        recorded. `on|off <feature>` switches one on or off and writes it to
-        config.yaml's `telemetry:` block."""
+        """`/agy-stats` shows which features record usage for this channel and
+        what they've recorded. `on|off <feature>` switches one on or off for
+        this channel; add `all` to change the top-level default for every
+        channel. `slash|buttons [days] [all]` shows the stats for this channel,
+        or for every channel with `all`."""
         ack()
+        channel_id = command.get("channel_id")
         args = (command.get("text") or "").strip().split()
         sub = args[0].lower() if args else "status"
+        rest = [a.lower() for a in args[1:]]
+        scope_all = "all" in rest
+        rest = [a for a in rest if a != "all"]
 
         if sub in ("on", "off"):
-            if len(args) < 2 or args[1] not in TELEMETRY_FEATURES:
-                respond(text=f"使い方: `/agy-stats {sub} <{'|'.join(TELEMETRY_FEATURES)}>`",
+            if not rest or rest[0] not in TELEMETRY_FEATURES:
+                respond(text=f"使い方: `/agy-stats {sub} <{'|'.join(TELEMETRY_FEATURES)}> [all]`",
                         response_type="ephemeral")
                 return
-            set_telemetry_flag(args[1], sub == "on")
-            respond(text=f"`{args[1]}` の記録を{'有効' if sub == 'on' else '無効'}にして config.yaml に保存しました。",
+            feature = rest[0]
+            enabled = sub == "on"
+            if scope_all:
+                set_telemetry_flag(feature, enabled)
+                where = "全チャンネル（top-level）"
+            else:
+                if channel_id not in channel_map:
+                    respond(text="このチャンネルは対象外です。全体の設定は `all` を付けてください。",
+                            response_type="ephemeral")
+                    return
+                set_telemetry_flag(feature, enabled, channel_id=channel_id)
+                where = "このチャンネル"
+            respond(text=f"`{feature}` を{'有効' if enabled else '無効'}にしました（{where}, config.yaml に保存）。",
                     response_type="ephemeral")
             return
 
-        days = int(args[1]) if len(args) > 1 and args[1].isdigit() else 30
+        days = next((int(a) for a in rest if a.isdigit()), 30)
+        target = None if scope_all else channel_id
+        scope_label = "全チャンネル" if scope_all else "このチャンネル"
+
         if sub == "slash":
-            rows = store.slash_stats(days)
+            rows = store.slash_stats(days, channel_id=target)
             if not rows:
-                respond(text=f"直近{days}日の agy スラッシュコマンドの記録はありません。", response_type="ephemeral")
+                respond(text=f"直近{days}日の agy スラッシュコマンドの記録はありません（{scope_label}）。",
+                        response_type="ephemeral")
                 return
             listing = "\n".join(f"{i}. `/{name}` {count}回" for i, (name, count) in enumerate(rows, 1))
-            respond(text=f"直近{days}日の agy スラッシュコマンド（使われた回数順）:\n{listing}",
+            respond(text=f"直近{days}日の agy スラッシュコマンド（{scope_label}、使われた回数順）:\n{listing}",
                     response_type="ephemeral")
             return
 
         if sub == "buttons":
-            rows = store.permission_stats(days)
+            rows = store.permission_stats(days, channel_id=target)
             if not rows:
-                respond(text=f"直近{days}日の一時許可ボタンの記録はありません。", response_type="ephemeral")
+                respond(text=f"直近{days}日の一時許可ボタンの記録はありません（{scope_label}）。",
+                        response_type="ephemeral")
                 return
             listing = "\n".join(
                 f"{i}. 要求{req} / 今回{once} / 恒久{perm} / 拒否{den}  `{entry}`"
                 for i, (entry, req, once, perm, den) in enumerate(rows, 1)
             )
-            respond(text=f"直近{days}日の一時許可ボタンの記録（要求の多い順）:\n{listing}",
+            respond(text=f"直近{days}日の一時許可ボタンの記録（{scope_label}、要求の多い順）:\n{listing}",
                     response_type="ephemeral")
             return
 
-        lines = [f"*記録の設定*（`on|off <機能>` で切替）"]
+        lines = ["*記録の設定*（`on|off <機能> [all]` で切替）"]
         for feature in TELEMETRY_FEATURES:
-            state = "有効" if TELEMETRY_DEFAULTS.get(feature) else "無効"
-            lines.append(f"- `{feature}`: {state}（config.yaml）")
-        lines.append("集計: `/agy-stats slash [日数]`、`/agy-stats buttons [日数]`")
+            if channel_id in CHANNEL_TELEMETRY and feature in CHANNEL_TELEMETRY[channel_id]:
+                source = "このチャンネル"
+            else:
+                source = "全体"
+            state = "有効" if telemetry_enabled(channel_id, feature) else "無効"
+            lines.append(f"- `{feature}`: {state}（{source}）")
+        lines.append("集計: `/agy-stats slash [日数] [all]`、`/agy-stats buttons [日数] [all]`")
         respond(text="\n".join(lines), response_type="ephemeral")
 
     @app.command("/agy-link")
@@ -2718,7 +2811,7 @@ def build_app() -> App:
         if channel_id not in channel_map:
             respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
             return
-        if TELEMETRY_DEFAULTS.get("agy_slash"):
+        if telemetry_enabled(channel_id, "agy_slash"):
             store.log_slash(channel_id, "agy-link")
         # Slack doesn't allow slash commands inside a thread, so "current"
         # = this channel's most recently active conversation; an explicit

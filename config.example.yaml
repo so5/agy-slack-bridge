@@ -45,8 +45,10 @@ channels:
     icon_emoji: ":sparkles:"
     model: "gemini-3.1-pro-high"
 
-# Optional usage statistics, both off by default. `/agy-stats on|off <feature>`
-# rewrites this block in place. See README "Usage statistics".
+# Optional usage statistics, both off by default. This top-level block applies
+# to every channel; a channel can override it with its own `telemetry:` block
+# under `channels:`. `/agy-stats on|off <feature>` rewrites these in place.
+# See README "Usage statistics".
 #telemetry:
 #  agy_slash: false          # /agy and /agy-link: which subcommand, how often
 #  permission_stats: false   # permission button requests and outcomes
