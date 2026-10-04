@@ -2749,19 +2749,20 @@ def build_app() -> App:
                 f"{i}. 要求{req} / 今回{once} / 恒久{perm} / 拒否{den}  `{entry}`"
                 for i, (entry, req, once, perm, den) in enumerate(rows, 1)
             )
-            respond(text=f"直近{days}日の一時許可ボタンの記録（このチャンネル、要求の多い順）:\n{listing}",
+            note = ("" if telemetry_enabled(channel_id, TELEMETRY_FEATURES[0])
+                    else "\n※ このチャンネルは現在記録が無効です。以下は無効化前に残った過去の記録です。")
+            respond(text=f"直近{days}日の一時許可ボタンの記録（このチャンネル、要求の多い順）:\n{listing}{note}",
                     response_type="ephemeral")
             return
 
-        lines = ["*記録の設定*（`on|off [all]` で切替）"]
-        for feature in TELEMETRY_FEATURES:
-            if channel_id in CHANNEL_TELEMETRY and feature in CHANNEL_TELEMETRY[channel_id]:
-                source = "このチャンネル"
-            else:
-                source = "全体"
-            state = "有効" if telemetry_enabled(channel_id, feature) else "無効"
-            lines.append(f"- `{feature}`: {state}（{source}）")
-        lines.append("集計: `/agy-stats buttons [日数]`")
+        feature = TELEMETRY_FEATURES[0]
+        enabled = telemetry_enabled(channel_id, feature)
+        if channel_id in CHANNEL_TELEMETRY and feature in CHANNEL_TELEMETRY[channel_id]:
+            source = "このチャンネルの設定"
+        else:
+            source = "全体の設定を継承"
+        lines = [f"*このチャンネルの許可統計: {'有効' if enabled else '無効'}*（{source}）",
+                 "切替: `/agy-stats on|off [all]`　集計: `/agy-stats buttons [日数]`"]
         respond(text="\n".join(lines), response_type="ephemeral")
 
     @app.command("/agy-link")
