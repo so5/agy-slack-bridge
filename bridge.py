@@ -2542,6 +2542,9 @@ def build_app() -> App:
                 response_type="ephemeral",
             )
         elif sub in ("add", "remove"):
+            # Slack's rendering of pasted text leaves backticks around code; a
+            # permission entry never contains one, so drop them all.
+            arg = arg.replace("`", "").strip()
             if not arg:
                 respond(text=f"使い方: `/agy-permissions {sub} <コマンド または kind(引数)>`"
                              + ("（`remove 1 3 5` のように `list` の番号を複数指定も可）" if sub == "remove" else ""),
