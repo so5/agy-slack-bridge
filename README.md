@@ -294,9 +294,12 @@ Two ways to act on `permissions.allow` without leaving Slack:
     request and outcome is recorded in the bridge's state db, so entries you
     keep granting "once" can be promoted to a permanent grant on evidence.
 
-Both paths write straight to `~/.gemini/antigravity-cli/settings.json` (or
-wherever `AGY_SETTINGS_PATH` points, see below), preserving everything else
-already in the file. Every add/remove is logged.
+Both paths write to that **channel's own project**'s
+`~/.gemini/config/projects/<project-id>.json` (`permissionGrants.allow`),
+preserving everything else already in the file - never to agy's global
+`~/.gemini/antigravity-cli/settings.json`. A grant approved from one channel
+is never usable from a conversation in a different project. Every
+add/remove is logged.
 
 ### Keeping the agent inside its lane
 
@@ -311,7 +314,7 @@ but these make the easy mistakes (and easy probing) fail loudly:
   it still goes through the normal grant flow. The bridge treats a deny-rule
   block as final: no grant buttons, a "blocked by a deny rule" note instead.
   Also worth keeping `trustedWorkspaces` down to the actual project dirs.
-- **Keep the global allow list short.** Allow rules are prefix matches:
+- **Keep each project's allow list short.** Allow rules are prefix matches:
   `echo` also allows `echo x > file`, `cat`/`grep`/`tail` read anything, `agy`
   allows `agy --dangerously-skip-permissions ...`.
 - **Grant-button throttle**: more than 3 permission-button prompts in one
@@ -552,9 +555,8 @@ $EDITOR ~/.config/agy-slack-bridge/config.yaml   # fill in channel -> project ma
 
 See `config.example.yaml` for the mapping format and `env.example` for the
 environment variables (tokens, plus optional overrides like `AGY_BIN` if
-`agy` isn't on `PATH`, `AGY_TIMEOUT_SEC` if your conversations legitimately
-run longer than 20 minutes, or `AGY_SETTINGS_PATH` if agy's settings file
-isn't at the default `~/.gemini/antigravity-cli/settings.json`).
+`agy` isn't on `PATH`, or `AGY_TIMEOUT_SEC` if your conversations legitimately
+run longer than 20 minutes).
 
 ## Running
 

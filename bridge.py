@@ -55,17 +55,17 @@ STATE_PATH = Path(os.environ.get("AGY_BRIDGE_STATE_DB", "state.sqlite3"))
 AGY_BIN = os.environ.get("AGY_BIN", "agy")
 # Safety cap so a stuck agy invocation can't wedge the bridge forever.
 AGY_TIMEOUT_SEC = int(os.environ.get("AGY_TIMEOUT_SEC", "1200"))
-# agy's own global permission file (see README's "Tool permissions" section)
-# - not owned by this bridge, so every write here preserves whatever else is
-# already in it (trustedWorkspaces, etc.) and only touches permissions.allow.
-AGY_SETTINGS_PATH = Path(
-    os.environ.get("AGY_SETTINGS_PATH", "~/.gemini/antigravity-cli/settings.json")
-).expanduser()
 # Safety-net upper bound on how long a grant_once entry can outlive its own
 # retry, for a conversation that's abandoned mid-task and never comes back
 # to a clean turn (see _run_and_reply / ThreadStore.sweep_stale_temp_grants).
 AGY_TEMP_GRANT_MAX_AGE_SEC = int(os.environ.get("AGY_TEMP_GRANT_MAX_AGE_SEC", "3600"))
 AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC = int(os.environ.get("AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC", "300"))
+# Each agy project keeps its own permissionGrants.allow list in
+# ~/.gemini/config/projects/<id>.json. The bridge grants (once or
+# permanent) are written there, per project - never to agy's global
+# ~/.gemini/antigravity-cli/settings.json, which this bridge does not
+# touch at all: a grant made from one Slack channel must never become
+# usable from another channel's (different project's) conversations.
 AGY_PROJECTS_DIR = Path("~/.gemini/config/projects").expanduser()
 AGY_BRAIN_DIR = Path("~/.gemini/antigravity-cli/brain").expanduser()
 # Extensions worth auto-uploading a local file agy mentions by file:// link
@@ -794,11 +794,14 @@ class ThreadStore:
             )
             self._conn.commit()
 
-    def clear_temp_grants(self, conversation_id: str) -> list[str]:
+    def clear_temp_grants(self, conversation_id: str, project_id: str) -> list[str]:
         """Releases every temp grant recorded for this conversation, and
-        returns the subset now safe to actually remove from
-        permissions.allow - i.e. no *other* conversation still holds the
-        same entry, since that file is shared machine-wide."""
+        returns the subset now safe to actually remove from that project's
+        own permissionGrants.allow - i.e. no *other* conversation **in the
+        same project** still holds the same entry. Scoped to project_id
+        (passed by the caller, who already knows it) rather than
+        machine-wide, since each project now has its own grant file - a
+        same-named entry held by some other project is irrelevant here."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT DISTINCT entry FROM temp_grants WHERE conversation_id=?",
@@ -812,39 +815,57 @@ class ThreadStore:
             to_revoke = []
             for entry in entries:
                 remaining = self._conn.execute(
-                    "SELECT COUNT(*) FROM temp_grants WHERE entry=?", (entry,)
+                    """SELECT COUNT(*) FROM temp_grants t
+                       JOIN threads th ON th.conversation_id = t.conversation_id
+                       WHERE t.entry=? AND th.project_id=?""",
+                    (entry, project_id),
                 ).fetchone()[0]
                 if remaining == 0:
                     to_revoke.append(entry)
             return to_revoke
 
-    def sweep_stale_temp_grants(self, max_age_seconds: int) -> list[str]:
+    def sweep_stale_temp_grants(self, max_age_seconds: int) -> list[tuple[str, str]]:
         """Safety net for a conversation that never comes back to a clean
         turn (abandoned mid-task, etc.) - force-releases anything older
-        than max_age_seconds, with the same cross-conversation check."""
+        than max_age_seconds, with the same same-project cross-conversation
+        check as clear_temp_grants. Returns (project_id, entry) pairs - the
+        project_id is recovered via a join against `threads` (temp_grants
+        itself only ever stored conversation_id), so a grant whose thread
+        row is somehow gone can't be resolved to a file and is skipped
+        rather than guessed at."""
         with self._lock:
             rows = self._conn.execute(
-                """SELECT conversation_id, entry FROM temp_grants
-                   WHERE (strftime('%s','now') - strftime('%s', granted_at)) > ?""",
+                """SELECT t.conversation_id, t.entry, th.project_id FROM temp_grants t
+                   LEFT JOIN threads th ON th.conversation_id = t.conversation_id
+                   WHERE (strftime('%s','now') - strftime('%s', t.granted_at)) > ?""",
                 (max_age_seconds,),
             ).fetchall()
             if not rows:
                 return []
             self._conn.executemany(
-                "DELETE FROM temp_grants WHERE conversation_id=? AND entry=?", rows
+                "DELETE FROM temp_grants WHERE conversation_id=? AND entry=?",
+                [(cid, entry) for cid, entry, _ in rows],
             )
             self._conn.commit()
             to_revoke = []
-            seen: set[str] = set()
-            for _, entry in rows:
-                if entry in seen:
+            seen: set[tuple[str, str]] = set()
+            for _, entry, project_id in rows:
+                if project_id is None:
+                    log.error("temp grant %r has no resolvable project_id (thread row missing) - "
+                              "leaving it unrevoked", entry)
                     continue
-                seen.add(entry)
+                key = (project_id, entry)
+                if key in seen:
+                    continue
+                seen.add(key)
                 remaining = self._conn.execute(
-                    "SELECT COUNT(*) FROM temp_grants WHERE entry=?", (entry,)
+                    """SELECT COUNT(*) FROM temp_grants t
+                       JOIN threads th ON th.conversation_id = t.conversation_id
+                       WHERE t.entry=? AND th.project_id=?""",
+                    (entry, project_id),
                 ).fetchone()[0]
                 if remaining == 0:
-                    to_revoke.append(entry)
+                    to_revoke.append((project_id, entry))
             return to_revoke
 
     def get_channel_settings(self, channel_id: str) -> Optional[dict]:
@@ -876,60 +897,99 @@ class ThreadStore:
             return cur.rowcount > 0
 
 
-class PermissionsFile:
-    """Read-modify-write helper for agy's global
-    ~/.gemini/antigravity-cli/settings.json permissions.allow list.
+class ProjectPermissionsFile:
+    """Read-modify-write helper for one agy project's own
+    ~/.gemini/config/projects/<project_id>.json permissionGrants.allow
+    list - the per-project counterpart agy itself already reads (confirmed:
+    accountant and secretary both already carry hand-added script grants
+    there). Deliberately project-scoped rather than a single shared file:
+    a grant approved from one Slack channel (project) must never silently
+    become usable from a conversation in a different project.
 
-    Every write reloads the file fresh and only touches the allow list, so
-    whatever else is in there (trustedWorkspaces, etc.) - and any change a
-    human made by hand in between - survives untouched."""
+    Every write reloads that one project's file fresh and only touches
+    permissionGrants.permissionGrants.allow, so projectResources, settings,
+    etc. - and any change a human made by hand in between - survive
+    untouched. A missing project file is treated as a hard error rather
+    than "no grants yet": unlike agy's global settings.json (which may
+    legitimately not exist before first run), a project file not existing
+    means the project_id is wrong or the project was removed, and writing
+    a fresh skeleton there would silently lose projectResources."""
 
-    def __init__(self, path: Path):
-        self._path = path
-        self._lock = threading.Lock()
+    def __init__(self, projects_dir: Path):
+        self._dir = projects_dir
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
 
-    def _load(self) -> dict:
-        try:
-            with self._path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
+    def _lock_for(self, project_id: str) -> threading.Lock:
+        with self._locks_guard:
+            return self._locks.setdefault(project_id, threading.Lock())
 
-    def _save(self, data: dict) -> None:
-        tmp = self._path.with_name(self._path.name + ".tmp")
+    def _path(self, project_id: str) -> Path:
+        return self._dir / f"{project_id}.json"
+
+    def _load(self, project_id: str) -> dict:
+        with self._path(project_id).open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _save(self, project_id: str, data: dict) -> None:
+        path = self._path(project_id)
+        tmp = path.with_name(path.name + ".tmp")
         with tmp.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             f.write("\n")
-        tmp.replace(self._path)
+        tmp.replace(path)
 
     @staticmethod
     def _entry(command: str) -> str:
         return f"command({command})"
 
-    def list_entries(self) -> list[str]:
-        with self._lock:
-            return list((self._load().get("permissions") or {}).get("allow") or [])
+    def list_entries(self, project_id: str) -> list[str]:
+        if not self._path(project_id).exists():
+            log.error("permissions: no project file for project_id=%r", project_id)
+            return []
+        with self._lock_for(project_id):
+            data = self._load(project_id)
+            grants = (data.get("permissionGrants") or {}).get("permissionGrants") or {}
+            return list(grants.get("allow") or [])
 
-    def add_entry(self, entry: str) -> bool:
-        with self._lock:
-            data = self._load()
-            allow = data.setdefault("permissions", {}).setdefault("allow", [])
+    def add_entry(self, project_id: str, entry: str) -> bool:
+        if not self._path(project_id).exists():
+            log.error("permissions: refusing to grant %r - no project file for project_id=%r",
+                       entry, project_id)
+            return False
+        with self._lock_for(project_id):
+            data = self._load(project_id)
+            outer = data.get("permissionGrants") or {}
+            inner = outer.get("permissionGrants") or {}
+            allow = list(inner.get("allow") or [])
             if entry in allow:
                 return False
             allow.append(entry)
-            self._save(data)
-        log.info("permissions.allow += %r", entry)
+            inner["allow"] = allow
+            outer["permissionGrants"] = inner
+            data["permissionGrants"] = outer
+            self._save(project_id, data)
+        log.info("project %s permissionGrants.allow += %r", project_id, entry)
         return True
 
-    def remove_entry(self, entry: str) -> bool:
-        with self._lock:
-            data = self._load()
-            allow = (data.get("permissions") or {}).get("allow") or []
+    def remove_entry(self, project_id: str, entry: str) -> bool:
+        if not self._path(project_id).exists():
+            log.error("permissions: refusing to revoke %r - no project file for project_id=%r",
+                       entry, project_id)
+            return False
+        with self._lock_for(project_id):
+            data = self._load(project_id)
+            outer = data.get("permissionGrants") or {}
+            inner = outer.get("permissionGrants") or {}
+            allow = list(inner.get("allow") or [])
             if entry not in allow:
                 return False
             allow.remove(entry)
-            self._save(data)
-        log.info("permissions.allow -= %r", entry)
+            inner["allow"] = allow
+            outer["permissionGrants"] = inner
+            data["permissionGrants"] = outer
+            self._save(project_id, data)
+        log.info("project %s permissionGrants.allow -= %r", project_id, entry)
         return True
 
     # Backward-compatible helpers for a bare shell command (used by
@@ -1060,7 +1120,7 @@ def _is_deny_rule_error(err: dict) -> bool:
     return "deny rule" in (err.get("message") or "").lower()
 
 
-def _stuck_denial_reason(err: dict, permissions: "PermissionsFile") -> Optional[str]:
+def _stuck_denial_reason(err: dict, permissions: "ProjectPermissionsFile", project_id: str) -> Optional[str]:
     """For a run_command denial that *looks* like an ordinary permission
     gap (passes _is_permission_error) but almost certainly isn't - clicking
     "grant and retry" can't fix either case, so it shouldn't get a button:
@@ -1088,7 +1148,7 @@ def _stuck_denial_reason(err: dict, permissions: "PermissionsFile") -> Optional[
         return ("コマンドの構文が壊れています（例: 引用符が閉じていない）。"
                 "モデルの出力が途中で切れた可能性が高く、同じ内容を再試行しても直りません。")
     grantable = _grantable_entry(err)
-    if grantable and grantable["entry"] in permissions.list_entries():
+    if grantable and grantable["entry"] in permissions.list_entries(project_id):
         return "このコマンドはすでに許可リストに入っています。権限不足ではなく、別の理由で失敗しています。"
     return None
 
@@ -1484,7 +1544,7 @@ def _kill_process_tree(pid: int) -> None:
 
 def run_agy(text: str, project_id: str, conversation_id: Optional[str],
             model: Optional[str] = None, effort: Optional[str] = None,
-            permissions: Optional["PermissionsFile"] = None) -> dict:
+            permissions: Optional["ProjectPermissionsFile"] = None) -> dict:
     # --output-format json only gives denied_actions as a bare
     # {"action": "command", "display_name": "RunCommand"} - not what was
     # actually denied. stream-json emits a step_update per tool call, so a
@@ -1575,7 +1635,7 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     # nothing - so skip the inference for those and let them count as the
     # progress they almost certainly are, instead of looping a grant that
     # can't fix a command that was never actually the problem.
-    already_allowed = set(permissions.list_entries()) if permissions else set()
+    already_allowed = set(permissions.list_entries(project_id)) if permissions else set()
     if "auto-denied" in proc.stderr:
         for idx, step in last_tool_step.items():
             info = step.get("tool_info") or {}
@@ -1836,7 +1896,7 @@ def _agy_failure_text(err: str) -> str:
     return ":x: agy invocation failed. Check the bridge's logs."
 
 
-def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
+def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermissionsFile",
                     channel_id: str, thread_key: str, project_id: str,
                     conversation_id: Optional[str], text: str, persona_kwargs: dict,
                     status_text: str = "考え中です...",
@@ -1915,10 +1975,10 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
         # down the moment a *different* one gets granted. Safe across
         # conversations: clear_temp_grants only returns entries no other
         # conversation still needs.
-        for entry in store.clear_temp_grants(conversation_id):
-            log.info("auto-releasing temp grant (clean turn, conversation=%s): %r",
-                      conversation_id, entry)
-            permissions.remove_entry(entry)
+        for entry in store.clear_temp_grants(conversation_id, project_id):
+            log.info("auto-releasing temp grant (clean turn, conversation=%s, project=%s): %r",
+                      conversation_id, project_id, entry)
+            permissions.remove_entry(project_id, entry)
 
     # Not every tool-step error is a permission denial - e.g.
     # replace_file_content can fail because its target text no longer
@@ -1952,7 +2012,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
     stuck_errors: list[tuple[dict, str]] = []
     permission_errors: list[dict] = []
     for e in permission_candidates:
-        reason = _stuck_denial_reason(e, permissions)
+        reason = _stuck_denial_reason(e, permissions, project_id)
         if reason:
             stuck_errors.append((e, reason))
         else:
@@ -2160,17 +2220,17 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "PermissionsFile",
 def build_app() -> App:
     channel_map = load_channel_map()
     store = ThreadStore(STATE_PATH)
-    permissions = PermissionsFile(AGY_SETTINGS_PATH)
+    permissions = ProjectPermissionsFile(AGY_PROJECTS_DIR)
     locks = KeyedLocks()
 
     def _sweep_temp_grants() -> None:
         while True:
             time.sleep(AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC)
             try:
-                for entry in store.sweep_stale_temp_grants(AGY_TEMP_GRANT_MAX_AGE_SEC):
-                    permissions.remove_entry(entry)
-                    log.info("swept stale temp grant %r (older than %ss without a clean turn)",
-                              entry, AGY_TEMP_GRANT_MAX_AGE_SEC)
+                for project_id, entry in store.sweep_stale_temp_grants(AGY_TEMP_GRANT_MAX_AGE_SEC):
+                    permissions.remove_entry(project_id, entry)
+                    log.info("swept stale temp grant %r (project=%s, older than %ss without a clean turn)",
+                              entry, project_id, AGY_TEMP_GRANT_MAX_AGE_SEC)
             except Exception:
                 log.exception("temp-grant sweep failed")
 
@@ -2329,7 +2389,7 @@ def build_app() -> App:
         _reset_denial_throttle(conversation_id)
 
         for entry in entries:
-            newly_added = permissions.add_entry(entry)
+            newly_added = permissions.add_entry(ctx["project_id"], entry)
             if newly_added and not permanent:
                 # Deferred release (see _run_and_reply's clean-turn check
                 # and the sweep thread below) instead of tearing this down
@@ -2511,9 +2571,9 @@ def build_app() -> App:
         arg = parts[1].strip() if len(parts) > 1 else ""
 
         if sub in ("", "list"):
-            entries = permissions.list_entries()
+            entries = permissions.list_entries(project_id)
             if not entries:
-                respond(text="permissions.allow は現在空です。", response_type="ephemeral")
+                respond(text="このプロジェクトの恒久許可リストは現在空です。", response_type="ephemeral")
                 return
             # Plain text, no per-entry buttons - simpler and doesn't depend
             # on Slack's per-block length/count limits (a button+confirm
@@ -2521,7 +2581,7 @@ def build_app() -> App:
             # Delete via `/agy-permissions remove <entry>` instead.
             listing = "\n".join(f"{i}. `{e}`" for i, e in enumerate(entries, 1))
             respond(
-                text=f"現在の permissions.allow ({len(entries)}件):\n{listing}\n\n"
+                text=f"このプロジェクトの恒久許可リスト ({len(entries)}件):\n{listing}\n\n"
                      "削除するには `/agy-permissions remove <エントリ>` を使ってください。",
                 response_type="ephemeral",
             )
@@ -2560,12 +2620,12 @@ def build_app() -> App:
                 # order, even if the list changes mid-way.
                 tokens = [t for t in re.split(r"[,\s]+", arg.strip()) if t]
                 if tokens and all(t.isdigit() for t in tokens):
-                    snapshot = permissions.list_entries()
+                    snapshot = permissions.list_entries(project_id)
                     removed, invalid = [], []
                     for i in sorted({int(t) for t in tokens}):
                         if 1 <= i <= len(snapshot):
                             entry = snapshot[i - 1]
-                            if permissions.remove_entry(entry):
+                            if permissions.remove_entry(project_id, entry):
                                 removed.append(entry)
                                 _mark_permanent_command(project_id, entry, present=False)
                         else:
@@ -2583,7 +2643,7 @@ def build_app() -> App:
             # is used as-is.
             entry = arg if _FULL_ENTRY_RE.match(arg) else f"command({arg})"
             if sub == "add":
-                ok = permissions.add_entry(entry)
+                ok = permissions.add_entry(project_id, entry)
                 _mark_permanent_command(project_id, entry, present=True)
                 respond(
                     text=(f":white_check_mark: `{entry}` を追加しました。" if ok
@@ -2591,7 +2651,7 @@ def build_app() -> App:
                     response_type="ephemeral",
                 )
             else:
-                ok = permissions.remove_entry(entry)
+                ok = permissions.remove_entry(project_id, entry)
                 _mark_permanent_command(project_id, entry, present=False)
                 respond(
                     text=(f":wastebasket: `{entry}` を削除しました。" if ok
