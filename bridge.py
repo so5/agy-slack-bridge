@@ -794,6 +794,20 @@ class ThreadStore:
             )
             self._conn.commit()
 
+    def promote_temp_grant(self, project_id: str, entry: str) -> None:
+        """Forgets every temp-grant record for `entry` in this project, because
+        the entry was just made permanent. Without this, the clean-turn
+        release / stale sweep would later remove it from the project's
+        allow list as if it were still only a one-time grant, silently
+        revoking the permanent one."""
+        with self._lock:
+            self._conn.execute(
+                """DELETE FROM temp_grants WHERE entry=? AND conversation_id IN
+                   (SELECT conversation_id FROM threads WHERE project_id=?)""",
+                (entry, project_id),
+            )
+            self._conn.commit()
+
     def clear_temp_grants(self, conversation_id: str, project_id: str) -> list[str]:
         """Releases every temp grant recorded for this conversation, and
         returns the subset now safe to actually remove from that project's
@@ -2390,6 +2404,8 @@ def build_app() -> App:
 
         for entry in entries:
             newly_added = permissions.add_entry(ctx["project_id"], entry)
+            if permanent:
+                store.promote_temp_grant(ctx["project_id"], entry)
             if newly_added and not permanent:
                 # Deferred release (see _run_and_reply's clean-turn check
                 # and the sweep thread below) instead of tearing this down
@@ -2644,6 +2660,7 @@ def build_app() -> App:
             entry = arg if _FULL_ENTRY_RE.match(arg) else f"command({arg})"
             if sub == "add":
                 ok = permissions.add_entry(project_id, entry)
+                store.promote_temp_grant(project_id, entry)
                 _mark_permanent_command(project_id, entry, present=True)
                 respond(
                     text=(f":white_check_mark: `{entry}` を追加しました。" if ok

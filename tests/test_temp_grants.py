@@ -76,3 +76,19 @@ def test_sweep_dedupes_same_project_entry(store):
         store.add_temp_grant(c, "command(ls)")
         _age(store, c)
     assert store.sweep_stale_temp_grants(3600) == [("a", "command(ls)")]
+def test_promote_makes_temp_grant_survive_release(store):
+    """A one-time grant later made permanent must not be revoked by the
+    clean-turn release or the stale sweep."""
+    _thread(store, "c1", "a")
+    store.add_temp_grant("c1", "command(ls)")
+    store.promote_temp_grant("a", "command(ls)")
+    assert store.clear_temp_grants("c1", "a") == []
+
+
+def test_promote_is_scoped_to_project(store):
+    _thread(store, "c1", "a")
+    _thread(store, "c2", "b")
+    store.add_temp_grant("c1", "command(ls)")
+    store.add_temp_grant("c2", "command(ls)")
+    store.promote_temp_grant("a", "command(ls)")
+    assert store.clear_temp_grants("c2", "b") == ["command(ls)"]
