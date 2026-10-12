@@ -120,15 +120,15 @@ Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.googl
   warning: **許可して再実行** (grant that exact command for this conversation
   only, retry the same prompt, then revoke it again once the retry finishes)
   and **拒否**. This makes a permission denial actionable straight from a
-  phone, without SSHing in to edit `settings.json` by hand. Granting
+  phone, without SSHing in to edit the allow list by hand. Granting
   something permanently is a deliberate, separate step — see "Managing
   permissions from Slack" below — not a button click, since a button tied to
   a command string would silently cover whatever that command's target file
   contains *later*, not just what it contained when you clicked it.
 
 This is intentionally a thin process wrapper around `agy -p ... --output-format
-json`, not a reimplementation of anything agy does. It just routes Slack
-messages in and `agy`'s JSON responses back out, and keeps a small local
+stream-json`, not a reimplementation of anything agy does. It just routes Slack
+messages in and `agy`'s final result back out, and keeps a small local
 mapping from Slack threads to `agy` conversation IDs.
 
 ## Requirements
@@ -204,9 +204,11 @@ click "approve" on a tool-permission prompt, so this bridge runs with
 `--mode accept-edits` rather than `--dangerously-skip-permissions`. In
 testing: `accept-edits` auto-approves file edits and safe read-only shell
 commands (e.g. `ls`), but a command agy considers destructive (e.g. `rm`) is
-still denied unless it matches an entry under `permissions.allow` in
-`~/.gemini/antigravity-cli/settings.json` (a **global** file, shared across
-every `agy` project on the machine).
+still denied unless it matches an allow entry, either in the project's own `permissionGrants.allow` in
+`~/.gemini/config/projects/<project-id>.json` (see "Managing permissions from
+Slack" below) or in agy's machine-wide `~/.gemini/antigravity-cli/settings.json`
+`permissions.allow` (shared by every `agy` project; the bridge never writes
+there).
 
 The match is **not** literal full-string equality, and it's **not** a bare
 binary-name allow either — confirmed by testing, it's a *token-complete
@@ -253,7 +255,7 @@ always required an explicit match for every `run_command` call, full stop.
 
 ## Managing permissions from Slack
 
-Two ways to act on `permissions.allow` without leaving Slack:
+Two ways to act on the project's allow list without leaving Slack:
 
 - **Buttons on a denial reply**: click 許可して再実行 to grant that entry for
   *this conversation only* and immediately re-run the *exact same prompt*
@@ -408,8 +410,8 @@ task needing *several* different grants in sequence - by the time the
 second one got granted, the first was already gone, so a later retry that
 needed both would just deny the first one again. Instead, a `grant_once`
 entry is now tied to the conversation: it's released (and only *actually*
-removed from `permissions.allow` if no other conversation on the machine is
-also relying on the exact same entry, since that file is shared) the next
+removed from the project's `permissionGrants.allow` if no other conversation
+*in the same project* is also relying on the exact same entry) the next
 time that conversation has a turn with **no** fresh denial at all - the
 natural "this task is done for now" signal. As a backstop for a conversation
 that's abandoned mid-task and never comes back clean, a background sweep
@@ -563,10 +565,15 @@ run longer than 20 minutes).
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+set -a; . ~/.config/agy-slack-bridge/env; set +a   # load the tokens (comments in the file are fine)
 AGY_BRIDGE_CONFIG=~/.config/agy-slack-bridge/config.yaml \
 AGY_BRIDGE_STATE_DB=~/.config/agy-slack-bridge/state.sqlite3 \
-  env $(cat ~/.config/agy-slack-bridge/env | xargs) .venv/bin/python bridge.py
+  .venv/bin/python bridge.py
 ```
+
+(The env file is plain `KEY=value` lines, as systemd's `EnvironmentFile=`
+expects, so sourcing it with `set -a` works. Don't use
+`env $(cat file | xargs)`: it breaks on the `#` comment lines.)
 
 Or install it as a long-running `systemd --user` service — see
 `systemd/agy-slack-bridge.service.example` for a ready-to-copy unit and the
@@ -579,12 +586,16 @@ Roughly:
 ```sh
 agy -p "<the Slack message text>" \
     --project <project-id-for-this-channel> \
-    --output-format json \
+    --output-format stream-json \
     --print-timeout 0 \
-    [--conversation <id-looked-up-from-the-Slack-thread>]
+    --mode accept-edits \
+    [--conversation <id-looked-up-from-the-Slack-thread>] \
+    [--model <model>] [--effort <effort>]
 ```
 
-The bridge parses the JSON `{"conversation_id": ..., "response": ...}`,
+The bridge reads the line-delimited JSON stream (per-tool `step_update`s, used
+to recover exactly which command was denied, then a final `result` event with
+`{"conversation_id": ..., "response": ...}`),
 remembers `conversation_id` against the Slack thread in a local sqlite file,
 and posts `response` back as a threaded reply.
 
