@@ -39,6 +39,10 @@ Drive CLI と、それを配るブートストラップスクリプトです。�
 - `local-tools.md` — このマシンで使えるツールの一覧
 - `gdrive-cli.md` — `--with-gdrive` のとき、エージェント向けの Drive CLI の使い方
 
+`hooks.json` の `command`（`python3 hooks/script_integrity.py`）の相対パスは、
+`hooks.json` 自身のあるディレクトリが基準です（運用で確認済み）。`.agents/hooks.json` は
+置き場の `hooks.json` へのシンボリックリンクなので、同じ置き場の `hooks/` が使われます。
+
 ## 使い方
 
 ```sh
