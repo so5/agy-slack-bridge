@@ -953,10 +953,6 @@ class ProjectPermissionsFile:
             f.write("\n")
         tmp.replace(path)
 
-    @staticmethod
-    def _entry(command: str) -> str:
-        return f"command({command})"
-
     def list_entries(self, project_id: str) -> list[str]:
         if not self._path(project_id).exists():
             log.error("permissions: no project file for project_id=%r", project_id)
@@ -1005,19 +1001,6 @@ class ProjectPermissionsFile:
             self._save(project_id, data)
         log.info("project %s permissionGrants.allow -= %r", project_id, entry)
         return True
-
-    # Backward-compatible helpers for a bare shell command (used by
-    # /agy-permissions add/remove when given a plain command instead of a
-    # full "<kind>(...)" entry like the grant buttons pass).
-    def list_commands(self) -> list[str]:
-        return [e[len("command("):-1] for e in self.list_entries()
-                if e.startswith("command(") and e.endswith(")")]
-
-    def add(self, command: str) -> bool:
-        return self.add_entry(self._entry(command))
-
-    def remove(self, command: str) -> bool:
-        return self.remove_entry(self._entry(command))
 
 
 class KeyedLocks:
