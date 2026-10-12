@@ -579,6 +579,23 @@ Or install it as a long-running `systemd --user` service — see
 `systemd/agy-slack-bridge.service.example` for a ready-to-copy unit and the
 setup steps in its header comment.
 
+## Setting up an agy project for the bridge
+
+`tools/` has an idempotent bootstrap script and the files it distributes: shared
+agent safety rules, a PreToolUse hook that pins permanently-granted scripts to
+the content that was approved (git-commit-before-run), the `permissions.deny`
+rules that keep the agent out of the bridge's own source/config, and an
+optional restricted Google Drive CLI. Where the canonical copy of those files
+lives (copy `tools/` somewhere, or symlink it) is the operator's choice - see
+[`tools/README.md`](tools/README.md) (Japanese).
+
+```sh
+python3 tools/setup_agy_project.py <path-to-project> [--with-gdrive --gdrive-secret <name>]
+```
+
+It never writes an `allow` anywhere but the target project's own
+`permissionGrants` (same rule as the bridge itself).
+
 ## How a message becomes an `agy` call
 
 Roughly:

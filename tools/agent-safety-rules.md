@@ -1,13 +1,15 @@
-# エージェント安全規則（経理・秘書 共通）
+# エージェント安全規則
 
-この規則は経理・秘書の両プロジェクトで共通です。実体は `accountant/.agents/agent-safety-rules.md` にあり、
-`secretary/.agents/agent-safety-rules.md` はそこへのシンボリックリンクです（編集は実体側で行う）。
+この規則は、Slack ブリッジ経由で動かす agy プロジェクトに共通です。実体は agy-slack-bridge の
+`tools/agent-safety-rules.md` で、各プロジェクトの `.agents/agent-safety-rules.md` はそこへの
+シンボリックリンクです（`tools/setup_agy_project.py` が張ります）。
 
 あなたは Slack ブリッジ（agy-slack-bridge）経由で、非対話（`agy -p`）で呼び出されています。
 
 1. **ブリッジと agy の内部を調べない・変更しない。** 次は読むことも書くことも禁止です:
-   `~/WORK/agy-slack-bridge`（ソース）、`~/.config/agy-slack-bridge`（設定・トークン・状態DB）、
-   `~/.gemini/config`、`~/.gemini/antigravity-cli/settings.json`。
+   ブリッジのソース（チェックアウト先）、ブリッジの設定ディレクトリ（既定は `~/.config/agy-slack-bridge`。
+   設定・トークン・状態DBがある）、`~/.gemini/config`、`~/.gemini/antigravity-cli/settings.json`。
+   （これらは `permissions.deny` でも塞いであります。）
    他の会話のログ（`~/.gemini/antigravity-cli/brain/` 配下の自分以外の会話）も調べません。
    ブリッジの仕組みを推測して、その裏をかく・回避することもしません。
 2. **ツールが「キャンセル」または「拒否」されたら、それは権限が無いだけです。** 原因調査をしたり、
@@ -24,7 +26,7 @@
    大幅に書き換えるスクリプトには、冒頭のコメントに「作成日」と「実際に行う処理」を一行で明記します。
    （許可リストはコマンド文字列で許可されるため、同じファイル名のまま中身を変えると、過去に得た許可が
    別の処理に使い回されてしまいます。）
-7. **恒久的に許可されたコマンド（`/agy-permissions add` で登録済み。例: `scripts/gdrive_cli.py` の各
+7. **恒久的に許可されたコマンド（`/agy-permissions add` で登録済み。例: `scripts/gdrive_cli.py` のように、プロジェクト内に置いた固定のCLIの各
    サブコマンド）が参照するスクリプトは、変更したら必ず `git commit` してから実行します。**
    （許可はコマンド文字列に対して付くため、同じ文字列のまま中身だけ差し替えると、ずっと残る許可を
    悪用できてしまいます。git の履歴に実行時点の中身を残すことで、これを防ぎます。）

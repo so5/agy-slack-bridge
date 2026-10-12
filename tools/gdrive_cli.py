@@ -8,7 +8,7 @@ Slack ブリッジ経由のエージェントが Drive を読み書きするた�
 このスクリプトは1つのプロジェクトに固有の認証情報を持たない。どの AWS Secrets
 Manager のシークレット（Google サービスアカウントの鍵）を使うかは、必ず
 `--secret <名前>` で明示する。デフォルト値は無い（誤ったデフォルトは、他の
-プロジェクトの認証情報を黒黒に借用してしまう事故になるため、意図的に持たせていない）。
+プロジェクトの認証情報を暗黙のうちに借用してしまう事故になるため、意図的に持たせていない）。
 
 実行方法（許可リストのエントリと一致させること。-I は必須）:
   読み取り系（恒久許可・承認不要）:
@@ -25,7 +25,7 @@ Manager のシークレット（Google サービスアカウントの鍵）を�
   `--secret <名前>` は固定の許可リストエントリの一部になる（プロジェクトごとに
   異なる文字列になるので、1つのプロジェクトへの恒久許可が別プロジェクトの
   認証情報を使う権限にはならない）。例:
-    command(.venv/bin/python -I gdrive_cli.py --secret accountant-local-google-credentials list)
+    command(.venv/bin/python -I gdrive_cli.py --secret my-project-google-credentials list)
 
 設計上の制約（変更しないこと。エージェントからは書き込み不可にしてある）:
   - 読み取り系は読み取り専用スコープ (drive.readonly) のみで動く。書き込み系だけが drive スコープを使う。

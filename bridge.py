@@ -1246,7 +1246,7 @@ def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
     git-commit enforcement or just the lighter hash-ledger check. Stores
     resolved script paths (see _resolve_permanent_script_path), not the
     raw entry text. Called from /agy-permissions add/remove and from
-    setup_agy_project.py's own direct settings.json edits (gdrive
+    tools/setup_agy_project.py (which seals the Drive CLI script it
     grants), so either path keeps this manifest accurate regardless of
     how the permanent grant was made. Each path maps to the sha256 of the
     script content approved at grant time (the seal); re-adding re-seals."""
