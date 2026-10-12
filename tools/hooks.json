@@ -1,0 +1,15 @@
+{
+  "script-integrity": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "command": "python3 hooks/script_integrity.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
