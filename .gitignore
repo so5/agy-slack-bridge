@@ -6,3 +6,4 @@ state.sqlite3
 env
 .env
 *.log
+.pytest_cache/
