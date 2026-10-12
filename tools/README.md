@@ -46,7 +46,7 @@ python3 tools/setup_agy_project.py <対象プロジェクトのパス> \
     [--source-dir <共有ファイルの置き場>] \
     [--bridge-dir <ブリッジのチェックアウト>] \
     [--bridge-config-dir <ブリッジの設定ディレクトリ>] \
-    [--with-gdrive --gdrive-secret <AWSシークレット名> [--gdrive-script scripts/gdrive_cli.py]]
+    [--with-gdrive --gdrive-profile <プロファイル名> [--gdrive-script scripts/gdrive_cli.py]]
 ```
 
 - 対象は git リポジトリであること(恒久許可コマンドの commit-before-run 判定の前提)。
@@ -73,16 +73,22 @@ python3 tools/setup_agy_project.py <対象プロジェクトのパス> \
 (どちらも絶対パス指定で、プロジェクトを問わず共有して安全なもの)だけです。
 `allow` は、対象プロジェクト自身の `permissionGrants` にしか書きません。
 
-`--gdrive-secret` は許可エントリの一部になります
-(`command(.venv/bin/python -I scripts/gdrive_cli.py --secret <名前> list)`)。
-プロジェクトごとに別のシークレット名を使えば、あるプロジェクトの Drive 許可が、
-別プロジェクトの認証情報を使う権限にはなりません。
+`--gdrive-profile` は許可エントリの一部になります
+(`command(.venv/bin/python -I scripts/gdrive_cli.py --profile <名前> list)`)。
+プロジェクトごとに別のプロファイル名を使えば、あるプロジェクトの Drive 許可が、
+別プロジェクトの認証情報を使う権限にはなりません。名前の先(シークレットの保管先、
+スコープ、許可フォルダなど)はプロファイルの中にあるので、保管先を後から変えても、
+承認済みのコマンド文字列は変わらず、再承認は要りません。
+
+プロファイルの書き方(サービスアカウントと OAuth の両対応、資格情報を取り出す
+コマンドの例、スコープの注意)は [`gdrive-profile.md`](gdrive-profile.md) を参照してください。
 
 ### Drive CLI を使うプロジェクトの前提
 
-対象プロジェクトの `.venv` に `google-api-python-client` と `google-auth` が必要で、
-`aws` CLI が使え、サービスアカウントの鍵が AWS Secrets Manager に入っていること。
-Drive 側では、サービスアカウントのメールアドレスに対象フォルダを共有しておきます。
+対象プロジェクトの `.venv` に `google-api-python-client` と `google-auth`
+(OAuth のリフレッシュには `requests` 系の依存も)が必要です。
+資格情報を取り出すコマンド(`aws`、`op` など)が、ブリッジを動かすユーザーで実行できること。
+Drive 側では、サービスアカウントの場合はそのメールアドレスに対象フォルダを共有しておきます。
 読み取り系(`list`/`search`/`meta`/`read`/`download`)だけが恒久許可され、
 書き込み系(`mkdir`/`upload`/`update`)は毎回承認が要ります。
 削除・移動・共有設定の変更はコマンド自体がありません。

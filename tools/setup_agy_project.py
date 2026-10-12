@@ -25,11 +25,12 @@ Google Drive の許可リストなど)を、このコマンド1回で揃える�
     --with-gdrive         Google Drive 読み書き用の固定コマンド(source-dir の
                           gdrive_cli.py)を共有し、その読み取り系サブコマンドを
                           対象プロジェクトの許可リストに恒久登録する。
-                          --gdrive-secret が必須。
-    --gdrive-secret NAME  gdrive_cli.py に渡す --secret の値(AWS Secrets Manager の
-                          シークレット名)。許可エントリの一部になるので、
+                          --gdrive-profile が必須。
+    --gdrive-profile NAME gdrive_cli.py に渡す --profile の値。許可エントリの一部になるので、
                           プロジェクトごとに別の名前を使えば、あるプロジェクトの許可が
-                          別プロジェクトの認証情報を使う権限にならない。
+                          別プロジェクトの認証情報を使う権限にならない。プロファイル本体
+                          (<bridge-config-dir>/gdrive/NAME.json、書き方は tools/gdrive-profile.md)
+                          は運用者が作る。無ければ警告する(許可の登録自体は行う)。
     --gdrive-script REL   対象プロジェクトでの配置先パス(既定: scripts/gdrive_cli.py)。
 
 このコマンドが揃えるもの:
@@ -84,8 +85,9 @@ PERMANENT_COMMANDS_REL = Path(".agents") / ".permanent-commands.json"
 GDRIVE_READONLY_SUBCOMMANDS = ["list", "search", "meta", "read", "download"]
 GDRIVE_SOURCE_NAME = "gdrive_cli.py"
 DEFAULT_GDRIVE_SCRIPT = "scripts/gdrive_cli.py"
-# --secret は許可エントリの一部になるので、空白や引用符を含む名前は受け付けない。
-_SECRET_NAME_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
+# --profile は許可エントリの一部になるので、空白・引用符・パス区切りを含む名前は受け付けない
+# (gdrive_cli.py 側の PROFILE_NAME_RE と同じ)。
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # (ファイル名, 必須か)。source-dir にあるものを .agents/<名前> としてリンクする。
 # 必須でないものは、運用者がマシンごとに用意するファイルなので、無ければスキップ。
@@ -253,13 +255,25 @@ def ensure_permanent_commands_manifest(target_dir: Path, wanted_paths: list[str]
         print(f"  [seal] {PERMANENT_COMMANDS_REL}: {p}")
 
 
-def gdrive_allow_entries(gdrive_script: str, secret: str) -> list[str]:
-    return [f"command(.venv/bin/python -I {gdrive_script} --secret {secret} {sub})"
+def gdrive_allow_entries(gdrive_script: str, profile: str) -> list[str]:
+    # --profile はサブコマンドより前に固定する(末尾の自由引数にすると、エージェントが
+    # 別プロジェクトのプロファイルを選べてしまう)。
+    return [f"command(.venv/bin/python -I {gdrive_script} --profile {profile} {sub})"
             for sub in GDRIVE_READONLY_SUBCOMMANDS]
 
 
-def update_project_gdrive_allow(target_dir: Path, gdrive_script: str, secret: str) -> None:
-    wanted = gdrive_allow_entries(gdrive_script, secret)
+def warn_if_profile_missing(bridge_config_dir: Path, profile: str) -> None:
+    path = bridge_config_dir / "gdrive" / f"{profile}.json"
+    if not path.exists():
+        print(f"  [警告] プロファイルがまだありません: {path}（tools/gdrive-profile.md を参照。"
+              "作るまで gdrive_cli.py は動きません）")
+    elif path.stat().st_mode & 0o022:
+        print(f"  [警告] {path} が group/other から書き込み可能です（chmod 600）。"
+              "gdrive_cli.py はこの状態では実行を拒否します")
+
+
+def update_project_gdrive_allow(target_dir: Path, gdrive_script: str, profile: str) -> None:
+    wanted = gdrive_allow_entries(gdrive_script, profile)
     script_abs = os.path.normpath(target_dir / gdrive_script)
     ensure_permanent_commands_manifest(target_dir, [script_abs])
 
@@ -288,7 +302,7 @@ def main(argv: "list[str] | None" = None) -> None:
     ap.add_argument("--bridge-dir", type=Path, default=None)
     ap.add_argument("--bridge-config-dir", type=Path, default=DEFAULT_BRIDGE_CONFIG_DIR)
     ap.add_argument("--with-gdrive", action="store_true")
-    ap.add_argument("--gdrive-secret", metavar="NAME")
+    ap.add_argument("--gdrive-profile", metavar="NAME")
     ap.add_argument("--gdrive-script", metavar="REL_PATH", default=DEFAULT_GDRIVE_SCRIPT)
     args = ap.parse_args(argv)
 
@@ -314,10 +328,10 @@ def main(argv: "list[str] | None" = None) -> None:
                  "対象には別のプロジェクトを指定してください。")
 
     if args.with_gdrive:
-        if not args.gdrive_secret:
-            sys.exit("エラー: --with-gdrive には --gdrive-secret <AWSシークレット名> が必要です。")
-        if not _SECRET_NAME_RE.match(args.gdrive_secret):
-            sys.exit("エラー: --gdrive-secret に使えるのは英数字と _ . / - だけです。")
+        if not args.gdrive_profile:
+            sys.exit("エラー: --with-gdrive には --gdrive-profile <プロファイル名> が必要です。")
+        if not _PROFILE_NAME_RE.match(args.gdrive_profile):
+            sys.exit("エラー: --gdrive-profile に使えるのは英数字と _ - だけです。")
         if not (source_dir / GDRIVE_SOURCE_NAME).exists():
             sys.exit(f"エラー: {source_dir / GDRIVE_SOURCE_NAME} がありません。")
     gdrive_script = args.gdrive_script if args.with_gdrive else None
@@ -350,7 +364,8 @@ def main(argv: "list[str] | None" = None) -> None:
 
     if gdrive_script:
         print("-- agy プロジェクトの許可登録 --")
-        update_project_gdrive_allow(target_dir, gdrive_script, args.gdrive_secret)
+        update_project_gdrive_allow(target_dir, gdrive_script, args.gdrive_profile)
+        warn_if_profile_missing(bridge_config_dir, args.gdrive_profile)
 
     print(
         "\n完了。残っているのは、ブリッジの config.yaml へのチャンネル追加だけです"

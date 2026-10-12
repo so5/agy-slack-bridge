@@ -1,0 +1,18 @@
+{
+  "kind": "service_account",
+  "credentials": {
+    "command": ["aws", "secretsmanager", "get-secret-value", "--secret-id", "proj-a-google-credentials",
+                "--query", "SecretString", "--output", "text"]
+  },
+  "commands": ["list", "search", "meta", "read", "download"],
+  "allowed_folders": [],
+  "scopes": {
+    "read": "https://www.googleapis.com/auth/drive.readonly",
+    "write": "https://www.googleapis.com/auth/drive"
+  },
+  "upload_deny": {
+    "names": [".env*", "*.pem", "*.key", "*.p12", "id_rsa*", "id_ed25519*", "token*.json",
+              "*credentials*.json", "*secret*", "*.kdbx"],
+    "dirs": [".git", ".venv", "node_modules", ".ssh", ".aws", ".gnupg"]
+  }
+}

@@ -93,11 +93,12 @@ def test_bridge_dir_required_when_not_inferable(env, tmp_path):
         setup.main([str(env.target), "--source-dir", str(lone)])
 
 
-def test_gdrive_requires_secret_with_safe_name(env):
+def test_gdrive_requires_profile_with_safe_name(env):
     with pytest.raises(SystemExit):
         run(env, "--with-gdrive")
-    with pytest.raises(SystemExit):
-        run(env, "--with-gdrive", "--gdrive-secret", "a b; rm")
+    for bad in ("a b; rm", "../x", "a/b", "a.b"):
+        with pytest.raises(SystemExit):
+            run(env, "--with-gdrive", "--gdrive-profile", bad)
 
 
 def _register_project(env, pid="proj-1"):
@@ -107,14 +108,14 @@ def _register_project(env, pid="proj-1"):
     return path
 
 
-def test_gdrive_grants_go_only_to_that_projects_file_and_include_secret(env):
+def test_gdrive_grants_go_only_to_that_projects_file_and_include_profile(env):
     mine = _register_project(env, "mine")
     other = env.gemini / "projects" / "other.json"
     other.write_text(json.dumps({"projectResources": {"resources": []}}))
-    run(env, "--with-gdrive", "--gdrive-secret", "my-secret")
+    run(env, "--with-gdrive", "--gdrive-profile", "my-profile")
 
     allow = json.loads(mine.read_text())["permissionGrants"]["permissionGrants"]["allow"]
-    assert allow == [f"command(.venv/bin/python -I scripts/gdrive_cli.py --secret my-secret {s})"
+    assert allow == [f"command(.venv/bin/python -I scripts/gdrive_cli.py --profile my-profile {s})"
                      for s in ("list", "search", "meta", "read", "download")]
     assert "permissionGrants" not in json.loads(other.read_text())
     assert "allow" not in settings(env)["permissions"]
@@ -132,6 +133,18 @@ def test_gdrive_grants_go_only_to_that_projects_file_and_include_secret(env):
 
 
 def test_gdrive_unregistered_project_skips_grants_but_still_seals(env):
-    run(env, "--with-gdrive", "--gdrive-secret", "s")
+    run(env, "--with-gdrive", "--gdrive-profile", "s")
     assert list((env.gemini / "projects").iterdir()) == []
     assert (env.target / ".agents/.permanent-commands.json").exists()
+
+
+def test_profile_is_pinned_before_the_subcommand_in_every_entry():
+    for e in setup.gdrive_allow_entries("scripts/gdrive_cli.py", "p"):
+        tokens = e[len("command("):-1].split()
+        assert tokens[:5] == [".venv/bin/python", "-I", "scripts/gdrive_cli.py", "--profile", "p"]
+        assert tokens[5] in setup.GDRIVE_READONLY_SUBCOMMANDS and len(tokens) == 6
+
+
+def test_warns_when_profile_missing(env, capsys):
+    run(env, "--with-gdrive", "--gdrive-profile", "p")
+    assert "プロファイルがまだありません" in capsys.readouterr().out
