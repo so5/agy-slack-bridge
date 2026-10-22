@@ -1,150 +1,288 @@
 import json
+import os
+import stat
 import subprocess
+import uuid
 
 import pytest
+import yaml
 
+import install
 import setup_agy_project as setup
+
+
+class Scripted(setup.Prompter):
+    """Answers prompts by substring of their text; anything unmatched is Enter."""
+
+    def __init__(self, answers=None, secrets=None):
+        self.answers = answers or {}
+        self.secrets = secrets or {}
+        self.asked = []
+        super().__init__(input_fn=self._in, secret_fn=self._sec, out=lambda *_: None)
+
+    def _in(self, prompt):
+        self.asked.append(prompt)
+        for needle, ans in self.answers.items():
+            if needle in prompt:
+                if isinstance(ans, list):  # successive answers for a re-prompted question
+                    return ans.pop(0) if len(ans) > 1 else ans[0]
+                return ans
+        return ""
+
+    def _sec(self, prompt):
+        for needle, ans in self.secrets.items():
+            if needle in prompt:
+                return ans
+        return ""
 
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    """A fake machine: own agy dirs, a source dir, a bridge checkout, one target repo."""
+    """A fake machine: own agy dirs, an installed prefix + config dir, one target repo,
+    and a fake `agy --new-project` that registers the cwd the way the real one does."""
     gemini = tmp_path / "gemini"
     monkeypatch.setattr(setup, "GLOBAL_SETTINGS_PATH", gemini / "settings.json")
     monkeypatch.setattr(setup, "AGY_PROJECTS_DIR", gemini / "projects")
     (gemini / "projects").mkdir(parents=True)
 
-    bridge = tmp_path / "bridge"
-    src = bridge / "tools"
-    (src / "hooks").mkdir(parents=True)
-    (bridge / "bridge.py").write_text("")
-    for name in ("agent-safety-rules.md", "hooks.json", "gdrive_cli.py", "hooks/script_integrity.py"):
-        (src / name).write_text(f"# {name}\n")
+    prefix, cfg = tmp_path / "prefix", tmp_path / "cfg"
+    install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv"])
 
     target = tmp_path / "proj"
     target.mkdir()
     subprocess.run(["git", "init", "-q", str(target)], check=True)
     (target / ".gitignore").write_text("*.pyc\n")
-    return type("Env", (), dict(tmp=tmp_path, gemini=gemini, bridge=bridge, src=src, target=target))
+
+    registered = []
+
+    def fake_register(target_dir):
+        pid = str(uuid.uuid4())
+        registered.append(pid)
+        (gemini / "projects" / f"{pid}.json").write_text(json.dumps({
+            "id": pid, "name": target_dir.name,
+            "projectResources": {"resources": [{"folderUri": f"file://{target_dir}"}]}}))
+
+    monkeypatch.setattr(setup, "register_agy_project", fake_register)
+    return type("Env", (), dict(tmp=tmp_path, gemini=gemini, prefix=prefix, cfg=cfg,
+                                target=target, registered=registered))
 
 
-def run(env, *extra):
-    setup.main([str(env.target), "--source-dir", str(env.src),
-                "--bridge-config-dir", str(env.tmp / "cfg"), *extra])
+def run(env, ask=None, target=None, *extra):
+    setup.main([str(target or env.target), "--prefix", str(env.prefix),
+                "--bridge-config-dir", str(env.cfg), *extra], ask=ask or Scripted())
 
 
 def settings(env):
     return json.loads(env.gemini.joinpath("settings.json").read_text())
 
 
-def test_links_agents_md_gitignore_and_settings(env):
-    run(env)
-    agents = env.target / ".agents"
-    assert (agents / "agent-safety-rules.md").resolve() == (env.src / "agent-safety-rules.md").resolve()
-    assert (agents / "hooks").is_symlink()
-    assert (env.target / "AGENTS.md").read_text() == "@[エージェント安全規則](.agents/agent-safety-rules.md)\n"
-    assert "scratch/" in (env.target / ".gitignore").read_text()
-    s = settings(env)
-    assert s["trustedWorkspaces"] == [str(env.target.resolve())]
-    deny = s["permissions"]["deny"]
-    assert f"read_file({env.bridge.resolve()})" in deny
-    assert f"read_file({(env.tmp / 'cfg').resolve()})" in deny
-    assert "allow" not in s["permissions"]  # never writes machine-wide allow
-
-
-def test_local_tools_md_linked_and_included_only_if_present(env):
-    (env.src / "local-tools.md").write_text("tools")
-    run(env)
-    assert (env.target / ".agents/local-tools.md").is_symlink()
-    assert "(.agents/local-tools.md)" in (env.target / "AGENTS.md").read_text()
-
-
-def test_idempotent(env):
-    run(env)
-    before = (settings(env), (env.target / "AGENTS.md").read_text(), (env.target / ".gitignore").read_text())
-    run(env)
-    assert before == (settings(env), (env.target / "AGENTS.md").read_text(), (env.target / ".gitignore").read_text())
-
-
-def test_refuses_real_file_in_place_of_link(env):
-    (env.target / ".agents").mkdir()
-    (env.target / ".agents/hooks.json").write_text("mine")
-    with pytest.raises(SystemExit):
-        run(env)
-    assert (env.target / ".agents/hooks.json").read_text() == "mine"
-
-
-def test_refuses_target_that_is_not_a_git_repo(env, tmp_path):
-    other = tmp_path / "nogit"
-    other.mkdir()
-    with pytest.raises(SystemExit):
-        setup.main([str(other), "--source-dir", str(env.src)])
-
-
-def test_refuses_bridge_checkout_as_target(env):
-    with pytest.raises(SystemExit):
-        setup.main([str(env.bridge), "--source-dir", str(env.src)])
-
-
-def test_bridge_dir_required_when_not_inferable(env, tmp_path):
-    lone = tmp_path / "lone"
-    lone.mkdir()
-    with pytest.raises(SystemExit):
-        setup.main([str(env.target), "--source-dir", str(lone)])
-
-
-def test_gdrive_requires_profile_with_safe_name(env):
-    with pytest.raises(SystemExit):
-        run(env, "--with-gdrive")
-    for bad in ("a b; rm", "../x", "a/b", "a.b"):
-        with pytest.raises(SystemExit):
-            run(env, "--with-gdrive", "--gdrive-profile", bad)
-
-
-def _register_project(env, pid="proj-1"):
-    path = env.gemini / "projects" / f"{pid}.json"
-    path.write_text(json.dumps({"projectResources": {"resources": [
-        {"folderUri": f"file://{env.target.resolve()}"}]}}))
+def project_json(env):
+    (path,) = (env.gemini / "projects").glob("*.json")
     return path
 
 
-def test_gdrive_grants_go_only_to_that_projects_file_and_include_profile(env):
-    mine = _register_project(env, "mine")
+def channels(env):
+    return yaml.safe_load((env.cfg / "config.yaml").read_text())["channels"]
+
+
+def test_fresh_setup_registers_links_and_denies(env):
+    run(env)
+    assert len(env.registered) == 1
+    agents = env.target / ".agents"
+    safety = agents / "agent-safety-rules.md"
+    assert safety.is_symlink() and safety.resolve() == (env.prefix / "tools/agent-safety-rules.md").resolve()
+    assert (env.target / "AGENTS.md").read_text() == "@[エージェント安全規則](.agents/agent-safety-rules.md)\n"
+    assert "scratch/" in (env.target / ".gitignore").read_text()
+
+    hooks = json.loads((agents / "hooks.json").read_text())
+    cmd = hooks["script-integrity"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert cmd == f"python3 {env.prefix.resolve()}/tools/hooks/script_integrity.py"
+
+    s = settings(env)
+    assert s["trustedWorkspaces"] == [str(env.target.resolve())]
+    deny = s["permissions"]["deny"]
+    for rule in (f"read_file({env.prefix.resolve()})", f"write_file({env.prefix.resolve()})",
+                 f"read_file({env.cfg.resolve()})", f"write_file({env.cfg.resolve()})",
+                 f"write_file({env.target.resolve()}/.agents/hooks.json)",
+                 f"write_file({env.target.resolve()}/.agents/.permanent-commands.json)"):
+        assert rule in deny
+    assert "allow" not in s["permissions"]  # never writes machine-wide allow
+
+
+def test_idempotent(env):
+    answers = {"チャンネル ID": "C0TEST123", "Slack での表示名": "Bot", "アイコン（絵文字": ":robot_face:"}
+    run(env, Scripted(answers))
+    snap = lambda: (settings(env), (env.target / "AGENTS.md").read_text(),
+                    (env.target / ".gitignore").read_text(), (env.cfg / "config.yaml").read_text(),
+                    (env.target / ".agents/hooks.json").read_text())
+    before = snap()
+    run(env, Scripted({"Slack チャンネルとの対応づけ": "y"}))  # Enter on every value keeps it
+    assert snap() == before
+    assert len(env.registered) == 1
+
+
+def test_declined_registration_still_sets_up_files_but_nothing_project_specific(env):
+    ask = Scripted({"agy にまだ登録されていません": "n", "Drive CLI": "y"})
+    run(env, ask)
+    assert env.registered == []
+    assert (env.target / ".agents/hooks.json").exists()
+    assert not any("チャンネル" in p for p in ask.asked)
+    assert channels(env) == {}
+
+
+def test_refuses_old_symlinked_hooks_json_and_real_safety_file(env):
+    (env.target / ".agents").mkdir()
+    (env.target / ".agents/hooks.json").symlink_to(env.tmp / "elsewhere.json")
+    with pytest.raises(SystemExit):
+        run(env)
+    (env.target / ".agents/hooks.json").unlink()
+    (env.target / ".agents/agent-safety-rules.md").unlink()  # linked by the first, refused run
+    (env.target / ".agents/agent-safety-rules.md").write_text("mine")
+    with pytest.raises(SystemExit):
+        run(env)
+    assert (env.target / ".agents/agent-safety-rules.md").read_text() == "mine"
+
+
+def test_refuses_targets_inside_install_or_config_dir(env):
+    for bad in (env.prefix, env.prefix / "tools", env.cfg):
+        with pytest.raises(SystemExit):
+            run(env, target=bad)
+
+
+def test_requires_installed_prefix(env, tmp_path):
+    with pytest.raises(SystemExit):
+        setup.main([str(env.target), "--prefix", str(tmp_path / "nothing")], ask=Scripted())
+
+
+def test_non_git_target_is_initialized_only_when_confirmed(env, tmp_path):
+    other = tmp_path / "nogit"
+    other.mkdir()
+    with pytest.raises(SystemExit):
+        run(env, Scripted({"git init": "n"}), target=other)
+    run(env, Scripted({"git init": "y"}), target=other)
+    assert (other / ".git").exists()
+
+
+def test_missing_target_is_created_when_confirmed(env, tmp_path):
+    new = tmp_path / "brand-new"
+    run(env, Scripted({"作成しますか": "y", "git init": "y"}), target=new)
+    assert (new / ".git").is_dir() and (new / ".agents/hooks.json").exists()
+
+
+def test_refuses_without_a_terminal(env):
+    with pytest.raises(SystemExit):
+        setup.main([str(env.target), "--prefix", str(env.prefix), "--bridge-config-dir", str(env.cfg)])
+
+
+# --- Drive ------------------------------------------------------------------------
+
+def test_gdrive_grants_go_only_to_that_projects_file_pinned_and_absolute(env):
     other = env.gemini / "projects" / "other.json"
     other.write_text(json.dumps({"projectResources": {"resources": []}}))
-    run(env, "--with-gdrive", "--gdrive-profile", "my-profile")
+    run(env, Scripted({"Drive CLI": "y", "プロファイル名": "my-profile"}))
+    (mine,) = [p for p in (env.gemini / "projects").glob("*.json") if p != other]
 
+    py, script = env.prefix.resolve() / ".venv/bin/python", env.prefix.resolve() / "tools/gdrive_cli.py"
     allow = json.loads(mine.read_text())["permissionGrants"]["permissionGrants"]["allow"]
-    assert allow == [f"command(.venv/bin/python -I scripts/gdrive_cli.py --profile my-profile {s})"
+    assert allow == [f"command({py} -I {script} --profile my-profile {s})"
                      for s in ("list", "search", "meta", "read", "download")]
     assert "permissionGrants" not in json.loads(other.read_text())
     assert "allow" not in settings(env)["permissions"]
-
-    # write-capable subcommands are never pre-approved
     assert not any(w in e for e in allow for w in ("mkdir", "upload", "update"))
-
-    # script is linked and sealed with its content hash
-    script = env.target / "scripts/gdrive_cli.py"
-    assert script.is_symlink()
-    pins = json.loads((env.target / ".agents/.permanent-commands.json").read_text())
-    import hashlib
-    assert pins[str(script)] == hashlib.sha256(script.read_bytes()).hexdigest()
-    assert f"write_file({env.target.resolve()}/scripts/gdrive_cli.py)" in settings(env)["permissions"]["deny"]
+    # nothing sealed or copied into the project: the script lives only in the prefix
+    assert not (env.target / "scripts").exists()
+    assert not (env.target / ".agents/.permanent-commands.json").exists()
 
 
-def test_gdrive_unregistered_project_skips_grants_but_still_seals(env):
-    run(env, "--with-gdrive", "--gdrive-profile", "s")
-    assert list((env.gemini / "projects").iterdir()) == []
-    assert (env.target / ".agents/.permanent-commands.json").exists()
+def test_gdrive_profile_defaults_to_project_name_and_is_kept_on_rerun(env):
+    run(env, Scripted({"Drive CLI": "y"}))
+    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == "proj"
+    ask = Scripted()
+    run(env, ask)  # Enter everywhere: "use Drive CLI?" defaults to yes now, profile kept
+    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == "proj"
+    assert any("Drive CLI" in p and "[Y/n]" in p for p in ask.asked)
 
 
-def test_profile_is_pinned_before_the_subcommand_in_every_entry():
-    for e in setup.gdrive_allow_entries("scripts/gdrive_cli.py", "p"):
+def test_gdrive_profile_name_is_validated(env):
+    ask = Scripted({"Drive CLI": "y", "プロファイル名": ["a b; rm", "../x", "ok-name"]})
+    run(env, ask)
+    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == "ok-name"
+
+
+def test_profile_is_pinned_before_the_subcommand_in_every_entry(tmp_path):
+    for e in setup.gdrive_allow_entries(tmp_path, "p"):
         tokens = e[len("command("):-1].split()
-        assert tokens[:5] == [".venv/bin/python", "-I", "scripts/gdrive_cli.py", "--profile", "p"]
+        assert tokens[1:5] == ["-I", f"{tmp_path}/tools/gdrive_cli.py", "--profile", "p"]
         assert tokens[5] in setup.GDRIVE_READONLY_SUBCOMMANDS and len(tokens) == 6
 
 
 def test_warns_when_profile_missing(env, capsys):
-    run(env, "--with-gdrive", "--gdrive-profile", "p")
+    run(env, Scripted({"Drive CLI": "y"}))
     assert "プロファイルがまだありません" in capsys.readouterr().out
+
+
+# --- Slack channel mapping ------------------------------------------------------------
+
+def test_channel_mapping_written_with_project_id_and_all_fields(env):
+    run(env, Scripted({
+        "チャンネル ID": "C0TEST123", "Slack での表示名": "Helper", "アイコン（絵文字": ":abacus:",
+        "モデル（`agy": "gemini-x", "effort": "high", "監視する設定ファイル": ".agents/local-tools.md, a/b.md",
+        "権限ボタンの統計": "y"}))
+    pid = project_json(env).stem
+    assert channels(env) == {"C0TEST123": {
+        "project": pid, "name": "proj", "display_name": "Helper", "icon_emoji": ":abacus:",
+        "model": "gemini-x", "effort": "high",
+        "watched_config_files": [".agents/local-tools.md", "a/b.md"],
+        "telemetry": {"permission_stats": True}}}
+    assert (env.cfg / "config.yaml.bak").exists()
+    assert "# Example entries" in (env.cfg / "config.yaml").read_text()  # comments survive
+
+
+def test_channel_prompts_reject_bad_values_then_accept(env):
+    ask = Scripted({"チャンネル ID": ["nope", "C0TEST123"], "effort": ["extreme", "low"],
+                    "アイコン（絵文字": ["abacus", ":abacus:"], "監視する設定ファイル": ["/etc/passwd", "../x", "ok.md"]})
+    run(env, ask)
+    e = channels(env)["C0TEST123"]
+    assert (e["effort"], e["icon_emoji"], e["watched_config_files"]) == ("low", ":abacus:", ["ok.md"])
+
+
+def test_rerun_shows_current_values_and_dash_clears(env):
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "Slack での表示名": "Helper", "モデル（`agy": "m1"}))
+    ask = Scripted({"Slack チャンネルとの対応づけ": "y", "モデル（`agy": "-", "Slack での表示名": "Renamed"})
+    run(env, ask)
+    e = channels(env)["C0TEST123"]
+    assert e["display_name"] == "Renamed" and "model" not in e
+    assert any("チャンネル ID [C0TEST123]" in p for p in ask.asked)
+
+
+def test_unknown_keys_of_an_existing_entry_are_preserved(env):
+    run(env, Scripted({"チャンネル ID": "C0TEST123"}))
+    cfg = env.cfg / "config.yaml"
+    data = yaml.safe_load(cfg.read_text())
+    data["channels"]["C0TEST123"]["future_key"] = {"a": 1}
+    cfg.write_text(yaml.safe_dump(data))
+    run(env, Scripted({"Slack チャンネルとの対応づけ": "y", "Slack での表示名": "X"}))
+    assert channels(env)["C0TEST123"]["future_key"] == {"a": 1}
+
+
+def test_channel_of_another_project_is_not_taken_over_by_default(env, tmp_path):
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "Slack での表示名": "first"}))
+    second = tmp_path / "proj2"
+    second.mkdir()
+    subprocess.run(["git", "init", "-q", str(second)], check=True)
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "Slack での表示名": "second"}), target=second)
+    assert channels(env)["C0TEST123"]["display_name"] == "first"
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "置き換えますか": "y", "Slack での表示名": "second"}),
+        target=second)
+    assert channels(env)["C0TEST123"]["display_name"] == "second"
+
+
+# --- tokens -------------------------------------------------------------------------
+
+def test_tokens_filled_only_when_unset_and_file_stays_private(env):
+    run(env, Scripted(secrets={"SLACK_BOT_TOKEN": "xoxb-real", "SLACK_APP_TOKEN": "xapp-real"}))
+    text = (env.cfg / "env").read_text()
+    assert "SLACK_BOT_TOKEN=xoxb-real" in text and "SLACK_APP_TOKEN=xapp-real" in text
+    assert stat.S_IMODE(os.stat(env.cfg / "env").st_mode) == 0o600
+    run(env, Scripted(secrets={"SLACK_BOT_TOKEN": "xoxb-other"}))
+    assert "SLACK_BOT_TOKEN=xoxb-real" in (env.cfg / "env").read_text()
