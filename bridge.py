@@ -1245,10 +1245,10 @@ def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
     PreToolUse hook) reads to decide whether a run_command target needs
     git-commit enforcement or just the lighter hash-ledger check. Stores
     resolved script paths (see _resolve_permanent_script_path), not the
-    raw entry text. Called from /agy-permissions add/remove and from
-    tools/setup_agy_project.py (which seals the Drive CLI script it
-    grants), so either path keeps this manifest accurate regardless of
-    how the permanent grant was made. Each path maps to the sha256 of the
+    raw entry text. Called from /agy-permissions add/remove, so the manifest stays
+    accurate for every permanent grant made from Slack. (The installed Drive
+    CLI is not sealed here: it lives in the install prefix, which the agent
+    cannot write, not in the project.) Each path maps to the sha256 of the
     script content approved at grant time (the seal); re-adding re-seals."""
     root = _project_root(project_id)
     if not root:

@@ -58,7 +58,7 @@
   変えないでください。
 - `aws secretsmanager ...` や `op read ...` のような取得コマンドを、**許可リストに入れない**でください。
 - 許可エントリでは `--profile <名前>` を、サブコマンドより前に固定します
-  (`command(.venv/bin/python -I scripts/gdrive_cli.py --profile proj-a list)`)。末尾の自由引数だと、
+  (`command(<prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile proj-a list)`)。末尾の自由引数だと、
   エージェントが別プロジェクトのプロファイルを選べてしまいます。`setup_agy_project.py` はこの形で登録します。
 - 保管先を変えても、プロファイルの中身を直すだけで、承認済みのコマンド文字列は変わりません(再承認は不要)。
 

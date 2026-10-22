@@ -11,8 +11,8 @@ in history) before each run.
 Two different checks, depending on whether the command's resolved script
 path (see `find_script_targets`) is in this project's own
 `.agents/.permanent-commands.json` (absolute script path -> sha256 of the
-content that was approved, written by the bridge's `/agy-permissions add`
-and `setup_agy_project.py --with-gdrive`, never by hand). Matching is by resolved path, not by
+content that was approved, written by the bridge's `/agy-permissions add`,
+never by hand). Matching is by resolved path, not by
 raw command-line text: a permanent grant is for a *script*, and the same
 script can be invoked many different ways (absolute path, `./`-relative,
 a different leading interpreter flag, ...) that would never agree as
@@ -22,8 +22,8 @@ strings but all resolve to the same file.
   to the value recorded when the grant was approved (the seal), and it must
   also be git-committed and clean (see `blocked_reason`). Being committed
   alone is not approval - anyone can commit a changed script - so the pin is
-  what gates the run. Re-approving (`/agy-permissions add` again, or
-  `setup_agy_project.py`) re-seals the current content.
+  what gates the run. Re-approving (`/agy-permissions add` again) re-seals
+  the current content.
 - **Everything else** (scratch/ one-off scripts, ordinary one-time Slack
   grants): no git involvement at all - scratch/ is meant to be disposable,
   and forcing a commit for something that's granted for one conversation

@@ -311,7 +311,8 @@ but these make the easy mistakes (and easy probing) fail loudly:
 - **`permissions.deny` in `settings.json`** (deny beats allow, and deny-read
   implies deny-write): list the bridge's own source, its config/state dir
   (which holds the Slack tokens), and agy's own `settings.json`/`config`, e.g.
-  `read_file(~/WORK/agy-slack-bridge)`, `read_file(~/.config/agy-slack-bridge)`.
+  `read_file(<prefix>)`, `read_file(~/.config/agy-slack-bridge)` (setup_agy_project.py also
+  denies *writes* there).
   This only covers agy's built-in file tools; a shell `cat` is a *command*, so
   it still goes through the normal grant flow. The bridge treats a deny-rule
   block as final: no grant buttons, a "blocked by a deny rule" note instead.
@@ -540,22 +541,52 @@ Backups and baselines live under `AGY_CONFIG_BACKUP_DIR` (default
 `~/.config/agy-slack-bridge/config-backups/`) and the bridge's own state
 db - not in the watched project's own git history.
 
-## Configuration
+## Installation
 
-Copy the two example files somewhere **outside** this repo checkout (they
-hold secrets / your own IDs, and are gitignored on purpose so you don't
-accidentally commit them from inside the repo either):
+The bridge, the tools in `tools/` (safety rules, the PreToolUse hook, the
+restricted Drive CLI, the setup script) and a venv are **installed** to a fixed
+location; the live bridge does not run out of your git checkout. The point is
+that everything the permission model relies on lives where the agent cannot
+write (the install prefix and the config dir are the targets of the
+`permissions.deny` rules that `tools/setup_agy_project.py` writes), instead of
+inside an agy project or a checkout.
 
 ```sh
-mkdir -p ~/.config/agy-slack-bridge
-cp env.example ~/.config/agy-slack-bridge/env
-cp config.example.yaml ~/.config/agy-slack-bridge/config.yaml
-chmod 600 ~/.config/agy-slack-bridge/env
-$EDITOR ~/.config/agy-slack-bridge/env           # fill in the two tokens
-$EDITOR ~/.config/agy-slack-bridge/config.yaml   # fill in channel -> project mapping
+python3 tools/install.py [--prefix DIR] [--config-dir DIR] [--with-gdrive]
 ```
 
-See `config.example.yaml` for the mapping format and `env.example` for the
+- Default prefix `~/.local/share/agy-slack-bridge`; pass e.g. `--prefix /opt/agy-slack-bridge`
+  to install as root (then run `install.py --config-only` as your own user to
+  create the config dir; a root-owned prefix is the strongest option, since the
+  agent runs as your OS user).
+- Installed files are read-only (0444). Re-running upgrades the code and never
+  overwrites an existing `config.yaml` / `env`.
+- It creates `<prefix>/.venv`, `<prefix>/systemd/agy-slack-bridge.service` (a
+  unit pointing at the prefix), and `~/.config/agy-slack-bridge/{config.yaml,env}`
+  from the samples (`config.example.yaml`, `env.example`).
+- `--with-gdrive` also installs the Google client libraries
+  (`requirements-gdrive.txt`) for `tools/gdrive_cli.py`.
+
+## Setting up an agy project and the channel mapping
+
+```sh
+<prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py [<path-to-project>]
+```
+
+Interactive, run by a human (it edits agy's `settings.json` and a project's
+permission grants), idempotent, and the same command repairs or changes an
+existing setup (current values are the defaults; Enter keeps, `-` clears). It:
+registers the directory with agy (`agy --new-project`), writes the deny rules and
+`trustedWorkspaces`, links the shared safety rules and points the project's
+`.agents/hooks.json` at the installed hook, optionally pre-approves the read-only
+Drive CLI subcommands in *that project's own* `permissionGrants`, and fills in the
+channel mapping in `config.yaml` (name, display name, icon, model, effort,
+watched files, stats) and the Slack tokens in `env`. It never writes an `allow`
+anywhere but the target project's own `permissionGrants` (same rule as the
+bridge itself). See [`tools/README.md`](tools/README.md) (Japanese) for details.
+
+You can still edit `~/.config/agy-slack-bridge/config.yaml` and `env` by hand;
+see `config.example.yaml` for the mapping format and `env.example` for the
 environment variables (tokens, plus optional overrides like `AGY_BIN` if
 `agy` isn't on `PATH`, or `AGY_TIMEOUT_SEC` if your conversations legitimately
 run longer than 20 minutes).
@@ -563,38 +594,26 @@ run longer than 20 minutes).
 ## Running
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+mkdir -p ~/.config/systemd/user
+cp <prefix>/systemd/agy-slack-bridge.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now agy-slack-bridge.service
+```
+
+or, in a terminal:
+
+```sh
 set -a; . ~/.config/agy-slack-bridge/env; set +a   # load the tokens (comments in the file are fine)
 AGY_BRIDGE_CONFIG=~/.config/agy-slack-bridge/config.yaml \
 AGY_BRIDGE_STATE_DB=~/.config/agy-slack-bridge/state.sqlite3 \
-  .venv/bin/python bridge.py
+  <prefix>/.venv/bin/python <prefix>/bridge.py
 ```
 
 (The env file is plain `KEY=value` lines, as systemd's `EnvironmentFile=`
 expects, so sourcing it with `set -a` works. Don't use
 `env $(cat file | xargs)`: it breaks on the `#` comment lines.)
 
-Or install it as a long-running `systemd --user` service — see
-`systemd/agy-slack-bridge.service.example` for a ready-to-copy unit and the
-setup steps in its header comment.
-
-## Setting up an agy project for the bridge
-
-`tools/` has an idempotent bootstrap script and the files it distributes: shared
-agent safety rules, a PreToolUse hook that pins permanently-granted scripts to
-the content that was approved (git-commit-before-run), the `permissions.deny`
-rules that keep the agent out of the bridge's own source/config, and an
-optional restricted Google Drive CLI. Where the canonical copy of those files
-lives (copy `tools/` somewhere, or symlink it) is the operator's choice - see
-[`tools/README.md`](tools/README.md) (Japanese).
-
-```sh
-python3 tools/setup_agy_project.py <path-to-project> [--with-gdrive --gdrive-secret <name>]
-```
-
-It never writes an `allow` anywhere but the target project's own
-`permissionGrants` (same rule as the bridge itself).
+For development, `python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`
+in the checkout runs the tests (`.venv/bin/python -m pytest`).
 
 ## How a message becomes an `agy` call
 
