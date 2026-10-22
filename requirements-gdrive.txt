@@ -1,0 +1,5 @@
+# Only for tools/gdrive_cli.py (install.py --with-gdrive installs these into the
+# install prefix's venv).
+google-api-python-client>=2,<3
+google-auth>=2,<3
+google-auth-httplib2>=0.2

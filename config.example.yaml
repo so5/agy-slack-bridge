@@ -1,5 +1,5 @@
-# Copy this file to a private location (NOT inside the repo checkout) and
-# point AGY_BRIDGE_CONFIG at it, e.g. ~/.config/agy-slack-bridge/config.yaml.
+# tools/install.py copies this file to ~/.config/agy-slack-bridge/config.yaml (a
+# private location outside the install prefix; AGY_BRIDGE_CONFIG points at it).
 #
 # Each entry maps a Slack channel ID to one `agy` project. Find a channel's ID
 # in Slack via "View channel details" -> bottom of the panel. Find a project's
@@ -25,25 +25,30 @@
 # published upstream to diff against, so the bridge tracks whatever a
 # human last confirmed via Slack buttons (see "Config drift detection" in
 # the README) rather than fetching a canonical copy from anywhere.
-channels:
-  C0123ABCD456:
-    project: "11111111-1111-1111-1111-111111111111"
-    name: "accountant"  # for your own reference only, not read by the bridge
-    display_name: "accountant"
-    icon_emoji: ":abacus:"
-    watched_config_files:
-      - ".agents/local-tools.md"
-  C0678WXYZ789:
-    project: "22222222-2222-2222-2222-222222222222"
-    name: "secretary"
-    display_name: "secretary"
-    icon_emoji: ":memo:"
-  C0999GEMINI1:
-    project: "default-cli-project"  # agy's built-in no-workspace project
-    name: "gemini-chat"
-    display_name: "Gemini"
-    icon_emoji: ":sparkles:"
-    model: "gemini-3.1-pro-high"
+# `channels:` is empty until tools/setup_agy_project.py (or you) add entries;
+# the commented block below shows the shape of an entry.
+channels: {}
+#
+# Example entries:
+#channels:
+#   C0123ABCD456:
+#     project: "11111111-1111-1111-1111-111111111111"
+#     name: "accountant"  # for your own reference only, not read by the bridge
+#     display_name: "accountant"
+#     icon_emoji: ":abacus:"
+#     watched_config_files:
+#       - ".agents/local-tools.md"
+#   C0678WXYZ789:
+#     project: "22222222-2222-2222-2222-222222222222"
+#     name: "secretary"
+#     display_name: "secretary"
+#     icon_emoji: ":memo:"
+#   C0999GEMINI1:
+#     project: "default-cli-project"  # agy's built-in no-workspace project
+#     name: "gemini-chat"
+#     display_name: "Gemini"
+#     icon_emoji: ":sparkles:"
+#     model: "gemini-3.1-pro-high"
 
 # Optional usage statistics, both off by default. This top-level block applies
 # to every channel; a channel can override it with its own `telemetry:` block
