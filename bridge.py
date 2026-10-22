@@ -1539,6 +1539,14 @@ def _kill_process_tree(pid: int) -> None:
             pass
 
 
+def _stdout_tail(stdout: str, lines: int = 20, max_chars: int = 6000) -> str:
+    """Trailing slice of agy's stdout for crash diagnostics."""
+    tail = "\n".join((stdout or "").splitlines()[-lines:])
+    if not tail.strip():
+        return "(empty)"
+    return tail[-max_chars:]
+
+
 def run_agy(text: str, project_id: str, conversation_id: Optional[str],
             model: Optional[str] = None, effort: Optional[str] = None,
             permissions: Optional["ProjectPermissionsFile"] = None) -> dict:
@@ -1571,6 +1579,11 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
         raise RuntimeError(f"agy timed out after {AGY_TIMEOUT_SEC}s")
     proc = subprocess.CompletedProcess(cmd, child.returncode, out, err)
     if proc.returncode != 0:
+        # stderr is often empty on a crash; the stream-json stdout up to that
+        # point (last tool call / step) is the only trace of what agy was
+        # doing. Log it, but keep it out of the exception text, which
+        # _agy_failure_text pattern-matches.
+        log.error("agy exited %s; last stdout:\n%s", proc.returncode, _stdout_tail(proc.stdout))
         raise RuntimeError(f"agy exited {proc.returncode}: {proc.stderr.strip()[-2000:]}")
 
     result = None
