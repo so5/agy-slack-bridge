@@ -517,6 +517,34 @@ COMMANDS = {"list": cmd_list, "search": cmd_search, "meta": cmd_meta, "read": cm
             "download": cmd_download, "mkdir": cmd_mkdir, "upload": cmd_upload, "update": cmd_update}
 
 
+def _error_reason(content):
+    """Drive API のエラー本文(JSON)から reason を取り出す。取れなければ None。"""
+    try:
+        if isinstance(content, bytes):
+            content = content.decode("utf-8", "replace")
+        err = json.loads(content).get("error", {})
+        if err.get("errors"):
+            return err["errors"][0].get("reason")
+        return err.get("status")
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def http_error_message(status, content, write, sa_email="?"):
+    """HttpError(status と本文)から、利用者向けのメッセージを作る。"""
+    reason = _error_reason(content)
+    if reason == "storageQuotaExceeded":
+        who = f"サービスアカウント {sa_email}" if sa_email != "?" else "この認証情報のアカウント"
+        return (f"error: Drive API {status} (storageQuotaExceeded): {who} には自分のストレージ容量がないため、"
+                "新しいファイルを作れません（個人のマイドライブでは、サービスアカウントが作ったファイルの置き場がありません）。"
+                "OAuth を使うか、Workspace の共有ドライブを使うか、既存のファイルの update にしてください")
+    hint = ""
+    if status in (403, 404):
+        who = f"サービスアカウント {sa_email}" if sa_email != "?" else "この認証情報のアカウント"
+        hint = f" (見つからない、または共有されていません。{who} に{'編集' if write else '閲覧'}権限が必要です)"
+    return f"error: Drive API {status}{hint}"
+
+
 def main(argv):
     if len(argv) < 2 or argv[0] != "--profile":
         sys.exit("usage: gdrive_cli.py --profile <name> <command> [args...]\n\n" + __doc__)
@@ -540,13 +568,8 @@ def main(argv):
                  "scopes が、リフレッシュトークンの同意時のスコープと一致しているか、"
                  "トークンが失効していないか確認してください")
     except HttpError as e:
-        status = getattr(e.resp, "status", "?")
-        hint = ""
-        if status in (403, 404):
-            who = (f"サービスアカウント {SERVICE_ACCOUNT['email']}" if SERVICE_ACCOUNT["email"] != "?"
-                   else "この認証情報のアカウント")
-            hint = f" (見つからない、または共有されていません。{who} に{'編集' if write else '閲覧'}権限が必要です)"
-        sys.exit(f"error: Drive API {status}{hint}")
+        sys.exit(http_error_message(getattr(e.resp, "status", "?"), getattr(e, "content", b""), write,
+                                    SERVICE_ACCOUNT["email"]))
     except IndexError:
         sys.exit(__doc__)
 

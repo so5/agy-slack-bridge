@@ -305,3 +305,22 @@ def test_upload_profile_can_loosen_and_tighten(proj):
 def test_main_rejects_bad_argv(argv):
     with pytest.raises(SystemExit):
         g.main(argv)
+
+
+QUOTA = (b'{"error": {"code": 403, "message": "Service Accounts do not have storage quota.", '
+         b'"errors": [{"reason": "storageQuotaExceeded", "domain": "usageLimits"}]}}')
+
+
+def test_http_error_message_explains_service_account_storage_quota():
+    msg = g.http_error_message(403, QUOTA, True, "sa@proj.iam.gserviceaccount.com")
+    assert "storageQuotaExceeded" in msg and "sa@proj.iam.gserviceaccount.com" in msg
+    assert "共有ドライブ" in msg and "OAuth" in msg
+    assert "共有されていません" not in msg  # not the misleading 'not shared' hint
+
+
+def test_http_error_message_keeps_the_sharing_hint_for_other_403_404():
+    other = b'{"error": {"errors": [{"reason": "notFound"}]}}'
+    assert "共有されていません" in g.http_error_message(404, other, False, "sa@x")
+    assert "編集権限" in g.http_error_message(403, b"not json", True)
+    assert g.http_error_message(500, b"", False) == "error: Drive API 500"
+    assert g._error_reason('{"error": {"status": "PERMISSION_DENIED"}}') == "PERMISSION_DENIED"
