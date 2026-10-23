@@ -530,14 +530,29 @@ def _error_reason(content):
         return None
 
 
-def http_error_message(status, content, write, sa_email="?"):
+NEW_FILES_DOC_URL = "https://github.com/so5/agy-slack-bridge/blob/master/tools/gdrive-profile.md#create-new-files"
+
+
+def upload_target_name(args):
+    """upload の引数から、Drive に作ろうとしたファイル名を求める(エラーメッセージ用)。"""
+    if len(args) >= 4 and args[2] == "--name":
+        return args[3]
+    return os.path.basename(args[0]) if args else None
+
+
+def http_error_message(status, content, write, sa_email="?", file_name=None):
     """HttpError(status と本文)から、利用者向けのメッセージを作る。"""
     reason = _error_reason(content)
     if reason == "storageQuotaExceeded":
-        who = f"サービスアカウント {sa_email}" if sa_email != "?" else "この認証情報のアカウント"
-        return (f"error: Drive API {status} (storageQuotaExceeded): {who} には自分のストレージ容量がないため、"
-                "新しいファイルを作れません（個人のマイドライブでは、サービスアカウントが作ったファイルの置き場がありません）。"
-                "OAuth を使うか、Workspace の共有ドライブを使うか、既存のファイルの update にしてください")
+        if sa_email == "?":
+            return (f"error: Drive API {status} (storageQuotaExceeded): この認証情報のアカウントの Drive の容量が"
+                    "いっぱいです。容量を空けてください")
+        name = f"「{file_name}」" if file_name else ""
+        return (f"error: Drive API {status} (storageQuotaExceeded): サービスアカウントは自分のストレージ容量を持たないため、"
+                "新しいファイルを作れません。\n"
+                f"Google Drive でファイル{name}を作って、サービスアカウント {sa_email} に編集者として共有してください"
+                "（共有されたファイルには update で内容を書き込めます）。\n"
+                f"自動的に新規ファイルを作らせる方法はこちら: {NEW_FILES_DOC_URL}")
     hint = ""
     if status in (403, 404):
         who = f"サービスアカウント {sa_email}" if sa_email != "?" else "この認証情報のアカウント"
@@ -569,7 +584,8 @@ def main(argv):
                  "トークンが失効していないか確認してください")
     except HttpError as e:
         sys.exit(http_error_message(getattr(e.resp, "status", "?"), getattr(e, "content", b""), write,
-                                    SERVICE_ACCOUNT["email"]))
+                                    SERVICE_ACCOUNT["email"],
+                                    upload_target_name(rest[1:]) if rest[0] == "upload" else None))
     except IndexError:
         sys.exit(__doc__)
 

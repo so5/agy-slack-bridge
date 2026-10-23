@@ -311,11 +311,25 @@ QUOTA = (b'{"error": {"code": 403, "message": "Service Accounts do not have stor
          b'"errors": [{"reason": "storageQuotaExceeded", "domain": "usageLimits"}]}}')
 
 
-def test_http_error_message_explains_service_account_storage_quota():
-    msg = g.http_error_message(403, QUOTA, True, "sa@proj.iam.gserviceaccount.com")
-    assert "storageQuotaExceeded" in msg and "sa@proj.iam.gserviceaccount.com" in msg
-    assert "共有ドライブ" in msg and "OAuth" in msg
+def test_http_error_message_for_service_account_quota_tells_how_to_proceed():
+    msg = g.http_error_message(403, QUOTA, True, "sa@proj.iam.gserviceaccount.com", "report.pdf")
+    assert "storageQuotaExceeded" in msg
+    assert "Google Drive でファイル「report.pdf」を作って" in msg
+    assert "サービスアカウント sa@proj.iam.gserviceaccount.com に編集者として共有してください" in msg
+    assert "自動的に新規ファイルを作らせる方法はこちら: " + g.NEW_FILES_DOC_URL in msg
     assert "共有されていません" not in msg  # not the misleading 'not shared' hint
+    assert "ファイルを作って" in g.http_error_message(403, QUOTA, True, "sa@x")  # no name known
+
+
+def test_quota_error_for_an_oauth_account_means_its_own_drive_is_full():
+    msg = g.http_error_message(403, QUOTA, True, "?", "x.txt")
+    assert "容量がいっぱい" in msg and "サービスアカウント" not in msg
+
+
+def test_upload_target_name_follows_the_name_option_or_the_local_basename():
+    assert g.upload_target_name(["/p/a/report.pdf", "FOLDERID1234"]) == "report.pdf"
+    assert g.upload_target_name(["/p/a/report.pdf", "FOLDERID1234", "--name", "x.pdf"]) == "x.pdf"
+    assert g.upload_target_name([]) is None
 
 
 def test_http_error_message_keeps_the_sharing_hint_for_other_403_404():

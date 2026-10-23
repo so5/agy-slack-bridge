@@ -8,6 +8,12 @@ You may also write it by hand, or edit it by hand later. What follows describes 
 restrictions from the profile (JSON). The script itself contains no storage backend and no
 project-specific values.
 
+**Scope of the tool**: operations on Drive **files** only (list, search, metadata, read, download, create folders,
+upload, update existing files). For native Google Docs / Sheets / Slides it goes as far as **reading the content**
+through Drive export (`read` gives text or CSV, `download` gives PDF / xlsx); editing inside a document, formatting,
+comments, cell ranges and creating native documents are not included (the Docs / Sheets / Slides APIs are not used).
+`upload` / `update` are meant for ordinary files; their behavior on native formats has not been checked.
+
 - Location: `<bridge config directory>/gdrive/<name>.json`
   (default `~/.config/agy-slack-bridge/gdrive/`; can be changed with the environment variable `AGY_BRIDGE_CONFIG_DIR`).
   This location is covered by `permissions.deny` (`setup_agy_project.py` blocks the whole config directory),
@@ -41,15 +47,35 @@ Setup steps (service account):
    read-only, "Editor" if writes are allowed).
 5. Put the same folder IDs in the profile's `allowed_folders`.
 
-> **Note (unverified)**: a service account has no storage quota of its own. When it **creates new files** (`upload`,
-> etc.) in a folder of a personal Google account's My Drive, you may get a quota error. Reading and `update` of
-> existing files are expected to be fine. If you need to create new files in a personal Drive, use OAuth or a
-> Workspace shared drive.
-
-**Choose OAuth (`oauth`)** when a service account is not enough because of the limit above (for example creating
-files in a personal Drive), or when you want it to act with the user's own rights. In exchange you take on the
+**Set up OAuth (`oauth`)** when you want agy to create new files by itself (details in "Letting agy create new files on its own" below), or when you want it to act with the user's own rights. In exchange you take on the
 consent-screen setup, the 7-day expiry in testing mode, verification when published (`drive` is a restricted scope),
 scope matching, and access to the whole Drive (see "Notes for OAuth" below).
+
+> **Confirmed**: a service account has no storage quota of its own, so in a personal Google account's My Drive it
+> **cannot create a new file of any format or size** (`upload` fails with `storageQuotaExceeded`; creating an empty
+> native Google Doc directly through the Drive API fails the same way). `mkdir` (folders) and **`update` of a file a human created and shared** work fine (the file's
+> owner and quota stay with the human).
+
+<a id="create-new-files"></a>
+
+## Letting agy create new files on its own
+
+What a service account can do is read and write **files a human created beforehand**. If agy needs to create
+**new files** on its own initiative, use one of these:
+
+1. **A human creates an empty file and shares it (still a service account).** Create the file in Google Drive and
+   share it with the service account's email address as **editor**. agy can then `update` it. If the file's
+   location and name are fixed, this is enough.
+2. **Use an OAuth profile.** With OAuth the file is created with the user's own rights and quota, so `upload` can
+   create new files. In this tool that means:
+   - `kind` is `oauth`, and `credentials.command` prints a JSON with `client_id`, `client_secret` and `refresh_token`.
+   - Obtain the refresh token by consenting to the write scope (default `drive`) (how to get it is outside this tool:
+     create an OAuth client, consent, get the token).
+   - `scopes` must **match** the original consent (see "Notes for OAuth" below).
+   - Restrict where it can write with `allowed_folders` (OAuth can see the user's whole Drive).
+
+OAuth is not a "substitute when the service account fails"; it is **an additional capability you set up when you want
+agy to create new files by itself**. If you do not need that, a service account alone is enough.
 
 ## Keys
 
