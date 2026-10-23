@@ -1,8 +1,11 @@
 import os
 import stat
 
+import json
+
 import pytest
 
+import agy_settings
 import install
 
 
@@ -13,7 +16,7 @@ def dirs(tmp_path):
 
 def run(dirs, *extra):
     prefix, cfg = dirs
-    install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv", *extra])
+    install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv", "--no-setup", *extra])
 
 
 def mode(path):
@@ -75,3 +78,38 @@ def test_config_only_without_install_fails(dirs):
     prefix, cfg = dirs
     with pytest.raises(SystemExit):
         install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--config-only"])
+
+
+def test_settings_get_machine_wide_denies_and_no_allow(dirs):
+    prefix, cfg = dirs
+    run(dirs)
+    data = json.loads(agy_settings.GLOBAL_SETTINGS_PATH.read_text())
+    deny = data["permissions"]["deny"]
+    for rule in (f"read_file({prefix.resolve()})", f"write_file({prefix.resolve()})",
+                 f"read_file({cfg.resolve()})", f"write_file({cfg.resolve()})"):
+        assert rule in deny
+    assert "allow" not in data["permissions"]
+    run(dirs)  # idempotent
+    assert json.loads(agy_settings.GLOBAL_SETTINGS_PATH.read_text()) == data
+
+
+def test_no_settings_flag_leaves_settings_alone(dirs):
+    run(dirs, "--no-settings")
+    assert not agy_settings.GLOBAL_SETTINGS_PATH.exists()
+
+
+def test_setup_offer_yes_runs_setup_no_prints_command(dirs, capsys, monkeypatch):
+    prefix, cfg = dirs
+    ran = []
+    for answer, expect_run in (("", True), ("y", True), ("n", False)):
+        ran.clear()
+        install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv"],
+                     input_fn=lambda _p, a=answer: a, runner=lambda cmd: ran.append(cmd))
+        assert bool(ran) == expect_run
+    out = capsys.readouterr().out
+    assert "後で設定する場合は" in out and f"{prefix.resolve()}/tools/setup_agy_project.py" in out
+    assert ran == []
+    install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv"],
+                 input_fn=lambda _p: "y", runner=lambda cmd: ran.append(cmd))
+    assert ran[0][1:] == [f"{prefix.resolve()}/tools/setup_agy_project.py", "--prefix", str(prefix.resolve()),
+                          "--bridge-config-dir", str(cfg.resolve())]

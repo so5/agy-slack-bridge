@@ -311,7 +311,7 @@ but these make the easy mistakes (and easy probing) fail loudly:
 - **`permissions.deny` in `settings.json`** (deny beats allow, and deny-read
   implies deny-write): list the bridge's own source, its config/state dir
   (which holds the Slack tokens), and agy's own `settings.json`/`config`, e.g.
-  `read_file(<prefix>)`, `read_file(~/.config/agy-slack-bridge)` (setup_agy_project.py also
+  `read_file(<prefix>)`, `read_file(~/.config/agy-slack-bridge)` (install.py also
   denies *writes* there).
   This only covers agy's built-in file tools; a shell `cat` is a *command*, so
   it still goes through the normal grant flow. The bridge treats a deny-rule
@@ -566,6 +566,13 @@ python3 tools/install.py [--prefix DIR] [--config-dir DIR] [--with-gdrive]
   from the samples (`config.example.yaml`, `env.example`).
 - `--with-gdrive` also installs the Google client libraries
   (`requirements-gdrive.txt`) for `tools/gdrive_cli.py`.
+- It adds `permissions.deny` rules (read and write of the prefix and the config
+  dir, read of agy's own `settings.json`/`config`) to agy's machine-wide
+  `settings.json`; these do not depend on any project. It never writes an
+  `allow`. (When run as root it leaves `settings.json` alone, since that would be
+  root's; the `--config-only` run as your own user does it.)
+- At the end it offers to run the project setup right away (Y runs it; N prints
+  the command to run later).
 
 ## Setting up an agy project and the channel mapping
 
@@ -576,8 +583,10 @@ python3 tools/install.py [--prefix DIR] [--config-dir DIR] [--with-gdrive]
 Interactive, run by a human (it edits agy's `settings.json` and a project's
 permission grants), idempotent, and the same command repairs or changes an
 existing setup (current values are the defaults; Enter keeps, `-` clears). It:
-registers the directory with agy (`agy --new-project`), writes the deny rules and
-`trustedWorkspaces`, links the shared safety rules and points the project's
+registers the directory with agy (`agy --new-project`) or attaches to a project agy
+already knows (pick it from the list), requires the directory to be under git
+(`git init` if it is not), writes the project's `trustedWorkspaces` and a deny on
+its `.agents/hooks.json`, links the shared safety rules, points the project's
 `.agents/hooks.json` at the installed hook, optionally pre-approves the read-only
 Drive CLI subcommands in *that project's own* `permissionGrants`, and fills in the
 channel mapping in `config.yaml` (name, display name, icon, model, effort,

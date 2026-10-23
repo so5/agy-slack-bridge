@@ -7,7 +7,9 @@ import uuid
 import pytest
 import yaml
 
+import agy_settings
 import install
+import script_integrity
 import setup_agy_project as setup
 
 
@@ -41,12 +43,12 @@ def env(tmp_path, monkeypatch):
     """A fake machine: own agy dirs, an installed prefix + config dir, one target repo,
     and a fake `agy --new-project` that registers the cwd the way the real one does."""
     gemini = tmp_path / "gemini"
-    monkeypatch.setattr(setup, "GLOBAL_SETTINGS_PATH", gemini / "settings.json")
+    monkeypatch.setattr(agy_settings, "GLOBAL_SETTINGS_PATH", gemini / "settings.json")
     monkeypatch.setattr(setup, "AGY_PROJECTS_DIR", gemini / "projects")
     (gemini / "projects").mkdir(parents=True)
 
     prefix, cfg = tmp_path / "prefix", tmp_path / "cfg"
-    install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv"])
+    install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv", "--no-setup"])
 
     target = tmp_path / "proj"
     target.mkdir()
@@ -96,17 +98,21 @@ def test_fresh_setup_registers_links_and_denies(env):
 
     hooks = json.loads((agents / "hooks.json").read_text())
     cmd = hooks["script-integrity"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert cmd == f"python3 {env.prefix.resolve()}/tools/hooks/script_integrity.py"
+    assert cmd == (f"python3 {env.prefix.resolve()}/tools/hooks/script_integrity.py "
+                   f"--config-dir {env.cfg.resolve()}")
 
     s = settings(env)
     assert s["trustedWorkspaces"] == [str(env.target.resolve())]
     deny = s["permissions"]["deny"]
-    for rule in (f"read_file({env.prefix.resolve()})", f"write_file({env.prefix.resolve()})",
-                 f"read_file({env.cfg.resolve()})", f"write_file({env.cfg.resolve()})",
-                 f"write_file({env.target.resolve()}/.agents/hooks.json)",
-                 f"write_file({env.target.resolve()}/.agents/.permanent-commands.json)"):
-        assert rule in deny
+    # machine-wide denies (prefix, config dir) come from install.py; setup adds only its own
+    assert f"read_file({env.prefix.resolve()})" in deny and f"write_file({env.cfg.resolve()})" in deny
+    assert f"write_file({env.target.resolve()}/.agents/hooks.json)" in deny
+    assert not any(".permanent-commands" in d for d in deny)
     assert "allow" not in s["permissions"]  # never writes machine-wide allow
+    # the hook's state (seals, ledger) is registered under the config dir, not in the project
+    state = script_integrity.state_dir(str(env.cfg.resolve()), str(env.target.resolve()))
+    assert os.path.isdir(state)
+    assert not (agents / ".permanent-commands.json").exists()
 
 
 def test_idempotent(env):
@@ -154,18 +160,18 @@ def test_requires_installed_prefix(env, tmp_path):
         setup.main([str(env.target), "--prefix", str(tmp_path / "nothing")], ask=Scripted())
 
 
-def test_non_git_target_is_initialized_only_when_confirmed(env, tmp_path):
+def test_git_is_mandatory_and_initialized_without_asking(env, tmp_path):
     other = tmp_path / "nogit"
     other.mkdir()
-    with pytest.raises(SystemExit):
-        run(env, Scripted({"git init": "n"}), target=other)
-    run(env, Scripted({"git init": "y"}), target=other)
+    ask = Scripted()
+    run(env, ask, target=other)
     assert (other / ".git").exists()
+    assert not any("git" in p for p in ask.asked)
 
 
 def test_missing_target_is_created_when_confirmed(env, tmp_path):
     new = tmp_path / "brand-new"
-    run(env, Scripted({"作成しますか": "y", "git init": "y"}), target=new)
+    run(env, Scripted({"作成しますか": "y"}), target=new)
     assert (new / ".git").is_dir() and (new / ".agents/hooks.json").exists()
 
 
@@ -286,3 +292,52 @@ def test_tokens_filled_only_when_unset_and_file_stays_private(env):
     assert stat.S_IMODE(os.stat(env.cfg / "env").st_mode) == 0o600
     run(env, Scripted(secrets={"SLACK_BOT_TOKEN": "xoxb-other"}))
     assert "SLACK_BOT_TOKEN=xoxb-real" in (env.cfg / "env").read_text()
+
+
+# --- picking an existing agy project -----------------------------------------------
+
+def _existing_project(env, name, folder, pid=None):
+    pid = pid or str(uuid.uuid4())
+    data = {"id": pid, "name": name}
+    if folder is not None:
+        data["projectResources"] = {"resources": [{"folderUri": f"file://{folder}"}]}
+    (env.gemini / "projects" / f"{pid}.json").write_text(json.dumps(data))
+    return pid
+
+
+def run_menu(env, ask):
+    setup.main(["--prefix", str(env.prefix), "--bridge-config-dir", str(env.cfg)], ask=ask)
+
+
+def test_existing_project_can_be_picked_from_the_list(env, tmp_path):
+    folder = tmp_path / "already-there"
+    folder.mkdir()
+    subprocess.run(["git", "init", "-q", str(folder)], check=True)
+    pid = _existing_project(env, "already", folder.resolve())
+    ask = Scripted({"番号": "1", "チャンネル ID": "C0TEST123"})
+    run_menu(env, ask)
+    assert env.registered == []  # not re-registered with agy
+    assert channels(env)["C0TEST123"]["project"] == pid
+    assert (folder / ".agents/hooks.json").exists()
+    assert str(folder.resolve()) in settings(env)["trustedWorkspaces"]
+
+
+def test_project_without_a_directory_only_gets_drive_and_channel_setup(env):
+    pid = _existing_project(env, "chat-only", None)
+    run_menu(env, Scripted({"番号": "1", "チャンネル ID": "C0TEST123"}))
+    assert channels(env)["C0TEST123"]["project"] == pid
+    assert "trustedWorkspaces" not in settings(env) if env.gemini.joinpath("settings.json").exists() else True
+    assert not (env.tmp / "chat-only").exists()
+
+
+def test_menu_rejects_unknown_numbers_and_accepts_a_path_or_zero(env, tmp_path):
+    _existing_project(env, "one", None)
+    new = tmp_path / "fresh"
+    ask = Scripted({"番号": ["7", "0"], "新しいプロジェクトのディレクトリ": str(new), "作成しますか": "y"})
+    run_menu(env, ask)
+    assert (new / ".git").is_dir()
+    assert len(env.registered) == 1
+    ask = Scripted({"番号": str(tmp_path / "other")})
+    (tmp_path / "other").mkdir()
+    run_menu(env, ask)
+    assert (tmp_path / "other/.git").is_dir()

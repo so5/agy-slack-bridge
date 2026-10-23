@@ -16,8 +16,18 @@ agy の deny ルールで読み書きを禁じる対象になります。
   --with-gdrive      tools/gdrive_cli.py 用の Google 系パッケージも venv に入れる。
   --no-venv          venv の作成とパッケージのインストールを行わない。
   --no-config        設定ディレクトリを作らない。
-  --config-only      インストール先には触れず、設定ディレクトリだけ作る
-                     (root で --prefix /opt/... に入れた後、通常ユーザーで実行する)。
+  --config-only      インストール先には触れず、設定ディレクトリと settings.json だけ
+                     設定する(root で --prefix /opt/... に入れた後、通常ユーザーで実行する)。
+  --no-settings      ~/.gemini/antigravity-cli/settings.json を書き換えない。
+  --no-setup         最後に setup_agy_project.py を実行するかの確認を出さない。
+
+settings.json には、インストール先と設定ディレクトリを agy のエージェントに読み書き
+させない deny ルール(と、agy 自身の設定を読ませない deny)を追加します。許可(allow)は
+書きません。これはプロジェクトに依らない machine-wide の設定なので、ここで行います
+(root で実行したときは、root のホームの settings.json を書いてしまうので行いません。
+通常ユーザーでの --config-only で行います)。
+
+最後に、続けて setup_agy_project.py を実行するか確認します(端末のときだけ)。
 
 インストール先のレイアウトはリポジトリと同じです:
     <prefix>/bridge.py, requirements*.txt, config.example.yaml, env.example
@@ -36,6 +46,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agy_settings  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PREFIX = Path("~/.local/share/agy-slack-bridge").expanduser()
@@ -157,7 +170,31 @@ def create_config(prefix: Path, config_dir: Path) -> None:
         print(f"  [作成] {dest}")
 
 
-def main(argv: "list[str] | None" = None) -> None:
+def apply_settings(prefix: Path, config_dir: Path) -> None:
+    agy_settings.update_settings(agy_settings.machine_wide_deny_rules(prefix, config_dir, Path.home()))
+
+
+def setup_command(prefix: Path, config_dir: Path) -> list[str]:
+    python = prefix / ".venv" / "bin" / "python"
+    return [str(python if python.exists() else sys.executable),
+            str(prefix / "tools" / "setup_agy_project.py"),
+            "--prefix", str(prefix), "--bridge-config-dir", str(config_dir)]
+
+
+def offer_setup(prefix: Path, config_dir: Path, input_fn=input, runner=subprocess.run) -> None:
+    cmd = setup_command(prefix, config_dir)
+    print("\n続けて agy プロジェクトを設定します(チャンネルとの対応づけ、権限など)。")
+    while True:
+        raw = input_fn("setup_agy_project.py を今実行しますか? [Y/n]: ").strip().lower()
+        if raw in ("", "y", "yes"):
+            runner(cmd)
+            return
+        if raw in ("n", "no"):
+            print("後で設定する場合は、端末で次のコマンドを実行してください:\n  " + " ".join(cmd))
+            return
+
+
+def main(argv: "list[str] | None" = None, input_fn=input, runner=subprocess.run) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--prefix", type=Path, default=DEFAULT_PREFIX)
     ap.add_argument("--config-dir", type=Path, default=None)
@@ -165,6 +202,8 @@ def main(argv: "list[str] | None" = None) -> None:
     ap.add_argument("--no-venv", action="store_true")
     ap.add_argument("--no-config", action="store_true")
     ap.add_argument("--config-only", action="store_true")
+    ap.add_argument("--no-settings", action="store_true")
+    ap.add_argument("--no-setup", action="store_true")
     args = ap.parse_args(argv)
 
     prefix = args.prefix.expanduser().resolve()
@@ -189,7 +228,20 @@ def main(argv: "list[str] | None" = None) -> None:
         print(f"=== 設定ディレクトリ: {config_dir} ===")
         create_config(prefix, config_dir)
 
-    print(f"\n完了。次は、{prefix}/tools/setup_agy_project.py でプロジェクトを設定してください。")
+    if as_root and not args.config_only:
+        print("  [注意] root で実行しているため、settings.json は書き換えません。")
+    elif not args.no_settings:
+        print("=== agy の settings.json ===")
+        apply_settings(prefix, config_dir)
+
+    if as_root and not args.config_only:
+        print(f"\n次に、通常ユーザーで `python3 {prefix}/tools/install.py --prefix {prefix} --config-only` を実行し、"
+              f"続けて {prefix}/tools/setup_agy_project.py でプロジェクトを設定してください。")
+    elif args.no_setup or not sys.stdin.isatty() and input_fn is input:
+        print(f"\n完了。次は、次のコマンドでプロジェクトを設定してください:\n  "
+              + " ".join(setup_command(prefix, config_dir)))
+    else:
+        offer_setup(prefix, config_dir, input_fn, runner)
 
 
 if __name__ == "__main__":

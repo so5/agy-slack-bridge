@@ -16,20 +16,26 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
 使い方:
     <prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py [対象のパス] [オプション]
 
+  対象のパスを省略すると、agy に登録済みのプロジェクトの一覧から選ぶか、新しい
+  ディレクトリのパスを入力する。既存のプロジェクトを選ぶと、そのディレクトリを使う
+  (ディレクトリの無いプロジェクトは、Drive の許可とチャンネルの対応づけだけ行う)。
+
     --prefix DIR           インストール先(既定: このスクリプトの2つ上)。
     --bridge-config-dir DIR
                            ブリッジの設定ディレクトリ(既定: ~/.config/agy-slack-bridge)。
 
 このコマンドが行うこと:
-  1. 対象ディレクトリの用意(無ければ作成、git リポジトリでなければ git init)。
+  1. 対象ディレクトリの用意(無ければ作成。git 管理は必須なので、git リポジトリでなければ
+     git init する)。
   2. agy へのプロジェクト登録(未登録なら `agy --new-project -p hi` を対象ディレクトリで実行。
      プロジェクト名は、そのディレクトリ名になる)。
-  3. machine-wide の ~/.gemini/antigravity-cli/settings.json:
-     - ブリッジ/agy 自身の内部(インストール先・設定ディレクトリ)の読み取り・書き込みを
-       禁じる deny ルール、対象プロジェクトの .agents/hooks.json と
-       .agents/.permanent-commands.json への書き込みを禁じる deny ルール。
+  3. ~/.gemini/antigravity-cli/settings.json:
+     - 対象プロジェクトの .agents/hooks.json への書き込みを禁じる deny ルール。
      - trustedWorkspaces に対象ディレクトリを追加。
-     (許可(allow)は、ここには決して書かない。)
+     (許可(allow)は、ここには決して書かない。インストール先・設定ディレクトリを守る
+     machine-wide の deny は、install.py が書く。)
+     併せて、フックの状態ディレクトリ(<設定ディレクトリ>/integrity/…、恒久許可の seal
+     と実行履歴の置き場)を作る。これがあるプロジェクトだけが、フックの対象になる。
   4. 対象の .agents/ に、安全規則(インストール先のファイルへのシンボリックリンク)と、
      インストール先のフックを指す hooks.json を置き、AGENTS.md に読み込み行を追記。
      .gitignore に scratch/ の除外を追記(scratch について何も書かれていない場合のみ)。
@@ -53,9 +59,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE / "hooks"))
+import agy_settings  # noqa: E402
 import bridge_config  # noqa: E402
+import script_integrity  # noqa: E402
+from agy_settings import ensure_list_entries, load_json, save_json  # noqa: E402
 
-GLOBAL_SETTINGS_PATH = Path("~/.gemini/antigravity-cli/settings.json").expanduser()
 AGY_PROJECTS_DIR = Path("~/.gemini/config/projects").expanduser()
 DEFAULT_BRIDGE_CONFIG_DIR = Path("~/.config/agy-slack-bridge").expanduser()
 
@@ -114,38 +123,10 @@ class Prompter:
 
 # --- 共通の小物 ------------------------------------------------------------------
 
-def global_deny_rules(prefix: Path, bridge_config_dir: Path, home: Path, target_dir: Path) -> list[str]:
-    """machine-wide: 対象を問わず、常にこの内容を禁止する(ブリッジ/agy自身の内部)。
-    settings.json の既存エントリと同じ展開済みの絶対パスで持つ(でないと別文字列として
-    重複登録されてしまう)。"""
-    return [
-        f"read_file({prefix})",
-        f"write_file({prefix})",
-        f"read_file({bridge_config_dir})",
-        f"write_file({bridge_config_dir})",
-        f"read_file({home}/.gemini/antigravity-cli/settings.json)",
-        f"read_file({home}/.gemini/config)",
-        # フックの配線と恒久許可の台帳は、書き換えられると保護が外れる
-        f"write_file({target_dir}/.agents/hooks.json)",
-        f"write_file({target_dir}/.agents/.permanent-commands.json)",
-    ]
-
-
-def load_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-
-
-def save_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def ensure_list_entries(container: dict, key: str, entries: list[str]) -> list[str]:
-    """container[key] にリストを用意し、無いものだけ末尾に足す。足したものを返す。"""
-    current = container.setdefault(key, [])
-    added = [e for e in entries if e not in current]
-    current.extend(added)
-    return added
+def project_deny_rules(target_dir: Path) -> list[str]:
+    """プロジェクトごとの deny。フックの配線(.agents/hooks.json)は、書き換えられると
+    保護が外れる。インストール先・設定ディレクトリなど machine-wide のものは install.py が書く。"""
+    return [f"write_file({target_dir}/.agents/hooks.json)"]
 
 
 def absolute_symlink(target_dir: Path, dest_rel_path: str, source: Path) -> None:
@@ -168,14 +149,14 @@ def absolute_symlink(target_dir: Path, dest_rel_path: str, source: Path) -> None
     print(f"  [作成] {dest_rel_path} -> {source}")
 
 
-def write_hooks_json(target_dir: Path, prefix: Path) -> None:
+def write_hooks_json(target_dir: Path, prefix: Path, config_dir: Path) -> None:
     """インストール先のフックを指す .agents/hooks.json(絶対パス)を置く。"""
     template = json.loads((prefix / "tools" / "hooks.json").read_text(encoding="utf-8"))
     hook = prefix / "tools" / "hooks" / "script_integrity.py"
     for entry in template.values():
         for group in entry.get("PreToolUse", []):
             for h in group.get("hooks", []):
-                h["command"] = f"python3 {hook}"
+                h["command"] = f"python3 {hook} --config-dir {config_dir}"
     dest = target_dir / ".agents" / "hooks.json"
     text = json.dumps(template, indent=2, ensure_ascii=False) + "\n"
     if dest.is_symlink():
@@ -220,19 +201,15 @@ def ensure_scratch_ignored(target_dir: Path) -> None:
     print("  [追加] .gitignore: scratch/")
 
 
-def update_global_settings(target_dir: Path, deny_rules: list[str]) -> None:
-    data = load_json(GLOBAL_SETTINGS_PATH)
-    permissions = data.setdefault("permissions", {})
-    added_deny = ensure_list_entries(permissions, "deny", deny_rules)
-    added_ws = ensure_list_entries(data, "trustedWorkspaces", [str(target_dir)])
-    if added_deny or added_ws:
-        save_json(GLOBAL_SETTINGS_PATH, data)
-    for e in added_deny:
-        print(f"  [追加] settings.json permissions.deny: {e}")
-    for e in added_ws:
-        print(f"  [追加] settings.json trustedWorkspaces: {e}")
-    if not added_deny and not added_ws:
-        print("  [OK] settings.json は対応済み")
+def register_with_hook(target_dir: Path, config_dir: Path) -> None:
+    """フックが状態(恒久許可の seal、実行履歴)を持つ場所を用意する。この場所がある
+    プロジェクトだけが、フックの対象になる。置き場は設定ディレクトリ(エージェントは読み書きできない)。"""
+    state = Path(script_integrity.state_dir(str(config_dir), str(target_dir)))
+    if state.is_dir():
+        print("  [OK] フックの状態ディレクトリは作成済み")
+        return
+    state.mkdir(parents=True)
+    print(f"  [作成] フックの状態ディレクトリ: {state}")
 
 
 # --- agy プロジェクト ------------------------------------------------------------
@@ -251,6 +228,56 @@ def find_agy_project_json(target_dir: Path) -> "Path | None":
             if uri and uri.rstrip("/") == target_uri.rstrip("/"):
                 return p
     return None
+
+
+def project_folder(data: dict) -> "Path | None":
+    for res in (data.get("projectResources") or {}).get("resources", []):
+        uri = res.get("folderUri") or (res.get("gitFolder") or {}).get("folderUri")
+        if uri and uri.startswith("file://"):
+            return Path(uri[len("file://"):])
+    return None
+
+
+def list_agy_projects() -> list[dict]:
+    """agy に登録済みのプロジェクト(名前順)。folder は無いこともある(ワークスペース無し)。"""
+    found = []
+    for p in sorted(AGY_PROJECTS_DIR.glob("*.json")) if AGY_PROJECTS_DIR.is_dir() else []:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(data, dict) and data.get("id"):
+            found.append({"id": data["id"], "name": data.get("name") or data["id"],
+                          "folder": project_folder(data), "json": p})
+    return sorted(found, key=lambda x: x["name"])
+
+
+def choose_target(ask: "Prompter") -> "tuple[Path | None, dict | None]":
+    """(ディレクトリ, 既存プロジェクト)。既存を選ぶか、ディレクトリのパスを直接入力する。"""
+    projects = list_agy_projects()
+    if projects:
+        print("  agy に登録済みのプロジェクト:")
+        for i, pr in enumerate(projects, 1):
+            where = pr["folder"] or "(ディレクトリ無し)"
+            print(f"    {i}) {pr['name']}  {where}  [{pr['id']}]")
+        print("    0) 新しく作る")
+    while True:
+        raw = ask.text("番号" + ("（0 は新規作成）" if projects else "") + "、またはディレクトリのパス")
+        if not raw:
+            sys.exit("エラー: 対象が必要です。")
+        if raw.isdigit() and projects:
+            n = int(raw)
+            if 1 <= n <= len(projects):
+                pr = projects[n - 1]
+                return (pr["folder"].resolve() if pr["folder"] else None), pr
+            if n == 0:
+                raw = ask.text("新しいプロジェクトのディレクトリのパス")
+                if not raw:
+                    sys.exit("エラー: 対象が必要です。")
+            else:
+                print("    一覧にある番号を入力してください")
+                continue
+        return Path(raw).expanduser().resolve(), None
 
 
 def register_agy_project(target_dir: Path) -> None:
@@ -424,7 +451,8 @@ def configure_tokens(ask: Prompter, env_path: Path) -> None:
 
 def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("target", nargs="?", help="セットアップするプロジェクトのディレクトリ（省略すると質問する）")
+    ap.add_argument("target", nargs="?", help="セットアップするプロジェクトのディレクトリ"
+                    "（省略すると、登録済みのプロジェクトから選ぶか、パスを入力する）")
     ap.add_argument("--prefix", type=Path, default=HERE.parent)
     ap.add_argument("--bridge-config-dir", type=Path, default=DEFAULT_BRIDGE_CONFIG_DIR)
     args = ap.parse_args(argv)
@@ -439,26 +467,29 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
     if not (prefix / "bridge.py").exists() or not (prefix / "tools" / "hooks.json").exists():
         sys.exit(f"エラー: {prefix} にインストールされていません。先に tools/install.py を実行してください。")
 
-    raw_target = args.target or ask.text("プロジェクトのディレクトリ")
-    if not raw_target:
-        sys.exit("エラー: 対象のディレクトリが必要です。")
-    target_dir = Path(raw_target).expanduser().resolve()
-    if prefix == target_dir or prefix in target_dir.parents or config_dir in (target_dir, *target_dir.parents):
-        sys.exit("エラー: インストール先・設定ディレクトリの中をプロジェクトにはできません。")
+    existing = None
+    if args.target:
+        target_dir = Path(args.target).expanduser().resolve()
+    else:
+        target_dir, existing = choose_target(ask)
 
-    print(f"=== {target_dir} をセットアップ ===")
-    if not target_dir.is_dir():
-        if not ask.yes_no(f"{target_dir} がありません。作成しますか?"):
-            sys.exit("中止しました。")
-        target_dir.mkdir(parents=True)
-    if not (target_dir / ".git").exists():
-        if not ask.yes_no("git リポジトリではありません。git init しますか?（恒久許可コマンドの"
-                          "commit-before-run 判定の前提）"):
-            sys.exit("中止しました。")
-        subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
+    if target_dir is not None:
+        if prefix == target_dir or prefix in target_dir.parents or config_dir in (target_dir, *target_dir.parents):
+            sys.exit("エラー: インストール先・設定ディレクトリの中をプロジェクトにはできません。")
+        print(f"=== {target_dir} をセットアップ ===")
+        if not target_dir.is_dir():
+            if not ask.yes_no(f"{target_dir} がありません。作成しますか?"):
+                sys.exit("中止しました。")
+            target_dir.mkdir(parents=True)
+        if not (target_dir / ".git").exists():
+            # git 管理は必須(恒久許可コマンドの commit-before-run 判定の前提)
+            subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
+            print("  [作成] git リポジトリを初期化しました（git 管理は必須です）")
+    else:
+        print(f"=== {existing['name']}（ディレクトリ無しのプロジェクト）をセットアップ ===")
 
     print("-- agy プロジェクト --")
-    project_json = find_agy_project_json(target_dir)
+    project_json = existing["json"] if existing else find_agy_project_json(target_dir)
     if project_json is None:
         if ask.yes_no("agy にまだ登録されていません。`agy --new-project` で登録しますか?（モデルを 1 回呼びます）"):
             register_agy_project(target_dir)
@@ -468,23 +499,28 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
                   "（登録してから、このコマンドを再実行してください）。")
     if project_json is not None:
         project = load_json(project_json)
-        project_id, project_name = project["id"], project.get("name") or target_dir.name
+        project_id = project["id"]
+        project_name = project.get("name") or (target_dir.name if target_dir else project_id)
         print(f"  [OK] {project_name}（{project_id}）")
 
-    print("-- 共有ファイル --")
-    absolute_symlink(target_dir, ".agents/agent-safety-rules.md", prefix / "tools" / "agent-safety-rules.md")
-    linked = ["agent-safety-rules.md"]
-    for name in OPTIONAL_SHARED_FILES:
-        src = config_dir / "shared" / name
-        if src.exists():
-            absolute_symlink(target_dir, f".agents/{name}", src)
-            linked.append(name)
-    write_hooks_json(target_dir, prefix)
-    ensure_agents_md_includes(target_dir, [(n, AGENTS_MD_INCLUDES[n]) for n in linked])
-    ensure_scratch_ignored(target_dir)
+    if target_dir is not None:
+        print("-- 共有ファイル --")
+        absolute_symlink(target_dir, ".agents/agent-safety-rules.md", prefix / "tools" / "agent-safety-rules.md")
+        linked = ["agent-safety-rules.md"]
+        for name in OPTIONAL_SHARED_FILES:
+            src = config_dir / "shared" / name
+            if src.exists():
+                absolute_symlink(target_dir, f".agents/{name}", src)
+                linked.append(name)
+        write_hooks_json(target_dir, prefix, config_dir)
+        register_with_hook(target_dir, config_dir)
+        ensure_agents_md_includes(target_dir, [(n, AGENTS_MD_INCLUDES[n]) for n in linked])
+        ensure_scratch_ignored(target_dir)
 
-    print("-- machine-wide settings --")
-    update_global_settings(target_dir, global_deny_rules(prefix, config_dir, Path.home(), target_dir))
+        print("-- machine-wide settings --")
+        agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
+    else:
+        print("  [スキップ] ディレクトリが無いので、ファイルの配置は行いません")
 
     if project_json is not None:
         print("-- Google Drive CLI --")
@@ -493,7 +529,7 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
             if re.search(r"\s", str(prefix)):
                 print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
             else:
-                default = current or re.sub(r"[^A-Za-z0-9_-]", "-", target_dir.name)
+                default = current or re.sub(r"[^A-Za-z0-9_-]", "-", project_name)
                 profile = ask.text("プロファイル名（プロジェクトごとに別の名前にする）", default=default,
                                    validate=lambda v: None if _PROFILE_NAME_RE.match(v)
                                    else "英数字と _ - だけ使えます")

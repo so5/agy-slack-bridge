@@ -8,6 +8,7 @@ Slack ブリッジ経由で動かす agy プロジェクトに共通の、安全
 |---|---|
 | `install.py` | ブリッジ本体・`tools/`・venv をインストール先に入れる。設定ディレクトリのひな形も作る |
 | `setup_agy_project.py` | agy プロジェクトの設定(対話式、冪等)。インストール先から実行する |
+| `agy_settings.py` | agy の machine-wide な `settings.json` の読み書き(deny / trustedWorkspaces のみ)。install と setup が共有 |
 | `bridge_config.py` | `config.yaml` / `env` を、コメントを残したまま書き換える部品 |
 | `agent-safety-rules.md` | エージェント向けの行動規則(ブリッジ内部を調べない、拒否を迂回しない、など) |
 | `hooks.json`, `hooks/script_integrity.py` | `run_command` の PreToolUse フック。恒久許可したスクリプトが、承認後にこっそり書き換えられていないかを検査する |
@@ -20,11 +21,13 @@ Slack ブリッジ経由で動かす agy プロジェクトに共通の、安全
 書き換えられてしまいます。そこで次のようにします。
 
 - インストール先(既定 `~/.local/share/agy-slack-bridge`)と設定ディレクトリ
-  (既定 `~/.config/agy-slack-bridge`)を、`setup_agy_project.py` が agy の
+  (既定 `~/.config/agy-slack-bridge`)を、`install.py` が agy の
   `permissions.deny`(読み取り・書き込み)の対象にする。
 - Drive CLI とフックは、プロジェクトにコピーせず、インストール先のものを絶対パスで直接使う。
   プロジェクト内にスクリプトが無いので、プロジェクトごとの封印(seal)は要らない。
 - ポリシー(許可フォルダ、アップロードの制限など)は、設定ディレクトリのプロファイルに置く。
+- 恒久許可の seal(ブリッジが書く)とフックの実行履歴も、プロジェクトの中ではなく設定ディレクトリの
+  `integrity/<プロジェクトのキー>/` に置く。
 
 エージェントは同じ OS ユーザーで動くので、ユーザー所有のインストール先は deny ルールで
 守るだけです。最も堅くしたいときは、`--prefix /opt/agy-slack-bridge` のように root で
@@ -39,13 +42,15 @@ python3 tools/install.py [--prefix DIR] [--config-dir DIR] [--with-gdrive]
 #    root で /opt に入れる場合
 sudo python3 tools/install.py --prefix /opt/agy-slack-bridge [--with-gdrive]
 python3 /opt/agy-slack-bridge/tools/install.py --prefix /opt/agy-slack-bridge --config-only
-#    (--config-only はコードに触れず、通常ユーザーとして設定ディレクトリだけ作る)
+#    (--config-only はコードに触れず、通常ユーザーとして設定ディレクトリと settings.json だけ設定する)
 
 # 2. プロジェクトの設定(端末から、人間が実行。インストール先のものを使う)
 <prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py [<プロジェクトのパス>] \
     [--prefix <インストール先>] [--bridge-config-dir <設定ディレクトリ>]
 ```
 
+`install.py` は最後に、続けて `setup_agy_project.py` を実行するか確認します(Y でそのまま実行、
+N なら後で実行するコマンドを表示)。`--no-setup` で確認を省略できます。
 `install.py` を再実行するとコードが入れ替わります(アップグレード)。インストール先に
 自分で置いたファイルは消えます。設定ディレクトリの既存ファイルは上書きしません。
 インストールしたファイルは 0444 です(事故防止であって防御ではありません)。チェックアウト自身を `--prefix` にはできません。
@@ -53,12 +58,16 @@ python3 /opt/agy-slack-bridge/tools/install.py --prefix /opt/agy-slack-bridge --
 `setup_agy_project.py` は対話式です。何度実行しても安全で、現在の値が既定値として出るので、
 変更や修復も同じコマンドです(Enter: そのまま、`-`: 値を消す)。順に次を行います。
 
-1. ディレクトリの用意(無ければ作成、git リポジトリでなければ `git init`)。
+0. 対象の指定: パスを省略すると、agy に登録済みのプロジェクトの一覧から番号で選ぶか、
+   新しいディレクトリのパスを入力する(既存のプロジェクトは、そのディレクトリを使う。
+   ディレクトリの無いプロジェクトは、Drive の許可とチャンネルの対応づけだけ行う)。
+1. ディレクトリの用意(無ければ作成)。git 管理は必須なので、git リポジトリでなければ `git init` する。
 2. agy への登録(`agy --new-project -p hi` を、そのディレクトリで実行する。プロジェクト名は
    ディレクトリ名になる。モデルを 1 回呼ぶ)。
-3. `~/.gemini/antigravity-cli/settings.json` に、インストール先・設定ディレクトリの読み書きの
-   `deny`、対象の `.agents/hooks.json` と `.agents/.permanent-commands.json` への書き込みの
-   `deny`、`trustedWorkspaces` を追加する。`allow` はここには書かない。
+3. `~/.gemini/antigravity-cli/settings.json` に、対象の `.agents/hooks.json` への書き込みの
+   `deny` と `trustedWorkspaces` を追加する。`allow` はここには書かない。
+   (インストール先・設定ディレクトリを守る machine-wide の `deny` は `install.py` が書く。)
+   併せて、フックの状態ディレクトリ(`<設定ディレクトリ>/integrity/…`)を作る。
 4. 対象の `.agents/` に、安全規則へのシンボリックリンクと、インストール先のフックを絶対パスで
    指す `hooks.json` を置き、`AGENTS.md` に読み込み行を追記。`.gitignore` に `scratch/` を追記
    (scratch について何も書かれていない場合のみ)。
@@ -104,14 +113,26 @@ python3 /opt/agy-slack-bridge/tools/install.py --prefix /opt/agy-slack-bridge --
 
 ## フックについて
 
-`.agents/hooks.json` の `command` は、インストール先のフックの絶対パスです。このファイルは
-プロジェクトの中にあるため、書き換えられるとフックが外れます。そのため
-`setup_agy_project.py` は、このファイルと `.agents/.permanent-commands.json` への書き込みも
-`deny` に入れます(deny が実際に効くかは、実機で確かめてください)。
+`.agents/hooks.json` の `command` は、インストール先のフックの絶対パスに `--config-dir` を
+付けたものです。このファイルはプロジェクトの中にあるため、書き換えられるとフックが外れます。
+そのため `setup_agy_project.py` は、このファイルへの書き込みを `deny` に入れます
+(deny が実際に効くかは、実機で確かめてください)。
 
 フックが守るのは、`/agy-permissions add` で恒久許可した **プロジェクト内の** スクリプトです
-(封印したハッシュと違えば拒否、git commit 必須)。インストール先のツールはプロジェクトの
+(封印したハッシュと違えば拒否、git commit 必須)。封印(`permanent.json`)も、それ以外の
+スクリプトの実行履歴(`hashes.json`)も、設定ディレクトリの
+`integrity/<プロジェクトのキー>/` に置きます。キーはプロジェクトのルートの実パスのハッシュで、
+`setup_agy_project.py` が、このディレクトリを作ったプロジェクトだけをフックの対象にします
+(作っていないプロジェクトでは、フックは何もしません)。インストール先のツールはプロジェクトの
 外にあるので、封印の対象ではありません。
+
+### まだ試していないこと
+
+agy は `~/.gemini/config/` を「全プロジェクトに効く」置き場としています。`hooks.json` を
+そこに一つだけ置けば、プロジェクトごとの `.agents/hooks.json` が要らなくなる可能性が
+ありますが、`hooks.json` がそこで読まれるかは、実機で確認していません。確認できるまで、
+プロジェクトごとの `hooks.json` を使います(両方に置くと、フックが二重に動いて実行履歴が
+先に更新され、検知が効かなくなるので、片方だけにしてください)。
 
 ## 共有ファイルを足したとき
 
