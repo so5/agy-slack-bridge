@@ -484,7 +484,7 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
         if not (target_dir / ".git").exists():
             # git 管理は必須(恒久許可コマンドの commit-before-run 判定の前提)
             subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
-            print("  [作成] git リポジトリを初期化しました（git 管理は必須です）")
+            print(f"  [git init] {target_dir} は git リポジトリではなかったので初期化しました（git 管理は必須です。コミットはしていません）")
     else:
         print(f"=== {existing['name']}（ディレクトリ無しのプロジェクト）をセットアップ ===")
 

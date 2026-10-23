@@ -160,13 +160,14 @@ def test_requires_installed_prefix(env, tmp_path):
         setup.main([str(env.target), "--prefix", str(tmp_path / "nothing")], ask=Scripted())
 
 
-def test_git_is_mandatory_and_initialized_without_asking(env, tmp_path):
+def test_git_is_mandatory_and_initialized_without_asking(env, tmp_path, capsys):
     other = tmp_path / "nogit"
     other.mkdir()
     ask = Scripted()
     run(env, ask, target=other)
     assert (other / ".git").exists()
     assert not any("git" in p for p in ask.asked)
+    assert "git init" in capsys.readouterr().out
 
 
 def test_missing_target_is_created_when_confirmed(env, tmp_path):
