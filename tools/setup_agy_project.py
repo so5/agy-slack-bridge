@@ -61,6 +61,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -434,12 +435,22 @@ def ask_new_profile(ask: Prompter) -> "dict | None":
     if not kind:
         print("  [スキップ] 認証の種類が未入力")
         return None
-    print("    資格情報（鍵やトークンの JSON）を標準出力に出すコマンドを入力します。ファイルに書く代わりに、"
-          "AWS Secrets Manager や 1Password 等から取り出す形が使えます（tools/gdrive-profile.md）。")
-    command = ask.text("資格情報を取り出すコマンド", validate=_validate_credential_command)
+    print("    次に、資格情報（鍵やトークンの JSON）を標準出力に出す「シェルのコマンド」を入力します。"
+          "スコープの質問は、このあとです。")
+    print("      例: cat /home/you/secrets/drive-token.json")
+    print("      例: op read 'op://Vault/Drive token/credential'")
+    print("      例: aws secretsmanager get-secret-value --secret-id NAME --query SecretString --output text")
+    command = ask.text("資格情報を取り出すコマンド（上の例のような、実行できるコマンド）",
+                       validate=_validate_credential_command)
     if not command:
         print("  [スキップ] コマンドが未入力")
         return None
+    head = shlex.split(command)[0]
+    if not (shutil.which(head) or Path(head).expanduser().is_file()):
+        if not ask.yes_no(f"`{head}` というコマンドが見つかりません。このまま使いますか?"
+                          "（スコープをここに入れていませんか?）", default=False):
+            print("  [スキップ] コマンドを確認してから、もう一度実行してください")
+            return None
     scopes = None
     if not ask.yes_no("スコープは既定のままにしますか?（既定: drive.readonly / drive。OAuth では、最初に同意を"
                       "得たときのスコープと一致させる必要があり、これは運用者の責任です）", default=True):

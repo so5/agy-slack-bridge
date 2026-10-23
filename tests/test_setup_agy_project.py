@@ -516,3 +516,17 @@ def test_broken_or_invalid_profile_is_never_overwritten(env, capsys):
     run(env, Scripted(PROFILE_Q))
     assert json.loads(profile_path(env).read_text()) == {"kind": "oauth", "oops": 1}
     assert "スキップ" in capsys.readouterr().out
+
+
+def test_credential_command_that_does_not_exist_needs_confirmation(env):
+    base = {**PROFILE_Q, "今作成しますか": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "drive"}
+    run(env, Scripted(base))  # "drive" is not a command: default answer is no -> nothing written
+    assert not profile_path(env).exists()
+    run(env, Scripted({**base, "というコマンドが見つかりません": "y"}))
+    assert json.loads(profile_path(env).read_text())["credentials"]["command"] == ["drive"]
+    # a real command (cat) raises no question
+    profile_path(env).unlink()
+    ask = Scripted({**base, "資格情報を取り出すコマンド": "cat /k"})
+    run(env, ask)
+    assert not any("見つかりません" in p for p in ask.asked)
+    assert profile_path(env).exists()
