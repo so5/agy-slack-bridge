@@ -8,6 +8,11 @@ import json
 from pathlib import Path
 
 GLOBAL_SETTINGS_PATH = Path("~/.gemini/antigravity-cli/settings.json").expanduser()
+# 全プロジェクトに効く agy の hooks.json。ここにフックを一つ置く(プロジェクトごとの
+# .agents/hooks.json は使わない)。フック自身は、設定ディレクトリに状態ディレクトリがある
+# プロジェクトにしか働かない(setup_agy_project.py が作る)。
+GLOBAL_HOOKS_PATH = Path("~/.gemini/config/hooks.json").expanduser()
+HOOK_NAME = "script-integrity"
 
 
 def load_json(path: Path) -> dict:
@@ -39,6 +44,23 @@ def machine_wide_deny_rules(prefix: Path, config_dir: Path, home: Path) -> list[
         f"read_file({home}/.gemini/antigravity-cli/settings.json)",
         f"read_file({home}/.gemini/config)",
     ]
+
+
+def install_global_hook(prefix: Path, config_dir: Path) -> None:
+    """インストール先のフックを、グローバルの hooks.json に登録する(他のフックは残す)。"""
+    template = json.loads((prefix / "tools" / "hooks.json").read_text(encoding="utf-8"))
+    entry = template[HOOK_NAME]
+    hook = prefix / "tools" / "hooks" / "script_integrity.py"
+    for group in entry.get("PreToolUse", []):
+        for h in group.get("hooks", []):
+            h["command"] = f"python3 {hook} --config-dir {config_dir}"
+    data = load_json(GLOBAL_HOOKS_PATH)
+    if data.get(HOOK_NAME) == entry:
+        print(f"  [OK] {GLOBAL_HOOKS_PATH} は対応済み")
+        return
+    data[HOOK_NAME] = entry
+    save_json(GLOBAL_HOOKS_PATH, data)
+    print(f"  [書込] {GLOBAL_HOOKS_PATH} にフック {HOOK_NAME} を登録（{hook}）")
 
 
 def update_settings(deny_rules: list[str], trusted_workspaces: "list[str] | None" = None) -> None:

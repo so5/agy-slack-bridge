@@ -568,8 +568,10 @@ python3 tools/install.py [--prefix DIR] [--config-dir DIR] [--with-gdrive]
   (`requirements-gdrive.txt`) for `tools/gdrive_cli.py`.
 - It adds `permissions.deny` rules (read and write of the prefix and the config
   dir, read of agy's own `settings.json`/`config`) to agy's machine-wide
-  `settings.json`; these do not depend on any project. It never writes an
-  `allow`. (When run as root it leaves `settings.json` alone, since that would be
+  `settings.json`, and registers the script-integrity hook in agy's global
+  `~/.gemini/config/hooks.json` (one hook for all projects; it only acts on
+  projects the setup registered); none of this depends on a project. It never
+  writes an `allow`. (When run as root it leaves `settings.json` alone, since that would be
   root's; the `--config-only` run as your own user does it.)
 - At the end it offers to run the project setup right away (Y runs it; N prints
   the command to run later).
@@ -585,9 +587,9 @@ permission grants), idempotent, and the same command repairs or changes an
 existing setup (current values are the defaults; Enter keeps, `-` clears). It:
 registers the directory with agy (`agy --new-project`) or attaches to a project agy
 already knows (pick it from the list), requires the directory to be under git
-(`git init` if it is not), writes the project's `trustedWorkspaces` and a deny on
-its `.agents/hooks.json`, links the shared safety rules, points the project's
-`.agents/hooks.json` at the installed hook, optionally pre-approves the read-only
+(`git init` if it is not), adds the project to `trustedWorkspaces`, links the shared
+safety rules, registers the project with the (global) script-integrity hook,
+optionally pre-approves the read-only
 Drive CLI subcommands in *that project's own* `permissionGrants`, and fills in the
 channel mapping in `config.yaml` (name, display name, icon, model, effort,
 watched files, stats) and the Slack tokens in `env`. It never writes an `allow`

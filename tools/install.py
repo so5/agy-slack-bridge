@@ -18,12 +18,14 @@ agy の deny ルールで読み書きを禁じる対象になります。
   --no-config        設定ディレクトリを作らない。
   --config-only      インストール先には触れず、設定ディレクトリと settings.json だけ
                      設定する(root で --prefix /opt/... に入れた後、通常ユーザーで実行する)。
-  --no-settings      ~/.gemini/antigravity-cli/settings.json を書き換えない。
+  --no-settings      ~/.gemini/antigravity-cli/settings.json と ~/.gemini/config/hooks.json を
+                     書き換えない。
   --no-setup         最後に setup_agy_project.py を実行するかの確認を出さない。
 
 settings.json には、インストール先と設定ディレクトリを agy のエージェントに読み書き
 させない deny ルール(と、agy 自身の設定を読ませない deny)を追加します。許可(allow)は
-書きません。これはプロジェクトに依らない machine-wide の設定なので、ここで行います
+書きません。hooks.json(全プロジェクトに効く置き場)には、script-integrity フックを
+登録します(他のフックは残す)。これはプロジェクトに依らない machine-wide の設定なので、ここで行います
 (root で実行したときは、root のホームの settings.json を書いてしまうので行いません。
 通常ユーザーでの --config-only で行います)。
 
@@ -172,6 +174,7 @@ def create_config(prefix: Path, config_dir: Path) -> None:
 
 def apply_settings(prefix: Path, config_dir: Path) -> None:
     agy_settings.update_settings(agy_settings.machine_wide_deny_rules(prefix, config_dir, Path.home()))
+    agy_settings.install_global_hook(prefix, config_dir)
 
 
 def setup_command(prefix: Path, config_dir: Path) -> list[str]:
@@ -231,7 +234,7 @@ def main(argv: "list[str] | None" = None, input_fn=input, runner=subprocess.run)
     if as_root and not args.config_only:
         print("  [注意] root で実行しているため、settings.json は書き換えません。")
     elif not args.no_settings:
-        print("=== agy の settings.json ===")
+        print("=== agy の settings.json と hooks.json ===")
         apply_settings(prefix, config_dir)
 
     if as_root and not args.config_only:

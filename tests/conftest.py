@@ -10,7 +10,8 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _isolated_agy_settings(tmp_path_factory, monkeypatch):
-    """No test may read or write the real ~/.gemini/antigravity-cli/settings.json."""
+    """No test may read or write the real agy settings.json / hooks.json."""
     import agy_settings
-    monkeypatch.setattr(agy_settings, "GLOBAL_SETTINGS_PATH",
-                        tmp_path_factory.mktemp("agy-home") / "settings.json")
+    home = tmp_path_factory.mktemp("agy-home")
+    monkeypatch.setattr(agy_settings, "GLOBAL_SETTINGS_PATH", home / "settings.json")
+    monkeypatch.setattr(agy_settings, "GLOBAL_HOOKS_PATH", home / "hooks.json")

@@ -96,18 +96,14 @@ def test_fresh_setup_registers_links_and_denies(env):
     assert (env.target / "AGENTS.md").read_text() == "@[エージェント安全規則](.agents/agent-safety-rules.md)\n"
     assert "scratch/" in (env.target / ".gitignore").read_text()
 
-    hooks = json.loads((agents / "hooks.json").read_text())
-    cmd = hooks["script-integrity"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert cmd == (f"python3 {env.prefix.resolve()}/tools/hooks/script_integrity.py "
-                   f"--config-dir {env.cfg.resolve()}")
+    assert not (agents / "hooks.json").exists()  # the hook is global now (installed by install.py)
 
     s = settings(env)
     assert s["trustedWorkspaces"] == [str(env.target.resolve())]
     deny = s["permissions"]["deny"]
     # machine-wide denies (prefix, config dir) come from install.py; setup adds only its own
     assert f"read_file({env.prefix.resolve()})" in deny and f"write_file({env.cfg.resolve()})" in deny
-    assert f"write_file({env.target.resolve()}/.agents/hooks.json)" in deny
-    assert not any(".permanent-commands" in d for d in deny)
+    assert not any("hooks.json" in d or ".permanent-commands" in d for d in deny)
     assert "allow" not in s["permissions"]  # never writes machine-wide allow
     # the hook's state (seals, ledger) is registered under the config dir, not in the project
     state = script_integrity.state_dir(str(env.cfg.resolve()), str(env.target.resolve()))
@@ -119,8 +115,7 @@ def test_idempotent(env):
     answers = {"チャンネル ID": "C0TEST123", "Slack での表示名": "Bot", "アイコン（絵文字": ":robot_face:"}
     run(env, Scripted(answers))
     snap = lambda: (settings(env), (env.target / "AGENTS.md").read_text(),
-                    (env.target / ".gitignore").read_text(), (env.cfg / "config.yaml").read_text(),
-                    (env.target / ".agents/hooks.json").read_text())
+                    (env.target / ".gitignore").read_text(), (env.cfg / "config.yaml").read_text())
     before = snap()
     run(env, Scripted({"Slack チャンネルとの対応づけ": "y"}))  # Enter on every value keeps it
     assert snap() == before
@@ -131,22 +126,33 @@ def test_declined_registration_still_sets_up_files_but_nothing_project_specific(
     ask = Scripted({"agy にまだ登録されていません": "n", "Drive CLI": "y"})
     run(env, ask)
     assert env.registered == []
-    assert (env.target / ".agents/hooks.json").exists()
     assert not any("チャンネル" in p for p in ask.asked)
     assert channels(env) == {}
 
 
-def test_refuses_old_symlinked_hooks_json_and_real_safety_file(env):
+def test_refuses_real_file_in_place_of_the_safety_rules_link(env):
     (env.target / ".agents").mkdir()
-    (env.target / ".agents/hooks.json").symlink_to(env.tmp / "elsewhere.json")
-    with pytest.raises(SystemExit):
-        run(env)
-    (env.target / ".agents/hooks.json").unlink()
-    (env.target / ".agents/agent-safety-rules.md").unlink()  # linked by the first, refused run
     (env.target / ".agents/agent-safety-rules.md").write_text("mine")
     with pytest.raises(SystemExit):
         run(env)
     assert (env.target / ".agents/agent-safety-rules.md").read_text() == "mine"
+
+
+def test_old_project_level_hook_is_removed_so_it_does_not_fire_twice(env):
+    agents = env.target / ".agents"
+    agents.mkdir()
+    (agents / "hooks.json").write_text(json.dumps({"script-integrity": {"PreToolUse": []}}))
+    run(env)
+    assert not (agents / "hooks.json").exists()
+
+    (agents / "hooks.json").write_text(json.dumps({
+        "script-integrity": {"PreToolUse": []}, "mine": {"Stop": []}}))
+    run(env)
+    assert json.loads((agents / "hooks.json").read_text()) == {"mine": {"Stop": []}}
+
+    (agents / "hooks.json").write_text(json.dumps({"mine": {"Stop": []}}))
+    run(env)  # someone else's hooks.json is left alone
+    assert json.loads((agents / "hooks.json").read_text()) == {"mine": {"Stop": []}}
 
 
 def test_refuses_targets_inside_install_or_config_dir(env):
@@ -173,7 +179,7 @@ def test_git_is_mandatory_and_initialized_without_asking(env, tmp_path, capsys):
 def test_missing_target_is_created_when_confirmed(env, tmp_path):
     new = tmp_path / "brand-new"
     run(env, Scripted({"作成しますか": "y"}), target=new)
-    assert (new / ".git").is_dir() and (new / ".agents/hooks.json").exists()
+    assert (new / ".git").is_dir() and (new / ".agents/agent-safety-rules.md").is_symlink()
 
 
 def test_refuses_without_a_terminal(env):
@@ -319,7 +325,7 @@ def test_existing_project_can_be_picked_from_the_list(env, tmp_path):
     run_menu(env, ask)
     assert env.registered == []  # not re-registered with agy
     assert channels(env)["C0TEST123"]["project"] == pid
-    assert (folder / ".agents/hooks.json").exists()
+    assert (folder / ".agents/agent-safety-rules.md").is_symlink()
     assert str(folder.resolve()) in settings(env)["trustedWorkspaces"]
 
 

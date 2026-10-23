@@ -113,3 +113,20 @@ def test_setup_offer_yes_runs_setup_no_prints_command(dirs, capsys, monkeypatch)
                  input_fn=lambda _p: "y", runner=lambda cmd: ran.append(cmd))
     assert ran[0][1:] == [f"{prefix.resolve()}/tools/setup_agy_project.py", "--prefix", str(prefix.resolve()),
                           "--bridge-config-dir", str(cfg.resolve())]
+
+
+def test_global_hook_is_registered_alongside_other_hooks_and_idempotently(dirs):
+    prefix, cfg = dirs
+    agy_settings.GLOBAL_HOOKS_PATH.write_text(json.dumps({"other": {"Stop": []}}))
+    run(dirs)
+    data = json.loads(agy_settings.GLOBAL_HOOKS_PATH.read_text())
+    assert data["other"] == {"Stop": []}
+    cmd = data["script-integrity"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert cmd == f"python3 {prefix.resolve()}/tools/hooks/script_integrity.py --config-dir {cfg.resolve()}"
+    run(dirs)
+    assert json.loads(agy_settings.GLOBAL_HOOKS_PATH.read_text()) == data
+
+
+def test_no_settings_flag_also_skips_the_hook(dirs):
+    run(dirs, "--no-settings")
+    assert not agy_settings.GLOBAL_HOOKS_PATH.exists()

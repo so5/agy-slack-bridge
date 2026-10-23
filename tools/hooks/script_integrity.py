@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook for `run_command` (see .agents/hooks.json).
+"""PreToolUse hook for `run_command` (registered in agy's global ~/.gemini/config/hooks.json by install.py).
 
 Enforces agent-safety-rules.md #7: closes the gap where a command string
 once granted a *permanent* permissions.allow entry (e.g. a fixed CLI like

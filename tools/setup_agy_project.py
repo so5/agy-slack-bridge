@@ -29,15 +29,15 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
      git init する)。
   2. agy へのプロジェクト登録(未登録なら `agy --new-project -p hi` を対象ディレクトリで実行。
      プロジェクト名は、そのディレクトリ名になる)。
-  3. ~/.gemini/antigravity-cli/settings.json:
-     - 対象プロジェクトの .agents/hooks.json への書き込みを禁じる deny ルール。
-     - trustedWorkspaces に対象ディレクトリを追加。
+  3. ~/.gemini/antigravity-cli/settings.json の trustedWorkspaces に対象ディレクトリを追加。
      (許可(allow)は、ここには決して書かない。インストール先・設定ディレクトリを守る
-     machine-wide の deny は、install.py が書く。)
+     machine-wide の deny と、グローバルの hooks.json へのフック登録は、install.py が行う。)
      併せて、フックの状態ディレクトリ(<設定ディレクトリ>/integrity/…、恒久許可の seal
      と実行履歴の置き場)を作る。これがあるプロジェクトだけが、フックの対象になる。
-  4. 対象の .agents/ に、安全規則(インストール先のファイルへのシンボリックリンク)と、
-     インストール先のフックを指す hooks.json を置き、AGENTS.md に読み込み行を追記。
+     以前のセットアップが置いたプロジェクトごとの .agents/hooks.json のフックは外す
+     (グローバルのフックと二重に動くため)。
+  4. 対象の .agents/ に、安全規則(インストール先のファイルへのシンボリックリンク)を置き、
+     AGENTS.md に読み込み行を追記。
      .gitignore に scratch/ の除外を追記(scratch について何も書かれていない場合のみ)。
   5. Google Drive CLI を使う場合: プロファイル名を決め、読み取り系サブコマンドを、
      そのプロジェクト自身の permissionGrants にだけ許可として追加
@@ -123,12 +123,6 @@ class Prompter:
 
 # --- 共通の小物 ------------------------------------------------------------------
 
-def project_deny_rules(target_dir: Path) -> list[str]:
-    """プロジェクトごとの deny。フックの配線(.agents/hooks.json)は、書き換えられると
-    保護が外れる。インストール先・設定ディレクトリなど machine-wide のものは install.py が書く。"""
-    return [f"write_file({target_dir}/.agents/hooks.json)"]
-
-
 def absolute_symlink(target_dir: Path, dest_rel_path: str, source: Path) -> None:
     """target_dir/<dest_rel_path> を、source への絶対シンボリックリンクにする。"""
     dest = target_dir / dest_rel_path
@@ -149,25 +143,30 @@ def absolute_symlink(target_dir: Path, dest_rel_path: str, source: Path) -> None
     print(f"  [作成] {dest_rel_path} -> {source}")
 
 
-def write_hooks_json(target_dir: Path, prefix: Path, config_dir: Path) -> None:
-    """インストール先のフックを指す .agents/hooks.json(絶対パス)を置く。"""
-    template = json.loads((prefix / "tools" / "hooks.json").read_text(encoding="utf-8"))
-    hook = prefix / "tools" / "hooks" / "script_integrity.py"
-    for entry in template.values():
-        for group in entry.get("PreToolUse", []):
-            for h in group.get("hooks", []):
-                h["command"] = f"python3 {hook} --config-dir {config_dir}"
-    dest = target_dir / ".agents" / "hooks.json"
-    text = json.dumps(template, indent=2, ensure_ascii=False) + "\n"
-    if dest.is_symlink():
-        sys.exit(f"エラー: {dest} は以前のセットアップのシンボリックリンクです。"
-                 "削除してから再実行してください（フックはインストール先を直接指す形に変わりました）。")
-    if dest.exists() and dest.read_text(encoding="utf-8") == text:
-        print("  [OK] .agents/hooks.json は対応済み")
+def remove_project_hook(target_dir: Path) -> None:
+    """以前のセットアップが置いた、プロジェクトごとの .agents/hooks.json のフックを外す。
+    フックは今はグローバル(~/.gemini/config/hooks.json)なので、残すと二重に動き、
+    先に実行履歴が更新されて検知が効かなくなる。他のフックは残す。"""
+    path = target_dir / ".agents" / "hooks.json"
+    if not (path.exists() or path.is_symlink()):
         return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(text, encoding="utf-8")
-    print(f"  [書込] .agents/hooks.json（フック: {hook}）")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        print(f"  [警告] {path} を読めません。script-integrity フックが入っていれば手で外してください"
+              "（グローバルのフックと二重に動きます）。")
+        return
+    if agy_settings.HOOK_NAME not in data:
+        return
+    data.pop(agy_settings.HOOK_NAME)
+    if path.is_symlink() and data:
+        sys.exit(f"エラー: {path} はシンボリックリンクで、他のフックも含みます。手で確認してください。")
+    if data:
+        save_json(path, data)
+        print(f"  [更新] {path} から {agy_settings.HOOK_NAME} を外しました（グローバルのフックに移行）")
+    else:
+        path.unlink()
+        print(f"  [削除] {path}（フックはグローバルの hooks.json に移行）")
 
 
 def ensure_agents_md_includes(target_dir: Path, includes: list[tuple[str, str]]) -> None:
@@ -512,13 +511,13 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
             if src.exists():
                 absolute_symlink(target_dir, f".agents/{name}", src)
                 linked.append(name)
-        write_hooks_json(target_dir, prefix, config_dir)
+        remove_project_hook(target_dir)
         register_with_hook(target_dir, config_dir)
         ensure_agents_md_includes(target_dir, [(n, AGENTS_MD_INCLUDES[n]) for n in linked])
         ensure_scratch_ignored(target_dir)
 
         print("-- machine-wide settings --")
-        agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
+        agy_settings.update_settings([], [str(target_dir)])
     else:
         print("  [スキップ] ディレクトリが無いので、ファイルの配置は行いません")
 
