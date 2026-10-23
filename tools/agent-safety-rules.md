@@ -1,8 +1,12 @@
+---
+trigger: always_on
+---
+
 # エージェント安全規則
 
 この規則は、Slack ブリッジ経由で動かす agy プロジェクトに共通です。実体はブリッジのインストール先の
-`tools/agent-safety-rules.md` で、各プロジェクトの `.agents/agent-safety-rules.md` はそこへの
-シンボリックリンクです（`setup_agy_project.py` が張ります）。
+`tools/agent-safety-rules.md` で、各プロジェクトの `.agents/rules/agent-safety-rules.md` はそこへの
+シンボリックリンクです（`setup_agy_project.py` が張ります。`AGENTS.md` は使いません）。
 
 あなたは Slack ブリッジ（agy-slack-bridge）経由で、非対話（`agy -p`）で呼び出されています。
 

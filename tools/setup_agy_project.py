@@ -29,15 +29,18 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
      git init する)。
   2. agy へのプロジェクト登録(未登録なら `agy --new-project -p hi` を対象ディレクトリで実行。
      プロジェクト名は、そのディレクトリ名になる)。
-  3. ~/.gemini/antigravity-cli/settings.json の trustedWorkspaces に対象ディレクトリを追加。
+  3. ~/.gemini/antigravity-cli/settings.json の trustedWorkspaces に対象ディレクトリを追加し、
+     安全規則のリンク(.agents/rules/agent-safety-rules.md)への書き込みを禁じる deny を足す。
      (許可(allow)は、ここには決して書かない。インストール先・設定ディレクトリを守る
      machine-wide の deny と、グローバルの hooks.json へのフック登録は、install.py が行う。)
      併せて、フックの状態ディレクトリ(<設定ディレクトリ>/integrity/…、恒久許可の seal
      と実行履歴の置き場)を作る。これがあるプロジェクトだけが、フックの対象になる。
      以前のセットアップが置いたプロジェクトごとの .agents/hooks.json のフックは外す
      (グローバルのフックと二重に動くため)。
-  4. 対象の .agents/ に、安全規則(インストール先のファイルへのシンボリックリンク)を置き、
-     AGENTS.md に読み込み行を追記。
+  4. 対象の .agents/rules/ に、安全規則(インストール先のファイルへのシンボリックリンク。
+     frontmatter 付き)と、あれば <設定ディレクトリ>/shared/ の local-tools.md / gdrive-cli.md
+     へのリンクを置く。AGENTS.md は触らない(エージェントが編集してよい)。以前のセットアップが
+     作った .agents/ 直下のリンクと AGENTS.md の読み込み行は取り除く。
      .gitignore に scratch/ の除外を追記(scratch について何も書かれていない場合のみ)。
   5. Google Drive CLI を使う場合: プロファイル名を決め、読み取り系サブコマンドを、
      そのプロジェクト自身の permissionGrants にだけ許可として追加
@@ -76,14 +79,27 @@ _CHANNEL_ID_RE = re.compile(r"^[CG][A-Z0-9]{5,}$")
 _EMOJI_RE = re.compile(r"^:[a-z0-9_+\-]+:$")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
+# プロジェクトのルールは .agents/rules/*.md に置く(AGENTS.md は、エージェントが自由に
+# 編集できるように、触らない)。agy は frontmatter(`trigger: always_on` など)の無い
+# ルールファイルを読み込まない可能性がある。
+RULES_DIR = Path(".agents") / "rules"
+SAFETY_RULES = "agent-safety-rules.md"
 # 運用者がマシンごとに用意する任意のファイル(<設定ディレクトリ>/shared/ に置く)。
-# あれば .agents/ にリンクして AGENTS.md から読み込ませる。
+# あれば .agents/rules/ にリンクする。frontmatter を付けておくこと。
 OPTIONAL_SHARED_FILES = ["local-tools.md", "gdrive-cli.md"]
-AGENTS_MD_INCLUDES = {
-    "agent-safety-rules.md": "エージェント安全規則",
+# 以前のセットアップが作ったもの(.agents/<名前> のリンクと、AGENTS.md の読み込み行)。
+LEGACY_INCLUDE_LABELS = {
+    SAFETY_RULES: "エージェント安全規則",
     "local-tools.md": "このマシンで使えるツール",
     "gdrive-cli.md": "Google Drive の読み書き",
 }
+
+
+def project_deny_rules(target_dir: Path) -> list[str]:
+    """プロジェクトごとの deny。安全規則のリンクだけを守る(.agents/rules/ の他のルールや
+    AGENTS.md は、エージェントが編集できるままにする)。インストール先・設定ディレクトリを
+    守る machine-wide の deny は install.py が書く。"""
+    return [f"write_file({target_dir}/{RULES_DIR / SAFETY_RULES})"]
 
 
 # --- 対話 ---------------------------------------------------------------------
@@ -169,18 +185,35 @@ def remove_project_hook(target_dir: Path) -> None:
         print(f"  [削除] {path}（フックはグローバルの hooks.json に移行）")
 
 
-def ensure_agents_md_includes(target_dir: Path, includes: list[tuple[str, str]]) -> None:
+def remove_legacy_includes(target_dir: Path, prefix: Path, config_dir: Path) -> None:
+    """以前のセットアップが作った .agents/<名前> のリンク(自分が作ったもの、つまりインストール先/
+    設定ディレクトリの shared を指すものだけ)と、AGENTS.md の読み込み行を取り除く。
+    残すと、同じルールが二重に読まれる。"""
+    owned = (prefix.resolve(), (config_dir / "shared").resolve())
+    removed_names = []
+    for name in LEGACY_INCLUDE_LABELS:
+        link = target_dir / ".agents" / name
+        if link.is_symlink() and any(o == link.resolve().parent or o in link.resolve().parents for o in owned):
+            link.unlink()
+            removed_names.append(name)
+            print(f"  [削除] 以前のリンク .agents/{name}（.agents/rules/ に移行）")
     agents_md = target_dir / "AGENTS.md"
-    existing = agents_md.read_text(encoding="utf-8") if agents_md.exists() else ""
-    missing = [(fname, label) for fname, label in includes
-               if f"](.agents/{fname})" not in existing]
-    if not missing:
-        print("  [OK] AGENTS.md は読み込み済み")
+    if removed_names and agents_md.exists():
+        lines = agents_md.read_text(encoding="utf-8").splitlines(keepends=True)
+        keep = [l for l in lines if not any(f"](.agents/{n})" in l for n in removed_names)]
+        if len(keep) != len(lines):
+            agents_md.write_text("".join(keep), encoding="utf-8")
+            print("  [更新] AGENTS.md から以前の読み込み行を外しました")
+
+
+def warn_if_no_frontmatter(path: Path) -> None:
+    try:
+        head = path.read_text(encoding="utf-8")[:4]
+    except OSError:
         return
-    new_lines = "".join(f"@[{label}](.agents/{fname})\n" for fname, label in missing)
-    agents_md.write_text(new_lines + existing, encoding="utf-8")
-    for fname, _ in missing:
-        print(f"  [追記] AGENTS.md に @[...](.agents/{fname}) を追加")
+    if not head.startswith("---"):
+        print(f"  [警告] {path} に frontmatter（先頭の --- ... ---、trigger: always_on）がありません。"
+              "agy がルールとして読み込まない可能性があります。")
 
 
 def ensure_scratch_ignored(target_dir: Path) -> None:
@@ -504,20 +537,19 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
 
     if target_dir is not None:
         print("-- 共有ファイル --")
-        absolute_symlink(target_dir, ".agents/agent-safety-rules.md", prefix / "tools" / "agent-safety-rules.md")
-        linked = ["agent-safety-rules.md"]
+        remove_legacy_includes(target_dir, prefix, config_dir)
+        absolute_symlink(target_dir, f"{RULES_DIR / SAFETY_RULES}", prefix / "tools" / SAFETY_RULES)
         for name in OPTIONAL_SHARED_FILES:
             src = config_dir / "shared" / name
             if src.exists():
-                absolute_symlink(target_dir, f".agents/{name}", src)
-                linked.append(name)
+                absolute_symlink(target_dir, f"{RULES_DIR / name}", src)
+                warn_if_no_frontmatter(src)
         remove_project_hook(target_dir)
         register_with_hook(target_dir, config_dir)
-        ensure_agents_md_includes(target_dir, [(n, AGENTS_MD_INCLUDES[n]) for n in linked])
         ensure_scratch_ignored(target_dir)
 
         print("-- machine-wide settings --")
-        agy_settings.update_settings([], [str(target_dir)])
+        agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
     else:
         print("  [スキップ] ディレクトリが無いので、ファイルの配置は行いません")
 

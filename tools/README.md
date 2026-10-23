@@ -64,14 +64,17 @@ N なら後で実行するコマンドを表示)。`--no-setup` で確認を省�
 1. ディレクトリの用意(無ければ作成)。git 管理は必須なので、git リポジトリでなければ `git init` する。
 2. agy への登録(`agy --new-project -p hi` を、そのディレクトリで実行する。プロジェクト名は
    ディレクトリ名になる。モデルを 1 回呼ぶ)。
-3. `~/.gemini/antigravity-cli/settings.json` の `trustedWorkspaces` に対象を追加する。
-   `allow` はここには書かない。(インストール先・設定ディレクトリを守る machine-wide の
+3. `~/.gemini/antigravity-cli/settings.json` の `trustedWorkspaces` に対象を追加し、安全規則の
+   リンク(`.agents/rules/agent-safety-rules.md`)への書き込みの `deny` を足す
+   (`.agents/rules/` の他のルールや `AGENTS.md` は編集できるまま)。`allow` はここには書かない。(インストール先・設定ディレクトリを守る machine-wide の
    `deny` と、グローバルの `hooks.json` へのフック登録は `install.py` が行う。)
    併せて、フックの状態ディレクトリ(`<設定ディレクトリ>/integrity/…`)を作る。
    以前のセットアップが置いたプロジェクトごとの `.agents/hooks.json` のフックは外す
    (グローバルのフックと二重に動くため)。
-4. 対象の `.agents/` に、安全規則へのシンボリックリンクを置き、`AGENTS.md` に読み込み行を
-   追記。`.gitignore` に `scratch/` を追記(scratch について何も書かれていない場合のみ)。
+4. 対象の `.agents/rules/` に、安全規則へのシンボリックリンクを置く(`AGENTS.md` は触らない。
+   エージェントが自由に編集してよい)。以前のセットアップが作った `.agents/` 直下のリンクと
+   `AGENTS.md` の読み込み行は取り除く。`.gitignore` に `scratch/` を追記
+   (scratch について何も書かれていない場合のみ)。
 5. Drive CLI を使うか聞き、使うならプロファイル名(プロジェクトごとに別の名前)を決めて、
    読み取り系サブコマンド(`list`/`search`/`meta`/`read`/`download`)を、そのプロジェクト自身の
    `permissionGrants.allow` にだけ追加する。書き込み系は毎回の承認。プロファイル本体は
@@ -85,11 +88,14 @@ N なら後で実行するコマンドを表示)。`--no-setup` で確認を省�
 
 ### マシン固有のファイル(任意)
 
-`<設定ディレクトリ>/shared/` に次のファイルがあれば、プロジェクトの `.agents/` にリンクして
-`AGENTS.md` から読み込ませます。マシンごと・運用者ごとの内容なので、このリポジトリには含みません。
+`<設定ディレクトリ>/shared/` に次のファイルがあれば、プロジェクトの `.agents/rules/` にリンクします。
+マシンごと・運用者ごとの内容なので、このリポジトリには含みません。
 
 - `local-tools.md` — このマシンで使えるツールの一覧
 - `gdrive-cli.md` — エージェント向けの Drive CLI の使い方
+
+`.agents/rules/` のルールファイルには、先頭に frontmatter(`---` / `trigger: always_on` / `---`)が
+必要です(agy が読み込む条件)。付けていないと `setup_agy_project.py` が警告します。
 
 ## 許可の範囲について
 

@@ -91,9 +91,10 @@ def test_fresh_setup_registers_links_and_denies(env):
     run(env)
     assert len(env.registered) == 1
     agents = env.target / ".agents"
-    safety = agents / "agent-safety-rules.md"
+    safety = agents / "rules/agent-safety-rules.md"
     assert safety.is_symlink() and safety.resolve() == (env.prefix / "tools/agent-safety-rules.md").resolve()
-    assert (env.target / "AGENTS.md").read_text() == "@[エージェント安全規則](.agents/agent-safety-rules.md)\n"
+    assert safety.read_text().startswith("---\ntrigger: always_on\n---\n")  # agy needs the frontmatter
+    assert not (env.target / "AGENTS.md").exists()  # AGENTS.md stays the agent's to edit
     assert "scratch/" in (env.target / ".gitignore").read_text()
 
     assert not (agents / "hooks.json").exists()  # the hook is global now (installed by install.py)
@@ -103,7 +104,9 @@ def test_fresh_setup_registers_links_and_denies(env):
     deny = s["permissions"]["deny"]
     # machine-wide denies (prefix, config dir) come from install.py; setup adds only its own
     assert f"read_file({env.prefix.resolve()})" in deny and f"write_file({env.cfg.resolve()})" in deny
-    assert not any("hooks.json" in d or ".permanent-commands" in d for d in deny)
+    # only the safety-rules link is write-protected; other rules and AGENTS.md stay editable
+    assert [d for d in deny if str(env.target.resolve()) in d] == [
+        f"write_file({env.target.resolve()}/.agents/rules/agent-safety-rules.md)"]
     assert "allow" not in s["permissions"]  # never writes machine-wide allow
     # the hook's state (seals, ledger) is registered under the config dir, not in the project
     state = script_integrity.state_dir(str(env.cfg.resolve()), str(env.target.resolve()))
@@ -114,8 +117,7 @@ def test_fresh_setup_registers_links_and_denies(env):
 def test_idempotent(env):
     answers = {"チャンネル ID": "C0TEST123", "Slack での表示名": "Bot", "アイコン（絵文字": ":robot_face:"}
     run(env, Scripted(answers))
-    snap = lambda: (settings(env), (env.target / "AGENTS.md").read_text(),
-                    (env.target / ".gitignore").read_text(), (env.cfg / "config.yaml").read_text())
+    snap = lambda: (settings(env), (env.target / ".gitignore").read_text(), (env.cfg / "config.yaml").read_text())
     before = snap()
     run(env, Scripted({"Slack チャンネルとの対応づけ": "y"}))  # Enter on every value keeps it
     assert snap() == before
@@ -131,11 +133,11 @@ def test_declined_registration_still_sets_up_files_but_nothing_project_specific(
 
 
 def test_refuses_real_file_in_place_of_the_safety_rules_link(env):
-    (env.target / ".agents").mkdir()
-    (env.target / ".agents/agent-safety-rules.md").write_text("mine")
+    (env.target / ".agents/rules").mkdir(parents=True)
+    (env.target / ".agents/rules/agent-safety-rules.md").write_text("mine")
     with pytest.raises(SystemExit):
         run(env)
-    assert (env.target / ".agents/agent-safety-rules.md").read_text() == "mine"
+    assert (env.target / ".agents/rules/agent-safety-rules.md").read_text() == "mine"
 
 
 def test_old_project_level_hook_is_removed_so_it_does_not_fire_twice(env):
@@ -179,7 +181,7 @@ def test_git_is_mandatory_and_initialized_without_asking(env, tmp_path, capsys):
 def test_missing_target_is_created_when_confirmed(env, tmp_path):
     new = tmp_path / "brand-new"
     run(env, Scripted({"作成しますか": "y"}), target=new)
-    assert (new / ".git").is_dir() and (new / ".agents/agent-safety-rules.md").is_symlink()
+    assert (new / ".git").is_dir() and (new / ".agents/rules/agent-safety-rules.md").is_symlink()
 
 
 def test_refuses_without_a_terminal(env):
@@ -325,7 +327,7 @@ def test_existing_project_can_be_picked_from_the_list(env, tmp_path):
     run_menu(env, ask)
     assert env.registered == []  # not re-registered with agy
     assert channels(env)["C0TEST123"]["project"] == pid
-    assert (folder / ".agents/agent-safety-rules.md").is_symlink()
+    assert (folder / ".agents/rules/agent-safety-rules.md").is_symlink()
     assert str(folder.resolve()) in settings(env)["trustedWorkspaces"]
 
 
@@ -348,3 +350,36 @@ def test_menu_rejects_unknown_numbers_and_accepts_a_path_or_zero(env, tmp_path):
     (tmp_path / "other").mkdir()
     run_menu(env, ask)
     assert (tmp_path / "other/.git").is_dir()
+
+
+def test_optional_shared_files_become_rules_and_warn_without_frontmatter(env, capsys):
+    shared = env.cfg / "shared"
+    shared.mkdir()
+    (shared / "local-tools.md").write_text("---\ntrigger: always_on\n---\ntools\n")
+    (shared / "gdrive-cli.md").write_text("no frontmatter here\n")
+    run(env)
+    rules = env.target / ".agents/rules"
+    assert (rules / "local-tools.md").resolve() == (shared / "local-tools.md").resolve()
+    assert (rules / "gdrive-cli.md").is_symlink()
+    out = capsys.readouterr().out
+    assert f"{shared / 'gdrive-cli.md'} に frontmatter" in out
+    assert f"{shared / 'local-tools.md'} に frontmatter" not in out
+    assert not (env.target / "AGENTS.md").exists()
+
+
+def test_legacy_links_and_agents_md_lines_are_migrated_but_foreign_ones_kept(env):
+    agents = env.target / ".agents"
+    agents.mkdir()
+    (agents / "agent-safety-rules.md").symlink_to(env.prefix / "tools/agent-safety-rules.md")
+    foreign = env.tmp / "elsewhere.md"
+    foreign.write_text("mine")
+    (agents / "local-tools.md").symlink_to(foreign)  # not ours: leave it
+    (env.target / "AGENTS.md").write_text(
+        "@[エージェント安全規則](.agents/agent-safety-rules.md)\n"
+        "@[このマシンで使えるツール](.agents/local-tools.md)\n# my own notes\n")
+    run(env)
+    assert not (agents / "agent-safety-rules.md").exists()
+    assert (agents / "local-tools.md").is_symlink()
+    assert (env.target / "AGENTS.md").read_text() == (
+        "@[このマシンで使えるツール](.agents/local-tools.md)\n# my own notes\n")
+    assert (agents / "rules/agent-safety-rules.md").is_symlink()

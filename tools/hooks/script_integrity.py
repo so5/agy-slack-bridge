@@ -290,7 +290,7 @@ def main(argv: "list[str] | None" = None) -> None:
                     "decision": "deny",
                     "reason": ("; ".join(reasons) + ". このコマンドは恒久的に許可されているため、"
                                "内容を確認して再承認（seal）し、git commit してから実行してください"
-                               "（.agents/agent-safety-rules.md #7）。"),
+                               "（agent-safety-rules.md #7）。"),
                 }))
                 return
         else:

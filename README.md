@@ -588,7 +588,9 @@ existing setup (current values are the defaults; Enter keeps, `-` clears). It:
 registers the directory with agy (`agy --new-project`) or attaches to a project agy
 already knows (pick it from the list), requires the directory to be under git
 (`git init` if it is not), adds the project to `trustedWorkspaces`, links the shared
-safety rules, registers the project with the (global) script-integrity hook,
+safety rules as `.agents/rules/agent-safety-rules.md` (a symlink into the install
+prefix, write-protected by a deny; `AGENTS.md` is left alone for the agent to edit),
+registers the project with the (global) script-integrity hook,
 optionally pre-approves the read-only
 Drive CLI subcommands in *that project's own* `permissionGrants`, and fills in the
 channel mapping in `config.yaml` (name, display name, icon, model, effort,
