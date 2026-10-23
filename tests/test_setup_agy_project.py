@@ -383,3 +383,136 @@ def test_legacy_links_and_agents_md_lines_are_migrated_but_foreign_ones_kept(env
     assert (env.target / "AGENTS.md").read_text() == (
         "@[このマシンで使えるツール](.agents/local-tools.md)\n# my own notes\n")
     assert (agents / "rules/agent-safety-rules.md").is_symlink()
+
+
+# --- Drive profile policy (interactive) -------------------------------------------------
+
+import gdrive_policy  # noqa: E402
+
+FOLDER = "1AbCdEfGhIjKlMnOp"
+OTHER_FOLDER = "2AbCdEfGhIjKlMnOp"
+PROFILE_Q = {"Drive CLI": "y"}  # profile name defaults to the project dir name: "proj"
+
+
+def profile_path(env, name="proj"):
+    return env.cfg / "gdrive" / f"{name}.json"
+
+
+def allow(env):
+    data = json.loads(project_json(env).read_text())
+    return data["permissionGrants"]["permissionGrants"]["allow"]
+
+
+def subs_in(entries):
+    return sorted(e[:-1].split()[-1] for e in entries)
+
+
+def seed_profile(env, **extra):
+    data = {"kind": "service_account", "credentials": {"command": ["cat", "/key.json"]},
+            "scopes": {"read": "https://www.googleapis.com/auth/drive.readonly",
+                       "write": "https://www.googleapis.com/auth/drive"}, **extra}
+    gdrive_policy.write_profile(profile_path(env), data)
+    return data
+
+
+def test_missing_profile_is_created_interactively_with_default_policy(env):
+    ask = Scripted({**PROFILE_Q, "今作成しますか": "y", "認証の種類": "oauth",
+                    "資格情報を取り出すコマンド": "op read 'op://vault/item/token json'"})
+    run(env, ask)
+    data = json.loads(profile_path(env).read_text())
+    assert data == {"kind": "oauth", "credentials": {"command": ["op", "read", "op://vault/item/token json"]}}
+    assert stat.S_IMODE(os.stat(profile_path(env)).st_mode) == 0o600
+    assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
+
+
+def test_custom_scopes_are_asked_only_on_request(env):
+    ask = Scripted({**PROFILE_Q, "今作成しますか": "y", "認証の種類": "service_account",
+                    "資格情報を取り出すコマンド": "cat /k", "スコープは既定のまま": "n",
+                    "読み取りに使うスコープ": ["bad", "https://www.googleapis.com/auth/drive.file"],
+                    "書き込みに使うスコープ": "https://www.googleapis.com/auth/drive.file"})
+    run(env, ask)
+    assert json.loads(profile_path(env).read_text())["scopes"] == {
+        "read": "https://www.googleapis.com/auth/drive.file", "write": "https://www.googleapis.com/auth/drive.file"}
+
+
+def test_declining_to_create_or_missing_input_leaves_no_profile_and_all_reads_allowed(env):
+    run(env, Scripted({**PROFILE_Q, "今作成しますか": "n"}))
+    assert not profile_path(env).exists()
+    assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
+    run(env, Scripted({**PROFILE_Q, "今作成しますか": "y"}))  # no kind entered
+    assert not profile_path(env).exists()
+
+
+def test_policy_change_writes_only_deviations_and_keeps_credentials_and_scopes(env):
+    before = seed_profile(env)
+    ask = Scripted({**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": "list,read",
+                    "許可フォルダ（Drive": f"https://drive.google.com/drive/folders/{FOLDER}?usp=sharing",
+                    "アップロード拒否パターンの扱い": "a", "拒否するファイル名パターンを追加": "*.sqlite, *.db",
+                    "拒否するディレクトリ名を追加": "private"})
+    run(env, ask)
+    data = json.loads(profile_path(env).read_text())
+    assert data["kind"] == before["kind"] and data["credentials"] == before["credentials"]
+    assert data["scopes"] == before["scopes"]
+    assert data["commands"] == ["list", "read"] and data["allowed_folders"] == [FOLDER]
+    assert data["upload_deny"]["names"][-2:] == ["*.sqlite", "*.db"]
+    assert data["upload_deny"]["dirs"][-1] == "private"
+    assert subs_in(allow(env)) == ["list", "read"]  # only the enabled read commands
+
+
+def test_disabling_a_command_removes_the_allow_entry_setup_added_earlier(env):
+    seed_profile(env)
+    run(env, Scripted(PROFILE_Q))
+    assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
+    run(env, Scripted({**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": "list,meta"}))
+    assert subs_in(allow(env)) == ["list", "meta"]
+    run(env, Scripted({**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": "all", "緩める変更を適用しますか": "y"}))
+    assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
+
+
+def test_loosening_needs_a_separate_yes_and_is_dropped_on_no(env):
+    seed_profile(env, allowed_folders=[FOLDER], commands=["list"])
+    original = profile_path(env).read_text()
+    base = {**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": "list,upload", "許可フォルダ（Drive": "-"}
+    ask = Scripted({**base, "緩める変更を適用しますか": "n"})
+    run(env, ask)
+    assert profile_path(env).read_text() == original
+    assert any("緩める変更を適用しますか" in p and "[y/N]" in p for p in ask.asked)  # default is no
+    run(env, Scripted({**base, "緩める変更を適用しますか": "y"}))
+    data = json.loads(profile_path(env).read_text())
+    assert data["commands"] == ["list", "upload"] and "allowed_folders" not in data
+
+
+def test_tightening_does_not_ask_for_the_loosening_confirmation(env):
+    seed_profile(env)
+    ask = Scripted({**PROFILE_Q, "方針（コマンド": "y", "許可フォルダ（Drive": FOLDER})
+    run(env, ask)
+    assert json.loads(profile_path(env).read_text())["allowed_folders"] == [FOLDER]
+    assert not any("緩める変更" in p for p in ask.asked)
+
+
+def test_policy_prompts_reject_bad_input_then_accept(env):
+    seed_profile(env)
+    ask = Scripted({**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": ["delete", "list"],
+                    "許可フォルダ（Drive": ["https://example.com/x", FOLDER]})
+    run(env, ask)
+    data = json.loads(profile_path(env).read_text())
+    assert data["commands"] == ["list"] and data["allowed_folders"] == [FOLDER]
+
+
+def test_rerun_with_enter_everywhere_changes_nothing(env):
+    seed_profile(env, allowed_folders=[FOLDER], commands=["list", "read"])
+    run(env, Scripted(PROFILE_Q))
+    first = (profile_path(env).read_text(), allow(env))
+    run(env, Scripted())
+    assert (profile_path(env).read_text(), allow(env)) == first
+
+
+def test_broken_or_invalid_profile_is_never_overwritten(env, capsys):
+    profile_path(env).parent.mkdir(parents=True)
+    profile_path(env).write_text("{not json")
+    run(env, Scripted(PROFILE_Q))
+    assert profile_path(env).read_text() == "{not json"
+    profile_path(env).write_text(json.dumps({"kind": "oauth", "oops": 1}))
+    run(env, Scripted(PROFILE_Q))
+    assert json.loads(profile_path(env).read_text()) == {"kind": "oauth", "oops": 1}
+    assert "スキップ" in capsys.readouterr().out

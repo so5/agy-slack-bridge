@@ -42,9 +42,13 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
      へのリンクを置く。AGENTS.md は触らない(エージェントが編集してよい)。以前のセットアップが
      作った .agents/ 直下のリンクと AGENTS.md の読み込み行は取り除く。
      .gitignore に scratch/ の除外を追記(scratch について何も書かれていない場合のみ)。
-  5. Google Drive CLI を使う場合: プロファイル名を決め、読み取り系サブコマンドを、
-     そのプロジェクト自身の permissionGrants にだけ許可として追加
-     (プロファイル本体は運用者が作る。tools/gdrive-profile.md)。
+  5. Google Drive CLI を使う場合: プロファイル名を決め、プロファイル
+     (<設定ディレクトリ>/gdrive/NAME.json、tools/gdrive-profile.md)を対話で作成・設定する。
+     無ければ認証の種類と資格情報を取り出すコマンド(とスコープ)を聞いて作り、方針
+     (有効なコマンド、許可フォルダ、アップロード拒否パターン)は、現在値(新規なら既定値)を
+     見せて、変えるかを聞く。権限が広がる変更は、差分を見せたうえで別に確認する(既定は no)。
+     既存のプロファイルの資格情報とスコープには触らない。有効な読み取り系サブコマンドを、
+     そのプロジェクト自身の permissionGrants にだけ許可として追加し、無効にしたものの許可は外す。
   6. Slack チャンネルとの対応づけ(config.yaml の channels): チャンネル ID、表示名、アイコン、
      モデル、effort、監視する設定ファイル、統計。任意の項目は飛ばせる。
   7. 未設定なら Slack のトークン(env)。
@@ -56,6 +60,7 @@ import getpass
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -65,6 +70,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "hooks"))
 import agy_settings  # noqa: E402
 import bridge_config  # noqa: E402
+import gdrive_cli  # noqa: E402
+import gdrive_policy  # noqa: E402
 import script_integrity  # noqa: E402
 from agy_settings import ensure_list_entries, load_json, save_json  # noqa: E402
 
@@ -324,12 +331,13 @@ def register_agy_project(target_dir: Path) -> None:
         print(f"  [警告] agy の実行に失敗しました: {e}")
 
 
-def gdrive_allow_entries(prefix: Path, profile: str) -> list[str]:
+def gdrive_allow_entries(prefix: Path, profile: str, subs: "list[str] | None" = None) -> list[str]:
     # --profile はサブコマンドより前に固定する(末尾の自由引数にすると、エージェントが
     # 別プロジェクトのプロファイルを選べてしまう)。
     py = prefix / ".venv" / "bin" / "python"
     script = prefix / "tools" / "gdrive_cli.py"
-    return [f"command({py} -I {script} --profile {profile} {sub})" for sub in GDRIVE_READONLY_SUBCOMMANDS]
+    return [f"command({py} -I {script} --profile {profile} {sub})"
+            for sub in (GDRIVE_READONLY_SUBCOMMANDS if subs is None else subs)]
 
 
 def current_gdrive_profile(project_json: Path, prefix: Path) -> "str | None":
@@ -357,16 +365,163 @@ def warn_if_gdrive_packages_missing(prefix: Path) -> None:
               "`install.py --with-gdrive` で入れてください。")
 
 
-def update_project_gdrive_allow(project_json: Path, prefix: Path, profile: str) -> None:
+def update_project_gdrive_allow(project_json: Path, prefix: Path, profile: str,
+                                enabled: "set[str] | None" = None) -> None:
+    """読み取り系サブコマンドの許可を、そのプロジェクト自身の permissionGrants にだけ入れる。
+    enabled(プロファイルで有効なコマンド)が分かっているときは、無効なコマンドの、この
+    スクリプトが以前入れた許可を取り除く。書き込み系は許可に入れない(毎回の承認)。"""
     data = load_json(project_json)
     grants = data.setdefault("permissionGrants", {}).setdefault("permissionGrants", {})
-    added = ensure_list_entries(grants, "allow", gdrive_allow_entries(prefix, profile))
-    if added:
+    subs = [c for c in GDRIVE_READONLY_SUBCOMMANDS if enabled is None or c in enabled]
+    added = ensure_list_entries(grants, "allow", gdrive_allow_entries(prefix, profile, subs))
+    stale = [e for e in gdrive_allow_entries(prefix, profile, [c for c in GDRIVE_READONLY_SUBCOMMANDS if c not in subs])
+             if e in grants.get("allow", [])]
+    for e in stale:
+        grants["allow"].remove(e)
+    if added or stale:
         save_json(project_json, data)
-        for e in added:
-            print(f"  [追加] {project_json.name} permissionGrants.allow: {e}")
-    else:
+    for e in added:
+        print(f"  [追加] {project_json.name} permissionGrants.allow: {e}")
+    for e in stale:
+        print(f"  [削除] {project_json.name} permissionGrants.allow: {e}（プロファイルで無効）")
+    if not added and not stale:
         print(f"  [OK] {project_json.name} は対応済み")
+
+
+# --- Drive CLI のプロファイル(方針の対話設定) -----------------------------------------
+
+_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
+
+
+def _csv(value: "str | None") -> list[str]:
+    return [x.strip() for x in (value or "").split(",") if x.strip()]
+
+
+def _validate_commands(v):
+    names = _csv(v)
+    if v.strip() == "all":
+        return None
+    bad = [n for n in names if n not in gdrive_policy.ALL_COMMANDS]
+    return f"未知のコマンド: {', '.join(bad)}（{', '.join(gdrive_policy.ALL_COMMANDS)}、または all）" if bad or not names else None
+
+
+def _validate_folders(v):
+    bad = [x for x in _csv(v) if gdrive_cli.extract_drive_id(x) is None]
+    return f"Drive のフォルダ URL または ID ではありません: {', '.join(bad)}" if bad else None
+
+
+def _validate_scope(v):
+    return None if v.startswith(_SCOPE_PREFIX) else f"{_SCOPE_PREFIX}… の形で入力してください"
+
+
+def _validate_kind(v):
+    return None if v in ("service_account", "oauth") else "service_account か oauth"
+
+
+def _validate_credential_command(v):
+    try:
+        return None if shlex.split(v) else "コマンドを入力してください"
+    except ValueError as e:
+        return f"引用符が閉じていません: {e}"
+
+
+def _validate_upload_mode(v):
+    return None if v in ("k", "a", "r") else "k / a / r のどれか"
+
+
+def ask_new_profile(ask: Prompter) -> "dict | None":
+    kind = ask.text("認証の種類（service_account / oauth）", validate=_validate_kind)
+    if not kind:
+        print("  [スキップ] 認証の種類が未入力")
+        return None
+    print("    資格情報（鍵やトークンの JSON）を標準出力に出すコマンドを入力します。ファイルに書く代わりに、"
+          "AWS Secrets Manager や 1Password 等から取り出す形が使えます（tools/gdrive-profile.md）。")
+    command = ask.text("資格情報を取り出すコマンド", validate=_validate_credential_command)
+    if not command:
+        print("  [スキップ] コマンドが未入力")
+        return None
+    scopes = None
+    if not ask.yes_no("スコープは既定のままにしますか?（既定: drive.readonly / drive。OAuth では、最初に同意を"
+                      "得たときのスコープと一致させる必要があり、これは運用者の責任です）", default=True):
+        read = ask.text("読み取りに使うスコープ", default=gdrive_cli.SCOPE_READ_DEFAULT, validate=_validate_scope)
+        write = ask.text("書き込みに使うスコープ", default=gdrive_cli.SCOPE_WRITE_DEFAULT, validate=_validate_scope)
+        scopes = {"read": read, "write": write}
+    return gdrive_policy.new_profile(kind, shlex.split(command), scopes)
+
+
+def ask_policy(ask: Prompter, old: dict) -> dict:
+    new = {k: list(v) for k, v in old.items()}
+    cmds = ask.text("有効にするコマンド（カンマ区切り、または all。write 系の mkdir / upload / update は"
+                    "許可リストに入らず、毎回承認が要ります）", default=",".join(old["commands"]),
+                    validate=_validate_commands)
+    new["commands"] = gdrive_policy.ALL_COMMANDS[:] if (cmds or "").strip() == "all" else _csv(cmds)
+    folders = ask.text("許可フォルダ（Drive のフォルダ URL または ID、カンマ区切り。`-` で制限なし = "
+                       "認証情報で見える範囲すべて）", default=",".join(old["allowed_folders"]) or None,
+                       validate=_validate_folders)
+    new["allowed_folders"] = [gdrive_cli.extract_drive_id(x) for x in _csv(folders)]
+    mode = ask.text("アップロード拒否パターンの扱い（k=今のまま / a=既定に追加 / r=置き換え）", default="k",
+                    validate=_validate_upload_mode)
+    if mode == "a":
+        for key, label in (("deny_names", "拒否するファイル名パターンを追加（例: *.sqlite、カンマ区切り）"),
+                           ("deny_dirs", "拒否するディレクトリ名を追加（カンマ区切り）")):
+            extra = _csv(ask.text(label))
+            new[key] = new[key] + [x for x in extra if x not in new[key]]
+    elif mode == "r":
+        names = ask.text("拒否するファイル名パターン（置き換え。カンマ区切り）", default=",".join(old["deny_names"]) or None)
+        dirs = ask.text("拒否するディレクトリ名（置き換え。カンマ区切り）", default=",".join(old["deny_dirs"]) or None)
+        new["deny_names"], new["deny_dirs"] = _csv(names), _csv(dirs)
+    return new
+
+
+def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "set[str] | None":
+    """プロファイル(<設定ディレクトリ>/gdrive/NAME.json)の方針を対話で設定して書く。
+    有効な読み取り系を含むコマンドの集合を返す。プロファイルを扱えなかったとき
+    (作らない・壊れている等)は None。"""
+    path = config_dir / "gdrive" / f"{profile}.json"
+    try:
+        data = gdrive_policy.read_profile(path)
+    except (ValueError, OSError) as e:
+        print(f"  [警告] {path} を読めません（{e}）。方針の設定はスキップします（直してから再実行してください）。")
+        return None
+    created = data is None
+    if created:
+        if not ask.yes_no(f"プロファイル {path} がありません。今作成しますか?", default=True):
+            return None
+        data = ask_new_profile(ask)
+        if data is None:
+            return None
+    else:
+        try:
+            gdrive_cli.parse_profile(data)
+        except gdrive_cli.ProfileError as e:
+            print(f"  [警告] {path} が不正です（{e}）。方針の設定はスキップします。")
+            return None
+
+    old = gdrive_policy.policy_from_data(data)
+    print("    現在の方針:" if not created else "    方針（既定値）:")
+    for line in gdrive_policy.describe(old):
+        print(f"      {line}")
+    new = old
+    if ask.yes_no("方針（コマンド・許可フォルダ・アップロード拒否）を変更しますか?", default=False):
+        new = ask_policy(ask, old)
+        for line in gdrive_policy.diff(old, new):
+            print(f"      変更: {line}")
+        looser = gdrive_policy.loosening(old, new)
+        if looser:
+            print("    [注意] 権限が広がる変更が含まれます:")
+            for line in looser:
+                print(f"      - {line}")
+            if not ask.yes_no("緩める変更を適用しますか?", default=False):
+                print("    [取消] 方針の変更を取り消しました")
+                new = old
+    if created or new != old:
+        if not ask.yes_no(f"{path} に書き込みますか?", default=True):
+            return None
+        gdrive_policy.write_profile(path, gdrive_policy.apply_policy(data, new))
+        print(f"  [書込] {path}")
+    else:
+        print(f"  [OK] {path} は変更なし")
+    return {c for c in new["commands"] if c in GDRIVE_READONLY_SUBCOMMANDS}
 
 
 # --- ブリッジの設定(config.yaml / env) ----------------------------------------------
@@ -565,7 +720,8 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
                                    validate=lambda v: None if _PROFILE_NAME_RE.match(v)
                                    else "英数字と _ - だけ使えます")
                 if profile:
-                    update_project_gdrive_allow(project_json, prefix, profile)
+                    enabled = configure_gdrive_profile(ask, config_dir, profile)
+                    update_project_gdrive_allow(project_json, prefix, profile, enabled)
                     warn_if_profile_missing(config_dir, profile)
                     warn_if_gdrive_packages_missing(prefix)
 
