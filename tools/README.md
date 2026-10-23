@@ -95,7 +95,11 @@ N なら後で実行するコマンドを表示)。`--no-setup` で確認を省�
 - `gdrive-cli.md` — エージェント向けの Drive CLI の使い方
 
 `.agents/rules/` のルールファイルには、先頭に frontmatter(`---` / `trigger: always_on` / `---`)が
-必要です(agy が読み込む条件)。付けていないと `setup_agy_project.py` が警告します。
+必要です。無いと、エラーにならずに無視されます(実機で確認済み)。付けていないと
+`setup_agy_project.py` が警告します。
+`.agents/rules/` のルール(通常のファイル、シンボリックリンクとも)と、ファイル単位の
+`write_file` の deny は、実機で動作を確認済みです。シェル(`rm` / `mv` など)による削除・移動は
+deny の対象外で、通常の許可フローと、安全規則 9 で防ぎます。
 
 ## 許可の範囲について
 

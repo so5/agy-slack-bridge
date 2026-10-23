@@ -81,7 +81,7 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 # プロジェクトのルールは .agents/rules/*.md に置く(AGENTS.md は、エージェントが自由に
 # 編集できるように、触らない)。agy は frontmatter(`trigger: always_on` など)の無い
-# ルールファイルを読み込まない可能性がある。
+# ルールファイルを、エラーも出さずに無視する(実機で確認済み)。
 RULES_DIR = Path(".agents") / "rules"
 SAFETY_RULES = "agent-safety-rules.md"
 # 運用者がマシンごとに用意する任意のファイル(<設定ディレクトリ>/shared/ に置く)。
@@ -213,7 +213,7 @@ def warn_if_no_frontmatter(path: Path) -> None:
         return
     if not head.startswith("---"):
         print(f"  [警告] {path} に frontmatter（先頭の --- ... ---、trigger: always_on）がありません。"
-              "agy がルールとして読み込まない可能性があります。")
+              "エラーにならずに無視され、エージェントには渡りません（実機で確認済み）。")
 
 
 def ensure_scratch_ignored(target_dir: Path) -> None:
