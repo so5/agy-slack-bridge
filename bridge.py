@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -2969,7 +2970,17 @@ def build_app() -> App:
     return app
 
 
+def check_agy_available() -> None:
+    """Exit at startup, with a clear message, when AGY_BIN cannot be run. Under
+    systemd --user the PATH is minimal (e.g. ~/.local/bin is not on it), and without
+    this every agy call fails later with a bare FileNotFoundError."""
+    if shutil.which(AGY_BIN) is None:
+        sys.exit(f"agy not found: AGY_BIN={AGY_BIN!r} is not an executable on PATH={os.environ.get('PATH', '')!r}. "
+                 "Set AGY_BIN to the absolute path of agy (e.g. in the env file).")
+
+
 def main() -> None:
+    check_agy_available()
     app = build_app()
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     handler.start()

@@ -621,6 +621,20 @@ AGY_BRIDGE_STATE_DB=~/.config/agy-slack-bridge/state.sqlite3 \
   <prefix>/.venv/bin/python <prefix>/bridge.py
 ```
 
+Under systemd, note three things:
+
+- **`agy` must be found.** A `systemd --user` service has a minimal `PATH` (no
+  `~/.local/bin`), so a bare `agy` fails with `FileNotFoundError`. `install.py` pins
+  the absolute path it finds as `Environment=AGY_BIN=...` in the generated unit (it
+  warns if it finds none), and the bridge exits at startup with a clear message when
+  `AGY_BIN` is not runnable. Set `AGY_BIN` to an absolute path in the env file if
+  you write the unit yourself.
+- **Logs go to the journal**, not to a file: `journalctl --user -u agy-slack-bridge.service`.
+- **The config dir is one directory.** The unit's `AGY_BRIDGE_CONFIG` and the
+  script-integrity hook's `--config-dir` must be the same directory (`install.py`
+  sets both; the hook's seals live in `<config dir>/integrity/`). Don't split them
+  by hand.
+
 (The env file is plain `KEY=value` lines, as systemd's `EnvironmentFile=`
 expects, so sourcing it with `set -a` works. Don't use
 `env $(cat file | xargs)`: it breaks on the `#` comment lines.)

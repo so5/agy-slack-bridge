@@ -61,6 +61,9 @@
   「`run_command` で取得してから渡す」形に変えると、裏の取得コマンド自体が承認対象になってしまうので、
   変えないでください。
 - `aws secretsmanager ...` や `op read ...` のような取得コマンドを、**許可リストに入れない**でください。
+- 取得コマンドは、ブリッジ(systemd のユーザーサービスなら、最小限の `PATH`)から実行されます。
+  `PATH` に無い場所にインストールしたツール(pipx、snap、`pip --user` など)は、絶対パスで書くか、
+  unit に `Environment=PATH=...` を足してください。
 - 許可エントリでは `--profile <名前>` を、サブコマンドより前に固定します
   (`command(<prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile proj-a list)`)。末尾の自由引数だと、
   エージェントが別プロジェクトのプロファイルを選べてしまいます。`setup_agy_project.py` はこの形で登録します。

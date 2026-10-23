@@ -64,6 +64,10 @@ SYNC_DIRS = ["tools"]
 IGNORED_NAMES = {"__pycache__", ".pytest_cache"}
 
 SYSTEMD_UNIT = """\
+# AGY_BRIDGE_CONFIG's directory ({config_dir}) must be the same directory the
+# script-integrity hook gets as --config-dir (install.py sets both): the hook's
+# seals live in <config dir>/integrity/. Logs go to the journal:
+#   journalctl --user -u agy-slack-bridge.service
 [Unit]
 Description=Slack <-> Antigravity CLI (agy) bridge
 After=network-online.target
@@ -75,7 +79,7 @@ WorkingDirectory={prefix}
 EnvironmentFile={config_dir}/env
 Environment=AGY_BRIDGE_CONFIG={config_dir}/config.yaml
 Environment=AGY_BRIDGE_STATE_DB={config_dir}/state.sqlite3
-ExecStart={prefix}/.venv/bin/python {prefix}/bridge.py
+{agy_line}ExecStart={prefix}/.venv/bin/python {prefix}/bridge.py
 Restart=on-failure
 RestartSec=10
 
@@ -147,9 +151,20 @@ def install_venv(prefix: Path, with_gdrive: bool) -> None:
     print("  [OK] パッケージ" + (" (gdrive 含む)" if with_gdrive else ""))
 
 
+def agy_environment_line() -> str:
+    """systemd --user の PATH は最小限(~/.local/bin を含まない)なので、agy の絶対パスを
+    AGY_BIN として unit に書く。見つからなければ書かずに警告する。"""
+    found = shutil.which("agy")
+    if found:
+        return f"Environment=AGY_BIN={Path(found).resolve()}\n"
+    print("  [警告] agy が PATH に見つかりません。unit に AGY_BIN を書けませんでした。"
+          "agy の絶対パスを env ファイルの AGY_BIN に設定してください（systemd の PATH は最小限です）。")
+    return ""
+
+
 def write_systemd_unit(prefix: Path, config_dir: Path) -> None:
     unit = prefix / "systemd" / "agy-slack-bridge.service"
-    text = SYSTEMD_UNIT.format(prefix=prefix, config_dir=config_dir)
+    text = SYSTEMD_UNIT.format(prefix=prefix, config_dir=config_dir, agy_line=agy_environment_line())
     unit.parent.mkdir(parents=True, exist_ok=True)
     if unit.exists():
         unit.unlink()

@@ -130,3 +130,25 @@ def test_global_hook_is_registered_alongside_other_hooks_and_idempotently(dirs):
 def test_no_settings_flag_also_skips_the_hook(dirs):
     run(dirs, "--no-settings")
     assert not agy_settings.GLOBAL_HOOKS_PATH.exists()
+
+
+def test_unit_pins_agy_by_absolute_path_and_documents_the_invariants(dirs, monkeypatch, tmp_path):
+    fake_agy = tmp_path / "bin" / "agy"
+    fake_agy.parent.mkdir()
+    fake_agy.write_text("#!/bin/sh\n")
+    fake_agy.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_agy.parent}:{os.environ['PATH']}")
+    prefix, cfg = dirs
+    run(dirs)
+    unit = (prefix / "systemd/agy-slack-bridge.service").read_text()
+    assert f"Environment=AGY_BIN={fake_agy.resolve()}\n" in unit
+    assert "journalctl --user -u agy-slack-bridge.service" in unit
+    assert "must be the same directory the" in unit
+
+
+def test_unit_without_agy_on_path_warns_and_omits_the_line(dirs, monkeypatch, capsys):
+    monkeypatch.setenv("PATH", "/nonexistent")
+    prefix, cfg = dirs
+    run(dirs)
+    assert "AGY_BIN" not in (prefix / "systemd/agy-slack-bridge.service").read_text()
+    assert "agy が PATH に見つかりません" in capsys.readouterr().out

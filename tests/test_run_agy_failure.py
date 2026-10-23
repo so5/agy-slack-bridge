@@ -1,3 +1,4 @@
+import sys
 import logging
 import subprocess
 
@@ -39,3 +40,12 @@ def test_stdout_not_in_exception(monkeypatch):
 def test_stdout_tail_empty_and_truncated():
     assert bridge._stdout_tail("") == "(empty)"
     assert len(bridge._stdout_tail("x" * 10000)) == 6000
+
+
+def test_startup_fails_fast_with_a_clear_message_when_agy_is_not_runnable(monkeypatch):
+    monkeypatch.setattr(bridge, "AGY_BIN", "definitely-not-a-real-agy-binary")
+    with pytest.raises(SystemExit) as ei:
+        bridge.check_agy_available()
+    assert "AGY_BIN" in str(ei.value) and "absolute path" in str(ei.value)
+    monkeypatch.setattr(bridge, "AGY_BIN", sys.executable)
+    bridge.check_agy_available()  # an existing executable passes
