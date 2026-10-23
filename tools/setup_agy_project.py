@@ -431,10 +431,13 @@ def _validate_upload_mode(v):
 
 
 def ask_new_profile(ask: Prompter) -> "dict | None":
-    kind = ask.text("認証の種類（service_account / oauth）", validate=_validate_kind)
-    if not kind:
-        print("  [スキップ] 認証の種類が未入力")
-        return None
+    print("    認証の種類: service_account（推奨）は、Drive のフォルダをサービスアカウントのメールアドレスに共有するだけで使え、"
+          "共有されたものしか見えません。oauth は、サービスアカウントでは足りないとき（個人の Drive へのファイル作成など）に"
+          "選びます（同意画面、テストモードでの 7 日失効、スコープの一致が必要）。")
+    kind = ask.text("認証の種類（service_account / oauth）", default="service_account", validate=_validate_kind)
+    if kind == "oauth":
+        print("    [注意] OAuth: 同意画面が「テスト」だとリフレッシュトークンは 7 日で失効します。スコープは最初の同意と"
+              "一致させてください（tools/gdrive-profile.md）。")
     print("    次に、資格情報（鍵やトークンの JSON）を標準出力に出す「シェルのコマンド」を入力します。"
           "スコープの質問は、このあとです。")
     print("      例: cat /home/you/secrets/drive-token.json")

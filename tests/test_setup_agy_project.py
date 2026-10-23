@@ -530,3 +530,14 @@ def test_credential_command_that_does_not_exist_needs_confirmation(env):
     run(env, ask)
     assert not any("見つかりません" in p for p in ask.asked)
     assert profile_path(env).exists()
+
+
+def test_authentication_kind_defaults_to_service_account_and_oauth_warns(env, capsys):
+    ask = Scripted({**PROFILE_Q, "今作成しますか": "y", "資格情報を取り出すコマンド": "cat /k"})  # Enter on the kind
+    run(env, ask)
+    assert json.loads(profile_path(env).read_text())["kind"] == "service_account"
+    assert "7 日で失効" not in capsys.readouterr().out
+    profile_path(env).unlink()
+    run(env, Scripted({**PROFILE_Q, "今作成しますか": "y", "認証の種類（service_account / oauth）": "oauth",
+                       "資格情報を取り出すコマンド": "cat /k"}))
+    assert "7 日で失効" in capsys.readouterr().out

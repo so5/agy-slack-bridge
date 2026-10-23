@@ -87,7 +87,7 @@ keep as is, `-`: clear the value). It performs the following in order.
 5. Ask whether to use the Drive CLI; if so, decide the profile name (a different name for each
    project) and interactively create and configure the profile
    (`<config directory>/gdrive/NAME.json`, [`gdrive-profile.en.md`](gdrive-profile.en.md)).
-   - If it does not exist, ask for the authentication type (`service_account` / `oauth`) and
+   - If it does not exist, ask for the authentication type (`service_account` (recommended: just share the Drive folders with its email address) / `oauth`) and
      the command that retrieves the credentials (and the scopes, if needed) and create it.
      The credentials and scopes of an existing profile are not touched.
    - For the policy (enabled commands, allowed folders (folder URLs or IDs), upload deny

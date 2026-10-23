@@ -81,7 +81,7 @@ press the permission button (expect many at first).
 | [docs/usage.en.md](docs/usage.en.md) | using it from Slack (threads, `resume`, permission buttons, slash commands, stats, Mermaid, config drift detection) and per-channel settings |
 | [docs/permissions.en.md](docs/permissions.en.md) | how permissions work and where they are stored; script seals |
 | [tools/README.en.md](tools/README.en.md) | the installer, setup script, hook and Drive CLI in detail |
-| [tools/gdrive-profile.en.md](tools/gdrive-profile.en.md) | the Drive CLI profile format (credentials, OAuth notes) |
+| [tools/gdrive-profile.en.md](tools/gdrive-profile.en.md) | the Drive CLI profile format (which authentication to choose, credentials, OAuth notes) |
 
 Japanese editions: [README.md](README.md), `docs/*.md`, `tools/*.md`.
 

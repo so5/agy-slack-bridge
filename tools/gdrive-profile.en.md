@@ -18,11 +18,44 @@ project-specific values.
 - Unknown keys are an error (so that a typo cannot silently drop a restriction).
 - Template: [`gdrive-profile.example.json`](gdrive-profile.example.json)
 
+## Which authentication to use
+
+**We recommend a service account (`service_account`).** Choose OAuth only when a service account is not enough.
+
+A service account works by **sharing the target folder with the service account's own email address**
+(ordinary Drive sharing, the same as sharing with another person). It is the same for a personal Google account's
+Drive and for Workspace, and needs neither domain-wide delegation nor OAuth.
+
+- Simpler setup: no OAuth consent screen, no Google verification, no 7-day expiry in testing mode.
+- Safer by default: a service account **sees only what has been shared with it**, so `allowed_folders` adds a second
+  layer to an already narrow starting point. OAuth is the reverse: it gets rights to the user's whole Drive and is then
+  narrowed by `allowed_folders`.
+- No scope mismatch: the OAuth `invalid_scope` problem (below) cannot happen, because there is no original consent.
+
+Setup steps (service account):
+
+1. Create a Google Cloud project and enable the **Google Drive API**.
+2. Create a service account and create a **JSON key** for it.
+3. Store the key somewhere `credentials.command` can fetch it from (see "The Command That Fetches Credentials" below).
+4. In Drive, share each folder you want to allow with the `client_email` address from the key ("Viewer" for
+   read-only, "Editor" if writes are allowed).
+5. Put the same folder IDs in the profile's `allowed_folders`.
+
+> **Note (unverified)**: a service account has no storage quota of its own. When it **creates new files** (`upload`,
+> etc.) in a folder of a personal Google account's My Drive, you may get a quota error. Reading and `update` of
+> existing files are expected to be fine. If you need to create new files in a personal Drive, use OAuth or a
+> Workspace shared drive.
+
+**Choose OAuth (`oauth`)** when a service account is not enough because of the limit above (for example creating
+files in a personal Drive), or when you want it to act with the user's own rights. In exchange you take on the
+consent-screen setup, the 7-day expiry in testing mode, verification when published (`drive` is a restricted scope),
+scope matching, and access to the whole Drive (see "Notes for OAuth" below).
+
 ## Keys
 
 | Key | Required | Description | Default when omitted |
 |---|---|---|---|
-| `kind` | Yes | `service_account` or `oauth` | (error) |
+| `kind` | Yes | `service_account` (recommended) or `oauth` | (error) |
 | `credentials.command` | Yes | The **argv of a command** that prints the credentials JSON to stdout (a list; shell strings are not allowed) | (error) |
 | `credentials.paths` | No | Files that the command above reads. A warning is shown at run time if they are readable by group/other | None |
 | `scopes.read` / `scopes.write` | No | Scopes to request for read-type / write-type operations | `drive.readonly` / `drive` |
@@ -69,7 +102,7 @@ Examples for each storage backend:
   the agent could choose another project's profile. `setup_agy_project.py` registers entries in this form.
 - Even if you change the storage backend, you only edit the contents of the profile; the approved command string does not change (no re-approval is needed).
 
-## OAuth Notes (Operator's Responsibility)
+## Notes for OAuth (Operator's Responsibility)
 
 - **The scopes must match what was consented to when the refresh token was issued.**
   On refresh, you can only request scopes within the range granted by the initial consent.

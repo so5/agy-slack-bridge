@@ -83,7 +83,7 @@ systemctl --user enable --now agy-slack-bridge.service
 | [docs/usage.md](docs/usage.md) | Slack での使い方（スレッド、`resume`、許可ボタン、各スラッシュコマンド、統計、Mermaid、設定ドリフト検知）と、チャンネルごとの設定 |
 | [docs/permissions.md](docs/permissions.md) | 許可の仕組みと保存場所、スクリプトの封印（seal） |
 | [tools/README.md](tools/README.md) | インストーラ、セットアップスクリプト、フック、Drive CLI の詳細 |
-| [tools/gdrive-profile.md](tools/gdrive-profile.md) | Drive CLI のプロファイルの書式（資格情報、OAuth の注意） |
+| [tools/gdrive-profile.md](tools/gdrive-profile.md) | Drive CLI のプロファイルの書式（認証の選び方、資格情報、OAuth の注意） |
 
 英語版: [README.en.md](README.en.md)、`docs/*.en.md`、`tools/*.en.md`。
 
