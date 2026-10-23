@@ -14,8 +14,8 @@ Design:
   predates this bot, or after state was cleared) falls back to starting a
   new agy conversation, keyed from that point on to the same thread_ts.
 
-See README.md for Slack app setup (Socket Mode, scopes, event subscriptions)
-and systemd/agy-slack-bridge.service for how this is meant to run.
+See README.md (quick start), docs/slack-app.md (Slack app: Socket Mode, scopes,
+event subscriptions) and docs/install.md (install, systemd unit) for setup.
 """
 from __future__ import annotations
 
@@ -218,7 +218,7 @@ def _check_config_drift(store: "ThreadStore", client, channel_id: str, channel_c
 # can only ever show as literal text - nobody reading Slack has a Mermaid
 # renderer. Render each one to a PNG with a headless Chromium (already on
 # this box for the accountant project's browser automation) and upload the
-# image instead; requires the optional `playwright` package (see README).
+# image instead; requires the optional `playwright` package (see docs/usage.md).
 _MERMAID_FENCE_RE = re.compile(r"```mermaid[ \t]*\r?\n(.*?)```", re.IGNORECASE | re.DOTALL)
 MERMAID_JS_URL = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
 MERMAID_JS_CACHE = Path(

@@ -1,667 +1,99 @@
 # agy-slack-bridge
 
-Bridge one or more Slack channels to [Antigravity CLI](https://antigravity.google.com)
-(`agy`) projects, so you can talk to your agy agents from Slack.
+Slack のチャンネルと [Antigravity CLI](https://antigravity.google.com)（`agy`）のプロジェクトをつなぎ、
+Slack から agy のエージェントと話せるようにするブリッジです。
 
-- Each configured Slack channel maps 1:1 to one `agy` project.
-- A new top-level message starts a fresh `agy` conversation only if it
-  **@-mentions the bot** — so other traffic in the channel (a batch job
-  posting its results via an Incoming Webhook, ordinary chatter) isn't
-  treated as a prompt. The mention is stripped before the rest of the text
-  is sent to `agy`. The reply is posted as a thread on that message.
-- Replying inside that Slack thread continues the same `agy` conversation
-  (looked up by the thread's root timestamp) — **no mention needed for
-  thread replies**, only for starting a new one - but only once that
-  thread is actually *activated* (has a stored conversation, i.e. some
-  message in it already passed the mention gate). Slack lets you
-  reply-in-thread to *any* message regardless of whether its original
-  poster (bot or human) ever got a response, so gating only on "is this a
-  reply" would let a reply to a message nobody ever mentioned quietly
-  start a conversation anyway - confirmed by testing, and a real UX
-  problem for an app whose whole premise is "mention it to activate it."
-  So a reply into an unactivated thread needs its own mention, exactly
-  like a new top-level message (mention required, then stripped); once
-  *any* message in a thread has passed that gate, every later reply in it
-  is mention-free from then on, same as before. (Also matches for
-  `resume <id>: ...` - see below - which now works the same way on a
-  reply into an unactivated thread, not just on a new top-level message.)
-  - **Editing** a message to add a mention it didn't originally have does
-    *not* work, for two independent reasons: (1) confirmed by testing -
-    Slack itself only evaluates @-mentions for notification purposes at
-    the moment a message is first sent, not on a later edit (this is also
-    true for mentioning a *human* this way - a known, if undocumented,
-    Slack behavior), and (2) the bridge explicitly ignores every edited
-    message regardless (`subtype` is set to `"message_changed"` on any
-    edit, and the handler returns immediately whenever `subtype` isn't
-    `None` - originally added to ignore Incoming-Webhook bot posts, but it
-    catches edits the same way). Send a new message, or reply **with a
-    mention** to the ignored one, instead of editing it.
-- A new top-level message can also graft onto an *existing* conversation
-  instead of starting a fresh one — handy for continuing, from Slack, a
-  conversation you started in the [Antigravity web UI](https://antigravity.google.com).
-  Start the message with an @-mention (required for any new top-level
-  message, see above) followed by `resume <conversation-id>`:
+[English](README.en.md)
 
-  ```
-  @your-bot resume db68d299-5a1c-475a-a1ed-09604f5537e4: 続きをお願い
-  ```
+- Slack チャンネル 1 つが agy プロジェクト 1 つに対応します。
+- ボットに**メンション**したメッセージで会話が始まり、返信はスレッドに付きます。スレッドの中の続きの
+  返信にメンションは要りません。
+- 実行が拒否された操作には、Slack 上に**許可ボタン**が出ます。スマホからでも許可できます。
+- モデルの切り替え、使用量の確認、agy のスラッシュコマンドの実行も Slack から行えます。
+- agy が作った画像・PDF・CSV などはスレッドにアップロードされ、Mermaid 図は画像になります。
+- Slack の **Socket Mode** で動くので、公開 URL や受信ポートは要りません。
+- `agy -p` を呼び出すだけの薄いラッパーで、agy の機能を作り直してはいません。
 
-  The resulting Slack thread is grafted onto that conversation ID, so every
-  later reply in the thread continues it normally — no need to repeat
-  `resume` after the first message.
+## ⚠ セキュリティの前提
 
-  **Caveat, confirmed by testing**: whether this is visible from the
-  [Antigravity web UI](https://antigravity.google.com) depends on where the
-  conversation *started*:
+ブリッジされたチャンネルに投稿できる人は、対応する agy プロジェクトに、**このマシン上で**作業させられます
+（コマンドの実行、ファイルの編集など。プロジェクトの許可の範囲で）。メンバーを信頼できる**非公開チャンネル**を
+使ってください。
 
-  - A conversation that started via `agy -p` (including one this bridge
-    created) stays fully in sync both ways. The web UI can open it directly
-    via a URL of the form
-    `.../r/<your-instance-id>/?p=c%2F<conversation-id>%3Fsection%3D<project-id>`
-    (grab the exact `<your-instance-id>` from any conversation URL the web
-    UI already gives you) — it appears in the sidebar once opened that way,
-    even though it never showed up there on its own. From then on, messages
-    sent from the web UI are visible to a later `agy -p --conversation`
-    call (confirmed: asked it "what did I just send from the web UI?" and
-    it correctly quoted the message and timestamp), and vice versa.
-  - A conversation that started *interactively in the web UI* cannot be
-    genuinely extended from `agy -p`. `agy` does echo back the same
-    `conversation_id` and does append to the conversation's transcript log
-    (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/`), so a
-    `resume` onto one of these reads real history and gives a contextually
-    correct answer — but nothing new shows up in the web UI even via the
-    direct URL above. It's a read: agy can see and reason about that
-    conversation's past content, but can't write to the part of it the web
-    UI displays. (We don't know the exact mechanism the web UI renders
-    from - it isn't simply the `.system_generated/steps/` trace, since
-    plain conversational turns don't always get one of those either, in
-    conversations of either origin.)
+エージェントはブリッジと同じ OS ユーザーで動くため、権限の仕組みは完全な防壁ではありません。誤りと
+安易な探りを大きな音で失敗させる仕組みです（deny ルール、安全規則、スクリプト改ざん検知など）。
+詳細は [docs/usage.md](docs/usage.md) の「Keeping the agent inside its lane」と
+[docs/permissions.md](docs/permissions.md) を参照してください。
 
-  Practically: if you want a conversation you can pick up from **either**
-  Slack or the web UI, start it from Slack (or any other `agy -p` caller).
-  A conversation started in the web UI can be *read* from Slack via
-  `resume`, but its Slack-side continuation won't be visible back in the
-  web UI.
-- Markdown in `agy`'s response (bold, links, tables, headers, ...) is
-  converted to Slack's own `mrkdwn` dialect before posting, since Slack
-  doesn't render standard Markdown as-is (e.g. it has no table syntax, and
-  uses `*bold*`/`_italic_` instead of `**bold**`/`*italic*`).
-- While `agy` is working, the thread shows Slack's native "is thinking..."
-  status indicator (`assistant.threads.setStatus`) instead of going quiet —
-  useful since a real task can run for many minutes. No extra Slack scope
-  needed beyond `chat:write`. The status is refreshed periodically (Slack
-  clears it after ~2 minutes of silence on its own) and is cleared
-  automatically once the reply is posted.
-- Runs entirely over Slack's **Socket Mode** (an outbound websocket from your
-  machine to Slack) — no inbound port, reverse proxy, or public URL needed.
-- When agy's response mentions a `file://` link to something it generated
-  (a chart, a report, ...), that link is dead in Slack - nothing can open a
-  local filesystem path. So the bridge also uploads the file itself
-  (`files_upload_v2`, needs the `files:write` scope) as a reply in the same
-  thread, whenever it's a recognized type (image/PDF/CSV/etc., see
-  `UPLOADABLE_EXTS`) and lives under either that agy project's own
-  workspace directory or that conversation's own
-  `~/.gemini/antigravity-cli/brain/<id>/` artifact directory - deliberately
-  not "any absolute path agy happens to mention," to avoid ever turning a
-  response into a way to exfiltrate an arbitrary file elsewhere on the box.
-  Capped at 20MB and 5 files per reply.
-- A fenced block agy tagged with a non-code language (` ```markdown `,
-  ` ```text `, or no tag at all) isn't really code - Slack's mrkdwn code
-  blocks don't support a language tag anyway, so it used to show up as a
-  literal "markdown"/"text" line at the top of the block. That kind of
-  fence is unwrapped entirely instead, so headers/bold/links/tables inside
-  render normally; a fence tagged with a real language (python, bash, ...)
-  keeps its monospace block, just with the now-useless tag dropped.
-- A ` ```mermaid ` block is rendered to a PNG and uploaded as a file,
-  instead of showing up as a fenced wall of diagram syntax nobody in Slack
-  can read - see "Mermaid diagrams" below.
-- When a reply comes back with a denied `run_command` call (see "Tool
-  permissions" below), the message gets two buttons instead of just a text
-  warning: **許可して再実行** (grant that exact command for this conversation
-  only, retry the same prompt, then revoke it again once the retry finishes)
-  and **拒否**. This makes a permission denial actionable straight from a
-  phone, without SSHing in to edit the allow list by hand. Granting
-  something permanently is a deliberate, separate step — see "Managing
-  permissions from Slack" below — not a button click, since a button tied to
-  a command string would silently cover whatever that command's target file
-  contains *later*, not just what it contained when you clicked it.
+## クイックスタート
 
-This is intentionally a thin process wrapper around `agy -p ... --output-format
-stream-json`, not a reimplementation of anything agy does. It just routes Slack
-messages in and `agy`'s final result back out, and keeps a small local
-mapping from Slack threads to `agy` conversation IDs.
+必要なもの: Linux、Python 3.10 以上、`git`、**ログイン済みの `agy`**、Slack ワークスペース。
+詳しい手順と、うまくいかないときの確認項目は [docs/install.md](docs/install.md) にあります。
 
-## Requirements
+**1. Slack アプリを作る**（約 5 分）— [docs/slack-app.md](docs/slack-app.md)
 
-- `agy` (Antigravity CLI) installed and authenticated on this machine, with
-  the project(s) you want to bridge already created (`--project <id>`).
-- Python 3.10+ with `venv`.
-- A Slack workspace where you can create and install a custom app.
-- Optional: `playwright` + a Chromium install, only for rendering `mermaid`
-  diagrams to an image - see "Mermaid diagrams" below.
+同梱の [`slack-app-manifest.yaml`](slack-app-manifest.yaml) を Slack の「From an app manifest」に貼り付け、
+App-Level Token（`connections:write`）を作ってアプリをインストールします。トークン 2 つ
+（`xapp-…`、`xoxb-…`）と、ボットを招待したチャンネルの ID を控えます。
 
-## Slack app setup
-
-1. Create a new Slack app ([api.slack.com/apps](https://api.slack.com/apps)),
-   "From scratch".
-2. **Socket Mode**: enable it. This generates an app-level token — give it
-   the `connections:write` scope. Save it as `SLACK_APP_TOKEN` (`xapp-...`).
-3. **OAuth & Permissions**: add Bot Token Scopes:
-   - `chat:write`
-   - `channels:history` (for public channels) and/or `groups:history` (for
-     private channels), depending on which kind of channel you're bridging.
-   - `chat:write.customize` — optional, only needed if you set
-     `display_name`/`icon_emoji` per channel in `config.yaml` (see below) to
-     make the bot post under a different name/avatar per project instead of
-     one fixed bot identity everywhere.
-
-   A channel entry can also set `model`/`effort`, passed straight through as
-   agy's own `--model`/`--effort` flags (`agy models` lists the current
-   options). Some model names already bake in a reasoning tier via a
-   `-high`/`-low` suffix and conflict with `effort` if both are set. Pointing
-   a channel at agy's built-in `default-cli-project` (no workspace attached)
-   plus a high-reasoning model like `gemini-3.1-pro-high` turns it into a
-   plain thinking-mode chat channel with no file/tool access tied to a repo -
-   e.g. a general Gemini Q&A channel alongside the accountant/secretary ones.
-4. **Event Subscriptions**: enable it, and subscribe to bot events:
-   - `message.channels` (public channels) and/or `message.groups` (private
-     channels), matching the scopes above.
-   - `app_home_opened` — optional, only for the Home tab (see "Checking model
-     usage" below).
-5. **Interactivity & Shortcuts**: enable it. With Socket Mode already on,
-   button clicks are delivered over the same websocket — no Request URL
-   needed. This is required for the permission-grant/revoke buttons.
-   Optionally also create a **message shortcut** (Create New Shortcut -> On
-   messages) with callback ID `agy_open_web_ui`, for the "open this thread
-   in the Web UI" action (see "Passing agy slash commands through" below). In
-   Slack it shows up under "..." -> "Connect to apps" on a message.
-6. **Slash Commands** (all optional): create the ones you want, with any
-   description/usage hint you like. No Request URL needed with Socket Mode on.
-   - `/agy-permissions` — see "Managing permissions from Slack" below
-   - `/agy-model` — see "Switching models from Slack" below
-   - `/agy-usage` — see "Checking model usage" below
-   - `/agy-stats` — see "Usage statistics" below
-   - `/agy` and `/agy-link` — see "Passing agy slash commands through" below
-
-   They all need the `commands` Bot Token Scope (add it once in step 3).
-   Also optional in step 3: `files:write`, only needed for the
-   auto-upload-generated-files feature below.
-7. **App Home** (optional): turn on "Home Tab" under App Home, to get the
-   usage/model overview described under "Checking model usage" below.
-8. Install the app to your workspace. Save the Bot User OAuth Token as
-   `SLACK_BOT_TOKEN` (`xoxb-...`).
-9. Invite the bot to each channel you want to bridge (`/invite @your-bot`).
-10. Get each channel's ID from Slack ("View channel details" → bottom of the
-   panel).
-
-**Security note**: anyone who can post in a bridged channel can direct the
-corresponding `agy` project to act on this machine (run commands, edit files,
-send email, etc. — whatever that project's own permissions allow). Use
-private channels with a membership you trust, not open/public ones.
-
-**Tool permissions**: there's no human present in a headless `agy -p` call to
-click "approve" on a tool-permission prompt, so this bridge runs with
-`--mode accept-edits` rather than `--dangerously-skip-permissions`. In
-testing: `accept-edits` auto-approves file edits and safe read-only shell
-commands (e.g. `ls`), but a command agy considers destructive (e.g. `rm`) is
-still denied unless it matches an allow entry, either in the project's own `permissionGrants.allow` in
-`~/.gemini/config/projects/<project-id>.json` (see "Managing permissions from
-Slack" below) or in agy's machine-wide `~/.gemini/antigravity-cli/settings.json`
-`permissions.allow` (shared by every `agy` project; the bridge never writes
-there).
-
-The match is **not** literal full-string equality, and it's **not** a bare
-binary-name allow either — confirmed by testing, it's a *token-complete
-prefix* match: `command(git diff)` matches `git diff --stat`, `git diff
-HEAD~1`, any continuation, because each already-typed token (`git`, `diff`)
-is complete and followed by a token boundary. It does **not** match
-`git diffX` (not a token boundary) or `git status` (different second
-token). A trailing `*` in an entry does **not** reliably help - tested and
-found inconsistent, so don't use it. Grow the allow-list narrowly - a whole
-subcommand prefix like `command(aws lambda)` or `command(git diff)` is fine
-and typically the useful grain, but never a bare `command(rm)` or
-`command(git)`, which would defeat the point. When agy silently skips an
-action this way, the run still comes back `status: SUCCESS` with an
-empty-looking response and a `denied_actions` field; this bridge detects that
-and appends a `:warning:` note naming the denied action to the Slack reply,
-instead of leaving you looking at a blank-seeming answer.
-
-**Compound commands (`&&`, etc.)**: confirmed by testing, agy splits a
-compound command line on shell operators like `&&` and checks **each
-sub-command independently** against `permissions.allow` - it's not a literal
-whole-string match, and it's not a blanket "any `&&` is denied" rule either.
-`sleep 10 && aws logs ...` is denied only because `sleep 10 ...` on its own
-isn't in the allow-list (even though `command(aws logs)` matches the second
-half) - allow-listing `command(sleep)` too would make the whole line pass.
-Conversely, chaining a disallowed action onto an allowed one doesn't sneak it
-through: with only `command(echo hi)` allowed, `echo hi && touch
-/tmp/whatever` is still denied outright (and nothing runs) because `touch
-...` doesn't match anything on its own. So there's no `&&`-based bypass in
-either direction - each piece of a compound command needs its own matching
-allow entry, same as if it were run alone.
-
-**Note on `grep`/`sleep`/`ls` seeming inconsistent**: there's no built-in
-"safe commands are free" allowance for arbitrary shell invocations. A small
-set of dedicated tools (directory listing, file viewing/writing, etc.) skip
-the permission gate entirely because they aren't `run_command` calls at all -
-that's why simple file/directory operations tend to just work. But the
-moment agy chooses to run something as an actual shell command via
-`run_command`, it needs a matching `permissions.allow` entry regardless of
-how harmless that command is (confirmed: even a bare `grep` or `ls` invoked
-this way is denied with zero entries configured, identical to `rm`). This
-isn't something narrowing the allow-list can make worse, and it isn't new
-behavior triggered by adding entries - headless `--mode accept-edits` has
-always required an explicit match for every `run_command` call, full stop.
-
-## Managing permissions from Slack
-
-Two ways to act on the project's allow list without leaving Slack:
-
-- **Buttons on a denial reply**: click 許可して再実行 to grant that entry for
-  *this conversation only* and immediately re-run the *exact same prompt*
-  against the *exact same conversation*, so you see the real result instead
-  of just "permission added, try again yourself." There is deliberately no
-  one-click permanent grant - see `/agy-permissions add` below for that. Not
-  just `run_command` - any denial whose own message spells out the exact
-  grantable entry gets a button too (confirmed for `read_url_content`, e.g.
-  `read_url(support.yayoi-kk.co.jp)` - note that one's granted per-domain,
-  not per-URL, since that's the granularity agy itself uses).
-  - If a single turn hits **two or more distinct denials at once**, each
-    gets its own button pair *and* one more pair appears offering to grant
-    all of them together in one click - clicking the individual ones one at
-    a time would only grant one and immediately retry, likely re-hitting the
-    others.
-  - The grant is **not** torn down the instant its own retry finishes - see
-    "Temporary grant lifetime" below.
-  - A second button, 拒否, is always there too: it grants nothing and just
-    updates the message to say so, prompting you to reply in the thread with
-    what to do next. It does **not** send anything to agy - the denial
-    message already told it everything it knows, so there's nothing new to
-    report, and nudging it to "find another way" on its own only invited it
-    to work around the very thing you just said no to.
-- **`/agy-permissions` slash command** (only in a bridged channel):
-  - `/agy-permissions list` — every current entry as plain numbered text
-    (no per-entry buttons - simpler, and doesn't depend on Slack's
-    per-block length/count limits the way an earlier version did).
-  - `/agy-permissions add <command>` — add it permanently. A bare command
-    (no `kind(...)` wrapper typed) is wrapped as `command(<that>)`, same as
-    before; typing a full entry like `read_url(example.com)` is used as-is.
-  - `/agy-permissions remove <command>` — same rules, removes it. Also
-    accepts one or more of `list`'s numbers instead (space/comma-
-    separated, e.g. `/agy-permissions remove 1 3 5`), to delete several
-    at once without retyping long command strings.
-  - `/agy-permissions stats [days]` — the most-asked-for entries (args
-    included) over the last N days (default 30), with how many times each
-    was requested / granted once / granted permanently / denied. Every
-    request and outcome is recorded in the bridge's state db, so entries you
-    keep granting "once" can be promoted to a permanent grant on evidence.
-
-Both paths write to that **channel's own project**'s
-`~/.gemini/config/projects/<project-id>.json` (`permissionGrants.allow`),
-preserving everything else already in the file - never to agy's global
-`~/.gemini/antigravity-cli/settings.json`. A grant approved from one channel
-is never usable from a conversation in a different project. Every
-add/remove is logged.
-
-### Keeping the agent inside its lane
-
-The agent runs as your OS user, so none of this is a hard security boundary,
-but these make the easy mistakes (and easy probing) fail loudly:
-
-- **`permissions.deny` in `settings.json`** (deny beats allow, and deny-read
-  implies deny-write): list the bridge's own source, its config/state dir
-  (which holds the Slack tokens), and agy's own `settings.json`/`config`, e.g.
-  `read_file(<prefix>)`, `read_file(~/.config/agy-slack-bridge)` (install.py also
-  denies *writes* there).
-  This only covers agy's built-in file tools; a shell `cat` is a *command*, so
-  it still goes through the normal grant flow. The bridge treats a deny-rule
-  block as final: no grant buttons, a "blocked by a deny rule" note instead.
-  Also worth keeping `trustedWorkspaces` down to the actual project dirs.
-- **Keep each project's allow list short.** Allow rules are prefix matches:
-  `echo` also allows `echo x > file`, `cat`/`grep`/`tail` read anything, `agy`
-  allows `agy --dangerously-skip-permissions ...`.
-- **Grant-button throttle**: more than 3 permission-button prompts in one
-  conversation within 10 minutes stops offering buttons (and says so), so an
-  agent can't cheaply provoke prompts hoping one gets clicked. Granting
-  something yourself in that conversation resets the count (you're evidently
-  watching), so a legitimate trial-and-error session isn't cut off.
-- **A shared rules file in each project's `AGENTS.md`** telling the agent not
-  to investigate the bridge/agy internals and to just report a
-  cancelled/denied tool instead of working around it.
-- **Silent denials**: agy sometimes ends a denied `run_command` step as DONE
-  with no error and no output (its stderr says "auto-denied"). The bridge
-  recovers the command from the step itself and offers the normal grant
-  button; such a step also doesn't count as progress for the empty-response
-  auto-retry. A `DIAG` line is logged when agy reports a denial the bridge
-  can't otherwise see.
-
-### Switching models from Slack
-
-A channel's `model`/`effort` in `config.yaml` (see above) is just the
-default. `/agy-model` (only in a bridged channel) overrides it per channel,
-at runtime, without editing `config.yaml` or restarting the bridge:
-
-- `/agy-model` or `/agy-model list` — shows the channel's current
-  model/effort (override or config default) and the full list of choices
-  (from `agy models`, cached for 5 minutes).
-- `/agy-model set <model id> [low|medium|high|max]` — switches that channel
-  to it from the next message onward. Rejected if the model id isn't one
-  `agy models` lists. Some model ids already bake in a reasoning tier via a
-  `-high`/`-low`/etc. suffix and conflict with `effort` if both are set —
-  leave `effort` off for those.
-- `/agy-model clear` — drops the override, back to `config.yaml`'s default.
-
-The override is stored per channel in the bridge's own state db (survives a
-restart) and never touches `config.yaml` itself.
-
-### Passing agy slash commands through
-
-`/agy <command> [args]` (only in a bridged channel) hands any of agy's own
-slash commands straight to `agy`, so each one doesn't need a dedicated Slack
-command. `/agy` alone lists what's available.
-
-- agy's built-ins (`/agy usage`, `credits`, `skills`, `permissions`,
-  `config`, `changelog`, ...; the set is read from agy's own `/help`) are
-  answered instantly, only visible to you.
-- Anything else — skill commands such as `/agy plan <task>` or
-  `/agy boost <task>` — runs as a normal agent turn in a new thread, as if
-  the same text were typed after an @mention (same channel model, permission
-  buttons, thread continuation).
-- Commands agy only offers interactively (e.g. `/context`) come back with
-  agy's own "not available in print mode" error. Changing the model isn't
-  passed through - use `/agy-model`.
-
-When one of these turns out to be used a lot, give it its own Slack command
-(like `/agy-model`) instead.
-
-`/agy-link [conversation id]` replies (only to you) with a link that opens the
-channel's most recently active conversation in the antigravity.google.com web
-UI (Slack can't send slash commands from inside a thread, so "current" means
-"latest in this channel"; pass a conversation id to pick another). It needs
-the `agy remote-control` daemon registered and signed in with the same Google
-account. The URL's `<instance>` is the CLI's installation uuid + `-v2` (read
-from `~/.gemini/antigravity-cli/antigravity_state.pbtxt`; NOT the friendly name
-`agy remote-control status` prints) - set `AGY_REMOTE_INSTANCE` to override.
-
-To get the link for one specific thread, register a **message shortcut**
-(Slack app -> Interactivity & Shortcuts -> Create New Shortcut -> On messages)
-with callback ID `agy_open_web_ui`. It then shows up in the "..." menu of any
-message in a bridged channel's thread and replies (only to you, in that
-thread) with that thread's conversation link. No Request URL needed with
-Socket Mode, and it rides on the same Interactivity setting as the buttons.
-
-### Checking model usage (quota)
-
-- `/agy-usage` — remaining quota per model group (Gemini / Claude+GPT, each
-  with a 5-hour and a weekly window), with the reset time in JST and the
-  group your channel's current model draws from highlighted. Data comes from
-  agy's own `/usage` (no model call, so it costs no quota), cached for 60s.
-- **Low-quota warning**: after a reply, if the channel's model group has a
-  window at or below 10%, the bridge adds a one-line warning in the thread
-  (at most once an hour per group), pointing at `/agy-model`.
-- **App Home tab**: opening the app's Home tab shows the same usage plus each
-  channel's current model. To enable it: Slack app -> App Home -> turn on
-  "Home Tab", and under Event Subscriptions -> Subscribe to bot events add
-  `app_home_opened`. Opening the tab costs one cached `agy /usage` at most
-  per minute.
-
-**Temporary grant lifetime**: a one-time grant used to be removed the
-instant its own retry finished, which turned out to be actively wrong for a
-task needing *several* different grants in sequence - by the time the
-second one got granted, the first was already gone, so a later retry that
-needed both would just deny the first one again. Instead, a `grant_once`
-entry is now tied to the conversation: it's released (and only *actually*
-removed from the project's `permissionGrants.allow` if no other conversation
-*in the same project* is also relying on the exact same entry) the next
-time that conversation has a turn with **no** fresh denial at all - the
-natural "this task is done for now" signal. As a backstop for a conversation
-that's abandoned mid-task and never comes back clean, a background sweep
-force-releases anything older than `AGY_TEMP_GRANT_MAX_AGE_SEC` (default
-3600s), checked every `AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC` (default 300s). If
-the sweep fires before you're actually done, you'll just see a fresh denial
-again - click the button again, no harm done.
-
-**Caveat, confirmed by testing**: `denied_actions`/`duration_seconds`/`usage`
-in agy's result are cumulative for the whole conversation, not scoped to one
-turn - so a plain-text "一部のツール実行が権限不足で拒否されました" warning with
-no buttons can mean the conversation has an *old*, unresolved denial in its
-history rather than something that just happened (agy can silently choose
-not to retry a denied command at all, rather than trying it again and
-failing). Buttons only ever appear when agy's stream shows a *fresh*
-denial this turn - only that case has an exact command line to grant. Also,
-after clicking a button, the retry prompt sent back to agy explicitly names
-the just-granted command and tells it to run it now, rather than resending
-your original message verbatim - agy doesn't reliably retry on its own even
-once the permission is in place.
-
-This can even show up on a conversation's very first turn (confirmed by
-testing) - a tool call that ran async (`WaitMsBeforeAsync`) can have its
-permission check resolve *after* this print-mode call already captured its
-stream and returned, so there's no fresh step_update to report even though
-`denied_actions` already reflects it. The bridge only calls this "past" when
-`num_turns` is more than 1; on turn 1 it says a fresh async denial likely
-happened but couldn't be captured in time, since there's no earlier turn for
-anything to actually be "past" from.
-
-Before showing that note at all, the bridge silently resends "実行して" on
-your behalf, up to `GREY_QUESTION_AUTO_RETRIES` (2) times - a log analysis
-across every occurrence seen so far found this clears up within 2 tries every
-time (usually the very next one), since it's often just the async-timing gap
-above rather than a real, persistent denial. Bounded on purpose, not looped
-until it stops happening, to cap the cost/time of a run that's stuck for a
-real reason - only shows the note (asking you to help) once that's
-exhausted. This can never fire back-to-back with a genuine, actionable
-denial in the same turn: a fresh denial always comes with real
-`_tool_errors`, and that alone routes to the permission_errors/other_errors
-handling above (buttons and all) instead, with no auto-retry involved.
-
-### Usage statistics
-
-An opt-in feature records usage in the bridge's local state DB. It's
-off by default, and nothing is sent anywhere:
-
-- `permission_stats`: each one-time/permanent permission button request and
-  its outcome.
-
-Every record is tagged with its channel, so each project's usage can be
-read on its own. Settings can be set per channel or for all channels:
-
-- In `config.yaml`, under a channel's own `telemetry:` block, or at the top
-  level for every channel. A channel's own setting wins over the top-level one.
-- From Slack, `/agy-stats on|off <feature>` changes this channel only.
-  Add `all` to set it everywhere: the top-level default and every configured
-  channel's own setting. Either way, the change is written back to
-  `config.yaml` and takes effect immediately.
-
-Stats show this channel only:
-
-- `/agy-stats` — the current on/off state for this channel, and where it comes from.
-- `/agy-stats buttons [days]` — permission requests, one-time grants, permanent grants and denials per entry. This channel only.
-- `/agy-permissions stats [days]` — the same permission counts, for the "add a permanent grant" decision. This channel only.
-
-Turning a feature off stops new records; existing records stay in the DB.
-
-### Mermaid diagrams
-
-A ` ```mermaid ` fenced block in agy's response is rendered to a PNG and
-uploaded to the thread as a file, instead of being posted as raw diagram
-syntax (which Slack has no way to render). This needs the optional
-`playwright` package and a Chromium install:
-
-```
-.venv/bin/pip install playwright
-.venv/bin/python -m playwright install chromium
-```
-
-If a machine already has Playwright's Chromium cached for another project
-(e.g. under `~/.cache/ms-playwright`), installing the same `playwright`
-version here reuses that cache instead of downloading a second copy.
-
-- Renders via `mermaid.render()` (the official JS API, fetched once from a
-  CDN and cached at `~/.cache/agy-slack-bridge/mermaid.min.js` or
-  `$AGY_BRIDGE_CACHE_DIR/mermaid.min.js` - set that env var to change where
-  it's cached) inside a headless Chromium - never by parsing the diagram
-  source as HTML, so a label containing `<`, `>`, `&`, or an intentional
-  `<br/>` all come through correctly instead of breaking the page.
-- Without `playwright` installed, or if a given diagram fails to render
-  (bad syntax, a render timeout, ...), the block is left as plain text
-  instead of silently disappearing - nothing is lost, it just isn't
-  rendered.
-- Rendered PNGs are written under that conversation's own
-  `~/.gemini/antigravity-cli/brain/<id>/scratch/mermaid/` and not cleaned
-  up automatically; they're small, but worth an occasional `find` if
-  diagrams are a frequent part of your usage.
-
-### Config drift detection
-
-Some files an agy project depends on are deliberately **not** published
-anywhere - what's actually installed on this machine, how a project
-authenticates to an external API, and similar locally-operated setup.
-There's no canonical copy to re-fetch and diff against, so instead the
-bridge tracks whatever a human last explicitly confirmed as correct.
-
-Set `watched_config_files` on a channel (paths relative to that agy
-project's own workspace root - see `config.example.yaml`) to turn this on
-for it. A background check (at startup, then every
-`AGY_CONFIG_DRIFT_CHECK_INTERVAL_SEC` seconds, default 1800) hashes each
-watched file and compares it against the last confirmed baseline:
-
-- **Never confirmed yet**: posts to the channel with one button,
-  **この内容を正として確定** - click it to accept the current content as
-  the trusted baseline (hash + a backup copy, both kept by the bridge).
-- **Changed since the last confirmation**: posts a warning with two
-  buttons - the same **この内容を正として確定** (a deliberate edit; accept
-  it as the new baseline) and **確定済みの内容に戻す** (restore the file
-  from the last confirmed backup instead, e.g. if an agent changed it
-  without you asking).
-- **Unchanged**: silent. An unresolved state isn't re-posted every check
-  interval - only a *further* change (a new hash) notifies again.
-
-Backups and baselines live under `AGY_CONFIG_BACKUP_DIR` (default
-`~/.config/agy-slack-bridge/config-backups/`) and the bridge's own state
-db - not in the watched project's own git history.
-
-## Installation
-
-The bridge, the tools in `tools/` (safety rules, the PreToolUse hook, the
-restricted Drive CLI, the setup script) and a venv are **installed** to a fixed
-location; the live bridge does not run out of your git checkout. The point is
-that everything the permission model relies on lives where the agent cannot
-write (the install prefix and the config dir are the targets of the
-`permissions.deny` rules that `tools/setup_agy_project.py` writes), instead of
-inside an agy project or a checkout.
+**2. インストールする**
 
 ```sh
-python3 tools/install.py [--prefix DIR] [--config-dir DIR] [--with-gdrive]
+git clone https://github.com/so5/agy-slack-bridge.git
+cd agy-slack-bridge
+python3 tools/install.py            # Google Drive CLI も使うなら --with-gdrive
 ```
 
-- Default prefix `~/.local/share/agy-slack-bridge`; pass e.g. `--prefix /opt/agy-slack-bridge`
-  to install as root (then run `install.py --config-only` as your own user to
-  create the config dir; a root-owned prefix is the strongest option, since the
-  agent runs as your OS user).
-- Installed files are read-only (0444). Re-running upgrades the code and never
-  overwrites an existing `config.yaml` / `env`.
-- It creates `<prefix>/.venv`, `<prefix>/systemd/agy-slack-bridge.service` (a
-  unit pointing at the prefix), and `~/.config/agy-slack-bridge/{config.yaml,env}`
-  from the samples (`config.example.yaml`, `env.example`).
-- `--with-gdrive` also installs the Google client libraries
-  (`requirements-gdrive.txt`) for `tools/gdrive_cli.py`.
-- It adds `permissions.deny` rules (read and write of the prefix and the config
-  dir, read of agy's own `settings.json`/`config`) to agy's machine-wide
-  `settings.json`, and registers the script-integrity hook in agy's global
-  `~/.gemini/config/hooks.json` (one hook for all projects; it only acts on
-  projects the setup registered); none of this depends on a project. It never
-  writes an `allow`. (When run as root it leaves `settings.json` alone, since that would be
-  root's; the `--config-only` run as your own user does it.)
-- At the end it offers to run the project setup right away (Y runs it; N prints
-  the command to run later).
+**3. プロジェクトを設定する**
 
-## Setting up an agy project and the channel mapping
+`install.py` の最後に「続けてセットアップしますか?」と聞かれるので Y と答えます（後から
+`<prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py` でも実行できます）。対話で、
+agy プロジェクトの登録（または既存プロジェクトの選択）、Slack チャンネルとの対応づけ、
+トークンの入力を行います。
 
-```sh
-<prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py [<path-to-project>]
-```
-
-Interactive, run by a human (it edits agy's `settings.json` and a project's
-permission grants), idempotent, and the same command repairs or changes an
-existing setup (current values are the defaults; Enter keeps, `-` clears). It:
-registers the directory with agy (`agy --new-project`) or attaches to a project agy
-already knows (pick it from the list), requires the directory to be under git
-(`git init` if it is not), adds the project to `trustedWorkspaces`, links the shared
-safety rules as `.agents/rules/agent-safety-rules.md` (a symlink into the install
-prefix, write-protected by a deny; `AGENTS.md` is left alone for the agent to edit),
-registers the project with the (global) script-integrity hook,
-optionally pre-approves the read-only
-Drive CLI subcommands in *that project's own* `permissionGrants`, and fills in the
-channel mapping in `config.yaml` (name, display name, icon, model, effort,
-watched files, stats) and the Slack tokens in `env`. It never writes an `allow`
-anywhere but the target project's own `permissionGrants` (same rule as the
-bridge itself). See [`tools/README.md`](tools/README.md) (Japanese) for details.
-
-You can still edit `~/.config/agy-slack-bridge/config.yaml` and `env` by hand;
-see `config.example.yaml` for the mapping format and `env.example` for the
-environment variables (tokens, plus optional overrides like `AGY_BIN` if
-`agy` isn't on `PATH`, or `AGY_TIMEOUT_SEC` if your conversations legitimately
-run longer than 20 minutes).
-
-## Running
+**4. 起動する**
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp <prefix>/systemd/agy-slack-bridge.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now agy-slack-bridge.service
+cp ~/.local/share/agy-slack-bridge/systemd/agy-slack-bridge.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now agy-slack-bridge.service
 ```
 
-or, in a terminal:
+**5. 確かめる**
+
+チャンネルで `@agy こんにちは` とメンションして送り、スレッドに返信が付けば完了です。「権限がない」と出たら
+許可ボタンを押してください（最初のうちはよく出ます）。
+
+## 運用
+
+- 設定を変えたら再起動: `systemctl --user restart agy-slack-bridge.service`
+- ログ: `journalctl --user -u agy-slack-bridge.service -f`
+- プロジェクトの追加・設定の変更: `setup_agy_project.py` をもう一度実行する（冪等）。
+- アップグレード: `git pull` して `python3 tools/install.py --no-setup` を再実行し、再起動する
+  （設定は上書きされません）。
+- アンインストールとトラブルシュートは [docs/install.md](docs/install.md)。
+
+## ドキュメント
+
+| 文書 | 内容 |
+|---|---|
+| [docs/install.md](docs/install.md) | 前提、インストール、起動、確認、アップグレード、アンインストール、トラブルシュート |
+| [docs/slack-app.md](docs/slack-app.md) | Slack アプリの作成（マニフェスト）と必要な設定の一覧 |
+| [docs/usage.md](docs/usage.md) | Slack での使い方（スレッド、`resume`、許可ボタン、各スラッシュコマンド、統計、Mermaid、設定ドリフト検知）と、チャンネルごとの設定 |
+| [docs/permissions.md](docs/permissions.md) | 許可の仕組みと保存場所、スクリプトの封印（seal） |
+| [tools/README.md](tools/README.md) | インストーラ、セットアップスクリプト、フック、Drive CLI の詳細 |
+| [tools/gdrive-profile.md](tools/gdrive-profile.md) | Drive CLI のプロファイルの書式（資格情報、OAuth の注意） |
+
+英語版: [README.en.md](README.en.md)、`docs/*.en.md`、`tools/*.en.md`。
+
+## 開発
 
 ```sh
-set -a; . ~/.config/agy-slack-bridge/env; set +a   # load the tokens (comments in the file are fine)
-AGY_BRIDGE_CONFIG=~/.config/agy-slack-bridge/config.yaml \
-AGY_BRIDGE_STATE_DB=~/.config/agy-slack-bridge/state.sqlite3 \
-  <prefix>/.venv/bin/python <prefix>/bridge.py
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest
 ```
 
-Under systemd, note three things:
+## ライセンス
 
-- **`agy` must be found.** A `systemd --user` service has a minimal `PATH` (no
-  `~/.local/bin`), so a bare `agy` fails with `FileNotFoundError`. `install.py` pins
-  the absolute path it finds as `Environment=AGY_BIN=...` in the generated unit (it
-  warns if it finds none), and the bridge exits at startup with a clear message when
-  `AGY_BIN` is not runnable. Set `AGY_BIN` to an absolute path in the env file if
-  you write the unit yourself.
-- **Logs go to the journal**, not to a file: `journalctl --user -u agy-slack-bridge.service`.
-- **The config dir is one directory.** The unit's `AGY_BRIDGE_CONFIG` and the
-  script-integrity hook's `--config-dir` must be the same directory (`install.py`
-  sets both; the hook's seals live in `<config dir>/integrity/`). Don't split them
-  by hand.
-
-(The env file is plain `KEY=value` lines, as systemd's `EnvironmentFile=`
-expects, so sourcing it with `set -a` works. Don't use
-`env $(cat file | xargs)`: it breaks on the `#` comment lines.)
-
-For development, `python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`
-in the checkout runs the tests (`.venv/bin/python -m pytest`).
-
-## How a message becomes an `agy` call
-
-Roughly:
-
-```sh
-agy -p "<the Slack message text>" \
-    --project <project-id-for-this-channel> \
-    --output-format stream-json \
-    --print-timeout 0 \
-    --mode accept-edits \
-    [--conversation <id-looked-up-from-the-Slack-thread>] \
-    [--model <model>] [--effort <effort>]
-```
-
-The bridge reads the line-delimited JSON stream (per-tool `step_update`s, used
-to recover exactly which command was denied, then a final `result` event with
-`{"conversation_id": ..., "response": ...}`),
-remembers `conversation_id` against the Slack thread in a local sqlite file,
-and posts `response` back as a threaded reply.
-
-## License
-
-MIT — see `LICENSE`.
+MIT — [LICENSE](LICENSE) を参照。

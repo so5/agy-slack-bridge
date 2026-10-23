@@ -24,7 +24,7 @@
 # machine, or a project's own external-API access setup. These have no
 # published upstream to diff against, so the bridge tracks whatever a
 # human last confirmed via Slack buttons (see "Config drift detection" in
-# the README) rather than fetching a canonical copy from anywhere.
+# docs/usage.md) rather than fetching a canonical copy from anywhere.
 # `channels:` is empty until tools/setup_agy_project.py (or you) add entries;
 # the commented block below shows the shape of an entry.
 channels: {}
@@ -53,6 +53,6 @@ channels: {}
 # Optional usage statistics, both off by default. This top-level block applies
 # to every channel; a channel can override it with its own `telemetry:` block
 # under `channels:`. `/agy-stats on|off <feature>` rewrites these in place.
-# See README "Usage statistics".
+# See "Usage statistics" in docs/usage.md.
 #telemetry:
 #  permission_stats: false   # permission button requests and outcomes
