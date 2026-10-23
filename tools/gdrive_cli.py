@@ -111,6 +111,39 @@ def _str_list(value, what):
     return value
 
 
+def validate_policy(commands, folders, deny_names, deny_dirs):
+    """方針(どのコマンドを許すか、どのフォルダ配下に限るか、アップロードの拒否パターン)の
+    検証。parse_profile と、setup_agy_project.py の対話設定が共有する。"""
+    commands = _str_list(commands, "commands")
+    bad = set(commands) - set(READ_COMMAND_NAMES + WRITE_COMMAND_NAMES)
+    if bad:
+        raise ProfileError(f"プロファイルの commands に未知のコマンドがあります: {sorted(bad)}")
+    folders = _str_list(folders, "allowed_folders")
+    for f in folders:
+        if not ID_RE.match(f):
+            raise ProfileError("プロファイルの allowed_folders に Drive ID として不正な値があります")
+    return (commands, folders, _str_list(deny_names, "upload_deny.names"),
+            _str_list(deny_dirs, "upload_deny.dirs"))
+
+
+_DRIVE_URL_ID_RES = (re.compile(r"/folders/([A-Za-z0-9_-]+)"), re.compile(r"[?&]id=([A-Za-z0-9_-]+)"),
+                     re.compile(r"/d/([A-Za-z0-9_-]+)"))
+
+
+def extract_drive_id(text):
+    """Drive の URL(…/folders/<id>、open?id=<id>、…/d/<id>)または ID そのものから ID を取り出す。
+    取り出せなければ None。"""
+    text = text.strip()
+    if ID_RE.match(text):
+        return text
+    if text.startswith("https://"):
+        for rx in _DRIVE_URL_ID_RES:
+            m = rx.search(text)
+            if m and ID_RE.match(m.group(1)):
+                return m.group(1)
+    return None
+
+
 def parse_profile(data):
     """プロファイル(dict)を検証し、既定値を補って返す。未知のキーは(綴り間違いで
     制限が黙って効かなくなるのを防ぐため)エラー。"""
@@ -141,19 +174,14 @@ def parse_profile(data):
     if not (isinstance(scope_read, str) and isinstance(scope_write, str)):
         raise ProfileError("プロファイルの scopes.read/write は文字列にしてください")
 
-    commands = _str_list(data.get("commands", list(READ_COMMAND_NAMES + WRITE_COMMAND_NAMES)), "commands")
-    bad = set(commands) - set(READ_COMMAND_NAMES + WRITE_COMMAND_NAMES)
-    if bad:
-        raise ProfileError(f"プロファイルの commands に未知のコマンドがあります: {sorted(bad)}")
-
-    folders = _str_list(data.get("allowed_folders", []), "allowed_folders")
-    for f in folders:
-        if not ID_RE.match(f):
-            raise ProfileError("プロファイルの allowed_folders に Drive ID として不正な値があります")
-
     deny = data.get("upload_deny", {})
     if not isinstance(deny, dict) or set(deny) - {"names", "dirs"}:
         raise ProfileError("プロファイルの upload_deny は {names, dirs} にしてください")
+    commands, folders, deny_names, deny_dirs = validate_policy(
+        data.get("commands", list(READ_COMMAND_NAMES + WRITE_COMMAND_NAMES)),
+        data.get("allowed_folders", []),
+        deny.get("names", DENY_UPLOAD_NAMES_DEFAULT),
+        deny.get("dirs", DENY_UPLOAD_DIRS_DEFAULT))
     return {
         "kind": kind,
         "command": command,
@@ -162,8 +190,8 @@ def parse_profile(data):
         "scope_write": scope_write,
         "commands": set(commands),
         "allowed_folders": set(folders),
-        "deny_names": _str_list(deny.get("names", DENY_UPLOAD_NAMES_DEFAULT), "upload_deny.names"),
-        "deny_dirs": set(_str_list(deny.get("dirs", DENY_UPLOAD_DIRS_DEFAULT), "upload_deny.dirs")),
+        "deny_names": deny_names,
+        "deny_dirs": set(deny_dirs),
     }
 
 
