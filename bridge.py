@@ -1194,7 +1194,12 @@ def _project_root(project_id: str) -> Optional[Path]:
     return None
 
 
-PERMANENT_COMMANDS_REL = Path(".agents") / ".permanent-commands.json"
+def _integrity_state_dir(root: Path) -> Path:
+    """Where the script-integrity hook (tools/hooks/script_integrity.py) keeps
+    this project's permanent-command seals: under the bridge's config dir, not
+    in the (agent-writable) project. Must match the hook's `state_dir`."""
+    key = hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:16]
+    return CONFIG_PATH.resolve().parent / "integrity" / key
 
 _SCRIPT_INTERPRETER_BASENAMES = {
     "python", "python3", "python3.10", "python3.11", "python3.12", "python3.13",
@@ -1239,9 +1244,9 @@ def _resolve_permanent_script_path(entry: str, root: Path) -> Optional[str]:
 
 
 def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
-    """Keeps a project's `.agents/.permanent-commands.json` in sync with
-    its *permanent* permissions.allow entries (never its one-time/temp
-    grants) - the project-local manifest script_integrity.py (the
+    """Keeps a project's `<config dir>/integrity/<key>/permanent.json` in sync
+    with its *permanent* permissions.allow entries (never its one-time/temp
+    grants) - the manifest script_integrity.py (the
     PreToolUse hook) reads to decide whether a run_command target needs
     git-commit enforcement or just the lighter hash-ledger check. Stores
     resolved script paths (see _resolve_permanent_script_path), not the
@@ -1256,7 +1261,7 @@ def _mark_permanent_command(project_id: str, entry: str, present: bool) -> None:
     script_path = _resolve_permanent_script_path(entry, root)
     if script_path is None:
         return
-    path = root / PERMANENT_COMMANDS_REL
+    path = _integrity_state_dir(root) / "permanent.json"
     try:
         pins = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (json.JSONDecodeError, OSError):

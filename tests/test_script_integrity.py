@@ -22,9 +22,18 @@ def test_find_script_targets_only_executed_scripts(tmp_path):
     assert si.find_script_targets("python3 missing.py", root) == []
 
 
-def _hook(root, cmdline):
+def _cfg(root):
+    return root.parent / f"{root.name}-cfg"
+
+
+def _state(root):
+    return si.state_dir(str(_cfg(root)), str(root))
+
+
+def _hook(root, cmdline, cfg=None):
     payload = {"toolCall": {"args": {"CommandLine": cmdline}}, "workspacePaths": [str(root)]}
-    out = subprocess.run([sys.executable, si.__file__], input=json.dumps(payload),
+    out = subprocess.run([sys.executable, si.__file__, "--config-dir", str(cfg or _cfg(root))],
+                         input=json.dumps(payload),
                          capture_output=True, text=True, check=True).stdout
     return json.loads(out)
 
@@ -36,12 +45,13 @@ def repo(tmp_path):
     (tmp_path / "tool.py").write_text("print(1)\n")
     subprocess.run([*git, "add", "tool.py"], check=True)
     subprocess.run([*git, "commit", "-qm", "x"], check=True)
+    os.makedirs(_state(tmp_path))  # what setup_agy_project.py does: registers the project with the hook
     return tmp_path
 
 
 def _seal(root, script, digest):
-    (root / ".agents").mkdir(exist_ok=True)
-    (root / ".agents/.permanent-commands.json").write_text(json.dumps({str(root / script): digest}))
+    with open(os.path.join(_state(root), "permanent.json"), "w") as f:
+        json.dump({str(root / script): digest}, f)
 
 
 def test_non_script_command_falls_through_to_ask(repo):
@@ -76,3 +86,20 @@ def test_temp_script_changed_between_runs_is_denied_once_with_diff(repo):
     res = _hook(repo, "python3 scratch.py")
     assert res["decision"] == "deny" and "-a" in res["reason"] and "+b" in res["reason"]
     assert _hook(repo, "python3 scratch.py")["decision"] == "ask"  # second ask passes
+
+
+def test_project_that_was_not_set_up_is_left_alone(repo, tmp_path):
+    (repo / "scratch.py").write_text("a\n")
+    elsewhere = tmp_path / "other-cfg"
+    assert _hook(repo, "python3 scratch.py", cfg=elsewhere)["decision"] == "ask"
+    (repo / "scratch.py").write_text("b\n")
+    assert _hook(repo, "python3 scratch.py", cfg=elsewhere)["decision"] == "ask"  # no ledger kept
+    assert not elsewhere.exists()
+
+
+def test_nothing_is_written_into_the_project(repo):
+    _seal(repo, "tool.py", si.file_hash(str(repo / "tool.py")))
+    (repo / "scratch.py").write_text("a\n")
+    _hook(repo, "python3 scratch.py")
+    assert not (repo / ".agents").exists()
+    assert os.path.exists(os.path.join(_state(repo), "hashes.json"))

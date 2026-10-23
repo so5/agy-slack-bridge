@@ -10,9 +10,9 @@ in history) before each run.
 
 Two different checks, depending on whether the command's resolved script
 path (see `find_script_targets`) is in this project's own
-`.agents/.permanent-commands.json` (absolute script path -> sha256 of the
-content that was approved, written by the bridge's `/agy-permissions add`,
-never by hand). Matching is by resolved path, not by
+`<config dir>/integrity/<project key>/permanent.json` (absolute script path ->
+sha256 of the content that was approved, written by the bridge's
+`/agy-permissions add`, never by hand; see `state_dir`). Matching is by resolved path, not by
 raw command-line text: a permanent grant is for a *script*, and the same
 script can be invoked many different ways (absolute path, `./`-relative,
 a different leading interpreter flag, ...) that would never agree as
@@ -29,7 +29,7 @@ strings but all resolve to the same file.
   and forcing a commit for something that's granted for one conversation
   and then expires was solving a much smaller problem than the permanent
   case. Instead, a lightweight local content ledger
-  (`.agents/.command-hashes.json`, gitignored, hook-owned) remembers each
+  (`<state dir>/hashes.json`, hook-owned) remembers each
   exact command string's script content the first time it's seen; a *later*
   run of the identical command string with *different* script content is
   denied once (forcing a visible pause instead of a silent swap, with a
@@ -43,6 +43,7 @@ unchanged. Never invents a "deny" for a command that isn't actually
 executing a script; on any internal error, also falls back to "ask" rather
 than blocking work over a bug in this hook itself.
 """
+import argparse
 import difflib
 import hashlib
 import json
@@ -60,8 +61,21 @@ INTERPRETER_BASENAMES = {
 SCRIPT_EXTS = (".py", ".sh", ".js", ".mjs", ".rb", ".pl")
 SHELL_OPERATORS = {";", "&&", "||", "|", "&"}
 
-PERMANENT_COMMANDS_REL = os.path.join(".agents", ".permanent-commands.json")
-COMMAND_HASHES_REL = os.path.join(".agents", ".command-hashes.json")
+DEFAULT_CONFIG_DIR = os.path.expanduser("~/.config/agy-slack-bridge")
+PERMANENT_COMMANDS_NAME = "permanent.json"
+COMMAND_HASHES_NAME = "hashes.json"
+
+
+def state_dir(config_dir: str, root: str) -> str:
+    """Per-project state (the permanent-command seals the bridge writes, and this
+    hook's own content ledger) lives in the bridge's config dir, not in the
+    project: the project is writable by the agent, the config dir is not
+    (permissions.deny). Keyed by the project root's real path; a project whose
+    directory doesn't exist here has not been set up, and the hook leaves it
+    alone. bridge.py computes the same path (tests/test_integrity_state.py
+    keeps the two in step)."""
+    key = hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:16]
+    return os.path.join(config_dir, "integrity", key)
 
 
 def split_segments(cmdline: str) -> list[list[str]]:
@@ -124,13 +138,13 @@ def find_script_targets(cmdline: str, root: str) -> list[str]:
     return out
 
 
-def load_permanent_pins(root: str) -> dict:
-    """`.agents/.permanent-commands.json`: resolved absolute script path ->
+def load_permanent_pins(state: str) -> dict:
+    """`<state>/permanent.json`: resolved absolute script path ->
     sha256 of the content approved at grant time. A bare string entry (the
     old unpinned format) maps to None, so it's treated as permanent but
     unapproved until re-sealed."""
     try:
-        data = json.loads(open(os.path.join(root, PERMANENT_COMMANDS_REL)).read())
+        data = json.loads(open(os.path.join(state, PERMANENT_COMMANDS_NAME)).read())
     except (OSError, json.JSONDecodeError, ValueError):
         return {}
     if isinstance(data, list):
@@ -191,21 +205,21 @@ def read_text(path: str) -> "str | None":
         return None
 
 
-def load_hashes(root: str) -> dict:
+def load_hashes(state: str) -> dict:
     try:
-        return json.loads(open(os.path.join(root, COMMAND_HASHES_REL)).read())
+        return json.loads(open(os.path.join(state, COMMAND_HASHES_NAME)).read())
     except (OSError, json.JSONDecodeError, ValueError):
         return {}
 
 
-def save_hashes(root: str, data: dict) -> None:
-    path = os.path.join(root, COMMAND_HASHES_REL)
+def save_hashes(state: str, data: dict) -> None:
+    path = os.path.join(state, COMMAND_HASHES_NAME)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, indent=1)
 
 
-def changed_reason(cmdline: str, targets: list[str], root: str) -> "str | None":
+def changed_reason(cmdline: str, targets: list[str], root: str, state: str) -> "str | None":
     """None if safe to run; otherwise a reason (non-permanent-command path:
     a lightweight, bridge-independent content ledger instead of git). First
     sighting of a command string just records its script(s)' current
@@ -216,13 +230,13 @@ def changed_reason(cmdline: str, targets: list[str], root: str) -> "str | None":
     something did), and the ledger is refreshed to the new content in the
     same step, so asking again (after confirming the change is intentional)
     succeeds without a second denial."""
-    all_entries = load_hashes(root)
+    all_entries = load_hashes(state)
     prior = all_entries.get(cmdline)
     current = {os.path.relpath(p, root): read_text(p) for p in targets}
 
     if prior is not None and prior != current:
         all_entries[cmdline] = current
-        save_hashes(root, all_entries)
+        save_hashes(state, all_entries)
         changed = [p for p in current if prior.get(p) != current.get(p)]
         diff_chunks = []
         for relpath in changed:
@@ -242,23 +256,27 @@ def changed_reason(cmdline: str, targets: list[str], root: str) -> "str | None":
 
     if prior is None:
         all_entries[cmdline] = current
-        save_hashes(root, all_entries)
+        save_hashes(state, all_entries)
     return None
 
 
-def main() -> None:
+def main(argv: "list[str] | None" = None) -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config-dir", default=DEFAULT_CONFIG_DIR)
+    args, _ = ap.parse_known_args(argv)
     try:
         payload = json.load(sys.stdin)
         cmdline = ((payload.get("toolCall") or {}).get("args") or {}).get("CommandLine") or ""
         roots = payload.get("workspacePaths") or []
         root = roots[0] if roots else os.getcwd()
 
+        state = state_dir(args.config_dir, root)
         targets = find_script_targets(cmdline, root)
-        if not targets:
+        if not targets or not os.path.isdir(state):
             print(json.dumps({"decision": "ask"}))
             return
 
-        pins = load_permanent_pins(root)
+        pins = load_permanent_pins(state)
         if any(p in pins for p in targets):
             reasons = []
             for p in targets:
@@ -276,7 +294,7 @@ def main() -> None:
                 }))
                 return
         else:
-            reason = changed_reason(cmdline, targets, root)
+            reason = changed_reason(cmdline, targets, root, state)
             if reason:
                 print(json.dumps({"decision": "deny", "reason": reason}))
                 return
