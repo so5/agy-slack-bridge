@@ -97,6 +97,13 @@ where permissions are stored is in [permissions.en.md](permissions.en.md).
   automatically once the reply is posted.
 - Runs entirely over Slack's **Socket Mode** (an outbound websocket from your
   machine to Slack) — no inbound port, reverse proxy, or public URL needed.
+- **Files you attach** to a message are downloaded into the project's workspace under
+  `inbox/<thread timestamp>/`, and the prompt tells agy their relative paths, so agy can read
+  them like any workspace file (needs the `files:read` scope). Up to 5 files per message and
+  20 MB each; anything over the limits is not taken in, and the thread gets a notice suggesting
+  to put large or many files on Google Drive and paste the shared URL instead. Only
+  `files.slack.com` URLs are fetched, with the bot token, and file names are reduced to their
+  basename so an attachment cannot escape the inbox directory.
 - When agy's response mentions a `file://` link to something it generated
   (a chart, a report, ...), that link is dead in Slack - nothing can open a
   local filesystem path. So the bridge also uploads the file itself

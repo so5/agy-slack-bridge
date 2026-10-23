@@ -34,6 +34,7 @@ If you configure the app by hand instead, or want to review it later:
 | Bot Token Scopes | `chat:write` | post replies (required) |
 | | `channels:history` / `groups:history` | receive messages in public / private channels (match the channels you bridge) |
 | | `commands` | slash commands |
+| | `files:read` | take in files attached to messages (optional) |
 | | `files:write` | upload files agy generated (optional) |
 | | `chat:write.customize` | per-channel display name and icon (optional) |
 | Event Subscriptions (bot events) | `message.channels` / `message.groups` | receive messages (match the scopes) |

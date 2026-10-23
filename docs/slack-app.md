@@ -34,6 +34,7 @@
 | Bot Token Scopes | `chat:write` | 返信の投稿（必須） |
 | | `channels:history` / `groups:history` | 公開 / 非公開チャンネルのメッセージを受け取る（ブリッジするチャンネルの種類に合わせて） |
 | | `commands` | スラッシュコマンド |
+| | `files:read` | メッセージに添付されたファイルの取り込み（任意） |
 | | `files:write` | agy が作ったファイルのアップロード（任意） |
 | | `chat:write.customize` | チャンネルごとの表示名・アイコン（任意） |
 | Event Subscriptions（Bot Events） | `message.channels` / `message.groups` | メッセージの受信（スコープに合わせる） |
