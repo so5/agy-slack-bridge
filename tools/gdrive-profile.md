@@ -38,11 +38,15 @@ Drive のエクスポートで**内容を読む**（`read` はテキストまた
   絞る二重の保険になります。OAuth はその逆で、ユーザーの Drive 全体への権限を得てから、`allowed_folders` で狭めます。
 - スコープの食い違いが起きません: OAuth の `invalid_scope`（下記）は、最初の同意というものがないので起こりません。
 
+> ⚠ セットアップが保存する鍵ファイルは**平文の JSON**です。同じ OS ユーザーのプロセスは読めます（agy の deny は完全な防壁ではありません）。
+> 漏れると、共有したフォルダを誰でも操作できます。共有は必要最小限にし、漏れたら Cloud コンソールで鍵を削除してください。
+> より堅くするなら、鍵のパスを空欄にして、パスワードマネージャーなどから取り出す `credentials.command` を使います。
+
 準備の手順（サービスアカウント）:
 
 1. Google Cloud でプロジェクトを作り、**Google Drive API** を有効にする。
 2. サービスアカウントを作り、**JSON 鍵**を作成する。
-3. 鍵を、`credentials.command` で取り出せる場所に保管する（下の「資格情報を取り出すコマンド」）。
+3. `setup_agy_project.py` に鍵ファイルのパスを入力すると、`<設定ディレクトリ>/gdrive/<プロファイル名>.sa.json`（0600）に保存し、`credentials.command`（`cat` でそのファイルを読む）と `credentials.paths` を設定します。別の保管先を使うなら、鍵のパスを空欄にして、`credentials.command` で取り出せる場所に保管します（下の「資格情報を取り出すコマンド」）。
 4. Drive で、使わせたいフォルダを、鍵の中の `client_email` のアドレスに共有する（読み取りだけなら「閲覧者」、
    書き込みも許すなら「編集者」）。
 5. プロファイルの `allowed_folders` に、同じフォルダの ID を入れる。
@@ -68,7 +72,7 @@ Drive のエクスポートで**内容を読む**（`read` はテキストまた
    更新できます。ファイルの置き場所と名前が決まっている用途なら、これで十分です。
 2. **OAuth のプロファイルを使う。** OAuth では、ユーザー自身の権限と容量でファイルが作られるので、
    `upload` で新規ファイルを作れます。このツールでは、次の設定にします。
-   - `kind` を `oauth` にし、`credentials.command` が `client_id`、`client_secret`、`refresh_token` の JSON を出すようにする。
+   - `kind` を `oauth` にし、`credentials.command` が `client_id`、`client_secret`、`refresh_token` の JSON を出力するようにする。
    - 書き込みに使うスコープ（既定は `drive`）で同意して、リフレッシュトークンを取得しておく
      （取得の手順は、このツールの範囲外です。OAuth クライアントを作り、同意してトークンを得ます）。
    - `scopes` は、最初の同意と**一致**させる（下の「OAuth を使う場合の注意」）。
@@ -82,7 +86,7 @@ OAuth は、「サービスアカウントが失敗したときの代用品」�
 | キー | 必須 | 内容 | 省略時 |
 |---|---|---|---|
 | `kind` | はい | `service_account`（推奨）または `oauth` | (エラー) |
-| `credentials.command` | はい | 資格情報の JSON を stdout に出す**コマンドの argv**(リスト。シェル文字列は不可) | (エラー) |
+| `credentials.command` | はい | 資格情報の JSON を stdout に出力する**コマンドの argv**(リスト。シェル文字列は不可) | (エラー) |
 | `credentials.paths` | いいえ | 上のコマンドが読むファイル。実行時に group/other から読めれば警告 | なし |
 | `scopes.read` / `scopes.write` | いいえ | 読み取り系/書き込み系で要求するスコープ | `drive.readonly` / `drive` |
 | `commands` | いいえ | 有効にするサブコマンド | 全部(読み取り5 + 書き込み3) |

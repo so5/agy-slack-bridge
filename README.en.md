@@ -14,14 +14,11 @@ can talk to your agy agents from Slack.
 
 ## ⚠ Security assumptions
 
-Anyone who can post in a bridged channel can make the corresponding agy project work **on this
-machine** (run commands, edit files, ... within the project's permissions). Use **private channels**
-whose members you trust.
+Anyone who can post in a bridged channel can have agy run commands, edit files, and more, with the permissions
+of the user running agy. Make the channel **private, with only the person who runs agy and the bridge, plus the
+bot**. Inviting anyone else amounts to handing them that user account.
 
-The agent runs as the same OS user as the bridge, so the permission machinery is not a hard barrier.
-It makes mistakes and casual probing fail loudly (deny rules, safety rules, script-tampering
-detection, ...). See "Keeping the agent inside its lane" in [docs/usage.en.md](docs/usage.en.md) and
-[docs/permissions.en.md](docs/permissions.en.md).
+Mechanisms that restrict what agy can do are also provided. See "Keeping the agent inside its lane" in [docs/usage.en.md](docs/usage.en.md) and [docs/permissions.en.md](docs/permissions.en.md).
 
 ## Setup walkthrough
 
@@ -72,6 +69,8 @@ To run it later (you answered N, or want to change settings):
 
 #### 3-1. The target project
 
+The directory you specify here is the agy project directory (the root agy works in).
+
 | Prompt | Answer |
 |---|---|
 | `番号（0=新規）またはパス` (number, 0 = new, or path) | Projects already registered in agy are listed: enter its **number**. For a new one enter **0**, or type a directory **path** directly |
@@ -92,10 +91,10 @@ If the directory is not a git repository, it is initialised with `git init` and 
 | `プロファイル名` (profile name) | Letters, digits, `_`, `-`. Use a different name per project. Default: the project name. The profile is `<config dir>/gdrive/NAME.json` |
 | `プロファイルを作成しますか? [Y/n]` (create the profile?) | **Y** |
 | `認証の種類（service_account / oauth）` (authentication type) | See the table below. If unsure, press Enter (`service_account`) |
-| `資格情報を取り出すコマンド` (command that prints the credentials) | A **command that prints the key / token JSON to stdout** (examples below). Do not type a scope (`drive` etc.) here |
+| `サービスアカウントの JSON 鍵のパス` (path to the service account JSON key) | When you chose `service_account`. The path of the downloaded key file. It is saved as `<config dir>/gdrive/<profile>.sa.json` (0600) and the email address to share folders with is shown (delete the original key file). Empty = use another key store via the next prompt |
+| `資格情報を取り出すコマンド` (command that prints the credentials) | For `oauth`, or when the key path was left empty. A **command that prints the key / token JSON to stdout** (examples below). Do not type a scope (`drive` etc.) here |
 | `` `…` というコマンドが見つかりません。このまま使いますか? [y/N]`` (command not found; use anyway?) | Only shown when the command is not found. If it is a typo, answer **N** and start again |
-| `スコープを既定のままにしますか? [Y/n]` (keep the default scopes?) | Defaults: read `drive.readonly`, write `drive`. Normally **Y**. Answer **n** only for an OAuth token consented with other scopes; then enter the read and write scopes |
-| `方針を変更しますか? [y/N]` (change the policy?) | Policy = enabled commands, allowed folders, upload deny patterns. **N** keeps the defaults; **y** to narrow it |
+| `詳細設定（スコープ・方針）を変更しますか? [y/N]` (change the advanced settings?) | Scopes and policy (enabled commands, allowed folders, upload deny patterns). **N** keeps the defaults; **y** to change them |
 
 **Which authentication**
 
@@ -106,12 +105,25 @@ If the directory is not a git repository, it is initialised with `git init` and 
 | What it can see | Only what is shared with it | The user's whole Drive (narrow it with allowed folders) |
 | Caveats | **Cannot create new files** in a personal Drive (no storage quota) | If the consent screen is in "Testing", the token expires in 7 days; scopes must match the original consent |
 
-Service account preparation: in Google Cloud create a project and enable the **Google Drive API**, then create
-the service account and a **JSON key**. In Drive, share the folders you want to allow with the `client_email`
-in the key ("Viewer" for read-only, "Editor" to allow writes). For OAuth preparation and caveats and for how new
-files are handled, see [tools/gdrive-profile.en.md](tools/gdrive-profile.en.md).
+**Service account preparation** (do this before the setup):
 
-**Examples of the credential command** (match your key store; run directly, not through a shell)
+1. Create a project in the [Google Cloud console](https://console.cloud.google.com/) (an existing one is fine).
+2. **APIs & Services** → **Library**: enable the **Google Drive API**.
+3. **IAM & Admin** → **Service Accounts** → **Create service account** (no role needed).
+4. Open the new service account → **Keys** → **Add key** → **Create new key** → **JSON**, and download the key file.
+5. In the setup, enter the path of that key file. Share the Drive folders you want to allow with the email address
+   shown (`…@….iam.gserviceaccount.com`): "Viewer" for read-only, "Editor" to allow writes.
+
+> ⚠ **The key file is stored on disk as plaintext JSON.** Any process running as the same OS user can read it
+> (agy is set up not to, but that is not a hard barrier). Anyone holding the key can operate on the folders you
+> shared. Share only the folders you need, and as "Viewer" if no writing is needed. If it leaks, delete the key in
+> the Cloud console. For stronger storage, leave the key path empty and use a command that fetches it from a
+> password manager or similar.
+
+For OAuth preparation and caveats and for how new files are handled, see
+[tools/gdrive-profile.en.md](tools/gdrive-profile.en.md).
+
+**Examples of the credential command** (for `oauth`, or a key store other than a key file; run directly, not through a shell)
 
 ```
 cat /home/you/secrets/drive-key.json
@@ -121,10 +133,11 @@ aws secretsmanager get-secret-value --secret-id NAME --query SecretString --outp
 
 More stores (pass, GCP Secret Manager, Vault) are in [tools/gdrive-profile.en.md](tools/gdrive-profile.en.md).
 
-Prompts when you answered **y** to "change the policy":
+Prompts when you answered **y** to "change the advanced settings":
 
 | Prompt | Answer |
 |---|---|
+| `読み取りに使うスコープ` / `書き込みに使うスコープ` (read / write scope) | Only when creating the profile. Defaults: `drive.readonly` / `drive`. Change only for an OAuth token consented with other scopes |
 | `有効にするコマンド（カンマ区切り or all）` (enabled commands) | Subcommands to allow. Default: the five read ones (`list,search,meta,read,download`). Write commands (`mkdir` / `upload` / `update`) never enter the allow list; they **ask for approval every time** |
 | `許可フォルダ（URL か ID、カンマ区切り。`-` で制限なし）` (allowed folders) | Folders that may be touched; a folder URL can be pasted. `-` = no limit. **Strongly recommended** (OAuth sees the user's whole Drive) |
 | `アップロード拒否パターン（k=今のまま / a=追加 / r=置換）` (upload deny patterns) | Normally **k**. a / r then ask for file-name patterns (e.g. `*.sqlite`) and directory names |

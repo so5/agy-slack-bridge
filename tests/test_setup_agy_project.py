@@ -425,9 +425,30 @@ def test_missing_profile_is_created_interactively_with_default_policy(env):
     assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
 
 
+def test_service_account_key_file_is_stored_under_config_dir_and_wired_up(env, tmp_path, capsys):
+    key = tmp_path / "downloaded.json"
+    key.write_text(json.dumps({"type": "service_account", "client_email": "bot@p.iam.gserviceaccount.com",
+                               "private_key": "-----BEGIN-----"}))
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}")
+    ask = Scripted({**PROFILE_Q, "プロファイルを作成しますか": "y",
+                    "サービスアカウントの JSON 鍵のパス": [str(bad), str(tmp_path / "none.json"), str(key)]})
+    run(env, ask)
+    stored = env.cfg / "gdrive" / "proj.sa.json"
+    assert stat.S_IMODE(os.stat(stored).st_mode) == 0o600
+    assert json.loads(stored.read_text())["client_email"] == "bot@p.iam.gserviceaccount.com"
+    data = json.loads(profile_path(env).read_text())
+    assert data["kind"] == "service_account"
+    assert data["credentials"]["command"][1:] == [str(stored)] and data["credentials"]["paths"] == [str(stored)]
+    out = capsys.readouterr().out
+    assert "bot@p.iam.gserviceaccount.com" in out and "共有してください" in out
+    assert not any("資格情報を取り出すコマンド" in p for p in ask.asked)  # no command prompt needed
+    setup.gdrive_cli.parse_profile(data)
+
+
 def test_custom_scopes_are_asked_only_on_request(env):
     ask = Scripted({**PROFILE_Q, "プロファイルを作成しますか": "y", "認証の種類": "service_account",
-                    "資格情報を取り出すコマンド": "cat /k", "スコープを既定のまま": "n",
+                    "資格情報を取り出すコマンド": "cat /k", "詳細設定": "y",
                     "読み取りに使うスコープ": ["bad", "https://www.googleapis.com/auth/drive.file"],
                     "書き込みに使うスコープ": "https://www.googleapis.com/auth/drive.file"})
     run(env, ask)
@@ -445,7 +466,7 @@ def test_declining_to_create_or_missing_input_leaves_no_profile_and_all_reads_al
 
 def test_policy_change_writes_only_deviations_and_keeps_credentials_and_scopes(env):
     before = seed_profile(env)
-    ask = Scripted({**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": "list,read",
+    ask = Scripted({**PROFILE_Q, "詳細設定": "y", "有効にするコマンド": "list,read",
                     "許可フォルダ": f"https://drive.google.com/drive/folders/{FOLDER}?usp=sharing",
                     "アップロード拒否パターン（k": "a", "追加する拒否ファイル名パターン": "*.sqlite, *.db",
                     "追加する拒否ディレクトリ名": "private"})
@@ -463,16 +484,16 @@ def test_disabling_a_command_removes_the_allow_entry_setup_added_earlier(env):
     seed_profile(env)
     run(env, Scripted(PROFILE_Q))
     assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
-    run(env, Scripted({**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": "list,meta"}))
+    run(env, Scripted({**PROFILE_Q, "詳細設定": "y", "有効にするコマンド": "list,meta"}))
     assert subs_in(allow(env)) == ["list", "meta"]
-    run(env, Scripted({**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": "all", "緩める変更を適用しますか": "y"}))
+    run(env, Scripted({**PROFILE_Q, "詳細設定": "y", "有効にするコマンド": "all", "緩める変更を適用しますか": "y"}))
     assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
 
 
 def test_loosening_needs_a_separate_yes_and_is_dropped_on_no(env):
     seed_profile(env, allowed_folders=[FOLDER], commands=["list"])
     original = profile_path(env).read_text()
-    base = {**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": "list,upload", "許可フォルダ": "-"}
+    base = {**PROFILE_Q, "詳細設定": "y", "有効にするコマンド": "list,upload", "許可フォルダ": "-"}
     ask = Scripted({**base, "緩める変更を適用しますか": "n"})
     run(env, ask)
     assert profile_path(env).read_text() == original
@@ -484,7 +505,7 @@ def test_loosening_needs_a_separate_yes_and_is_dropped_on_no(env):
 
 def test_tightening_does_not_ask_for_the_loosening_confirmation(env):
     seed_profile(env)
-    ask = Scripted({**PROFILE_Q, "方針を変更": "y", "許可フォルダ": FOLDER})
+    ask = Scripted({**PROFILE_Q, "詳細設定": "y", "許可フォルダ": FOLDER})
     run(env, ask)
     assert json.loads(profile_path(env).read_text())["allowed_folders"] == [FOLDER]
     assert not any("緩める変更" in p for p in ask.asked)
@@ -492,7 +513,7 @@ def test_tightening_does_not_ask_for_the_loosening_confirmation(env):
 
 def test_policy_prompts_reject_bad_input_then_accept(env):
     seed_profile(env)
-    ask = Scripted({**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": ["delete", "list"],
+    ask = Scripted({**PROFILE_Q, "詳細設定": "y", "有効にするコマンド": ["delete", "list"],
                     "許可フォルダ": ["https://example.com/x", FOLDER]})
     run(env, ask)
     data = json.loads(profile_path(env).read_text())

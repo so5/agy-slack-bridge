@@ -72,7 +72,7 @@ python3 /opt/agy-slack-bridge/tools/install.py --prefix /opt/agy-slack-bridge --
 5. Slack チャンネルとの対応づけ（チャンネル ID、表示名、アイコン、モデル、effort など。任意項目は飛ばせる）。
 6. Slack のトークン（未設定のとき）。
 
-何度実行しても安全で、現在の値が既定値として出ます（Enter で維持、`-` で削除）。設定の変更や修復も
+何度実行しても安全で、現在の値が既定値として表示されます（Enter で維持、`-` で削除）。設定の変更や修復も
 同じコマンドです。詳細は [tools/README.md](../tools/README.md)。
 
 ## 3. 起動
@@ -111,7 +111,7 @@ systemd で動かすときの注意:
    新しいメッセージにはメンションが必要です。
 2. スレッドに返信が付けば成功です。スレッド内の続きの返信にメンションは要りません。
 3. 「権限がない」という表示とボタンが出たら、[usage.md](usage.md) の「Managing permissions from Slack」の
-   とおりに許可します。最初のうちは許可ボタンがよく出ます。
+   とおりに許可します。最初のうちは許可ボタンがよく表示されます。
 
 ## 5. 日々の運用
 
@@ -149,7 +149,7 @@ systemctl --user restart agy-slack-bridge.service
 | 起動直後に終了する（`agy not found`） | `AGY_BIN` に `agy` の絶対パスを設定する。`PATH` が最小限の systemd では、素の `agy` は見つからない |
 | Slack に `agy invocation failed` | ジャーナルを見る。`agy` が非ゼロで終了したときは、標準出力の末尾がログに残る。`agy` にログインできているか（ブリッジを動かすユーザーで `agy -p hi`） |
 | `RESOURCE_EXHAUSTED` | モデルの利用枠切れ。`/agy-model` で別系統のモデルに切り替える |
-| 「権限がない」と出る | 正常な動作。ボタン、または `/agy-permissions add` で許可する |
+| 「権限がない」と表示される | 正常な動作。ボタン、または `/agy-permissions add` で許可する |
 | 同じ指示が一度だけ拒否される（スクリプトの差分つき） | スクリプトが前回から変わったときの保護。内容を確認して、同じ指示をもう一度送る |
 | 設定を変えたのに反映されない | ブリッジを再起動する |
 | 安全規則が効いていない | `.agents/rules/agent-safety-rules.md` のリンクがあるか（`setup_agy_project.py` を再実行）。ルールファイルには frontmatter（`trigger: always_on`）が必要で、無いとエラーなしで無視される |

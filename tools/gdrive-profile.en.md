@@ -38,11 +38,13 @@ Drive and for Workspace, and needs neither domain-wide delegation nor OAuth.
   narrowed by `allowed_folders`.
 - No scope mismatch: the OAuth `invalid_scope` problem (below) cannot happen, because there is no original consent.
 
+> ⚠ The key file the setup saves is **plaintext JSON**. Any process running as the same OS user can read it (agy's deny rules are not a hard barrier). Anyone holding it can operate on the shared folders. Share only what you need, and delete the key in the Cloud console if it leaks. For stronger storage, leave the key path empty and use a `credentials.command` that fetches it from a password manager or similar.
+
 Setup steps (service account):
 
 1. Create a Google Cloud project and enable the **Google Drive API**.
 2. Create a service account and create a **JSON key** for it.
-3. Store the key somewhere `credentials.command` can fetch it from (see "The Command That Fetches Credentials" below).
+3. Enter the key file path in `setup_agy_project.py`: it saves the key as `<config dir>/gdrive/<profile>.sa.json` (0600) and sets `credentials.command` (`cat` of that file) and `credentials.paths`. To use another key store, leave the path empty and keep the key somewhere `credentials.command` can fetch it from (see "The Command That Fetches Credentials" below).
 4. In Drive, share each folder you want to allow with the `client_email` address from the key ("Viewer" for
    read-only, "Editor" if writes are allowed).
 5. Put the same folder IDs in the profile's `allowed_folders`.

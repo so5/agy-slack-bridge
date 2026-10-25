@@ -430,8 +430,42 @@ def _validate_upload_mode(v):
     return None if v in ("k", "a", "r") else "k / a / r のどれか"
 
 
-def ask_new_profile(ask: Prompter) -> "dict | None":
+def _validate_sa_key_file(v):
+    path = Path(v).expanduser()
+    try:
+        key = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return f"読めません: {e}"
+    if not isinstance(key, dict) or key.get("type") != "service_account" \
+            or not key.get("client_email") or not key.get("private_key"):
+        return "サービスアカウントの JSON 鍵ではありません（type / client_email / private_key が必要）"
+    return None
+
+
+def store_sa_key(src: Path, config_dir: Path, profile: str) -> "tuple[Path, str]":
+    """鍵を <設定ディレクトリ>/gdrive/<プロファイル名>.sa.json(0600)に置く。
+    設定ディレクトリは agy の deny 対象で、エージェントは読めない。(置き場, client_email)を返す。"""
+    key = json.loads(src.read_text(encoding="utf-8"))
+    dest = config_dir / "gdrive" / f"{profile}.sa.json"
+    dest.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(key, indent=2) + "\n")
+    os.chmod(dest, 0o600)
+    return dest, key["client_email"]
+
+
+def ask_new_profile(ask: Prompter, config_dir: Path, profile: str) -> "dict | None":
     kind = ask.text("認証の種類（service_account / oauth）", default="service_account", validate=_validate_kind)
+    credentials_paths = None
+    if kind == "service_account":
+        key_file = ask.text("サービスアカウントの JSON 鍵のパス（空欄で別の保管先）", validate=_validate_sa_key_file)
+        if key_file:
+            dest, email = store_sa_key(Path(key_file).expanduser(), config_dir, profile)
+            print(f"  [保存] {dest}（0600）。元の鍵ファイルは削除してください")
+            print(f"  Drive で使わせたいフォルダを、このアドレスに共有してください: {email}")
+            cat = shutil.which("cat") or "cat"
+            return _finish_profile(kind, [cat, str(dest)], [str(dest)])
     command = ask.text("資格情報を取り出すコマンド",
                        validate=_validate_credential_command)
     if not command:
@@ -442,12 +476,23 @@ def ask_new_profile(ask: Prompter) -> "dict | None":
         if not ask.yes_no(f"`{head}` というコマンドが見つかりません。このまま使いますか?", default=False):
             print("  [スキップ] コマンドを確認してから、もう一度実行してください")
             return None
-    scopes = None
-    if not ask.yes_no("スコープを既定のままにしますか?", default=True):
-        read = ask.text("読み取りに使うスコープ", default=gdrive_cli.SCOPE_READ_DEFAULT, validate=_validate_scope)
-        write = ask.text("書き込みに使うスコープ", default=gdrive_cli.SCOPE_WRITE_DEFAULT, validate=_validate_scope)
-        scopes = {"read": read, "write": write}
-    return gdrive_policy.new_profile(kind, shlex.split(command), scopes)
+    return _finish_profile(kind, shlex.split(command), None)
+
+
+def _finish_profile(kind: str, argv: list[str], paths: "list[str] | None") -> dict:
+    data = gdrive_policy.new_profile(kind, argv)
+    if paths:
+        data["credentials"]["paths"] = paths
+    return data
+
+
+def ask_scopes(ask: Prompter) -> "dict | None":
+    """既定と同じなら None(プロファイルには書かない)。"""
+    read = ask.text("読み取りに使うスコープ", default=gdrive_cli.SCOPE_READ_DEFAULT, validate=_validate_scope)
+    write = ask.text("書き込みに使うスコープ", default=gdrive_cli.SCOPE_WRITE_DEFAULT, validate=_validate_scope)
+    if (read, write) == (gdrive_cli.SCOPE_READ_DEFAULT, gdrive_cli.SCOPE_WRITE_DEFAULT):
+        return None
+    return {"read": read, "write": write}
 
 
 def ask_policy(ask: Prompter, old: dict) -> dict:
@@ -486,7 +531,7 @@ def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "
     if created:
         if not ask.yes_no("プロファイルを作成しますか?", default=True):
             return None
-        data = ask_new_profile(ask)
+        data = ask_new_profile(ask, config_dir, profile)
         if data is None:
             return None
     else:
@@ -501,7 +546,12 @@ def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "
     for line in gdrive_policy.describe(old):
         print(f"      {line}")
     new = old
-    if ask.yes_no("方針を変更しますか?", default=False):
+    if ask.yes_no("詳細設定（スコープ・方針）を変更しますか?" if created else "詳細設定（方針）を変更しますか?",
+                  default=False):
+        if created:
+            scopes = ask_scopes(ask)
+            if scopes:
+                data["scopes"] = scopes
         new = ask_policy(ask, old)
         for line in gdrive_policy.diff(old, new):
             print(f"      変更: {line}")
