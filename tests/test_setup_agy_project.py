@@ -115,17 +115,17 @@ def test_fresh_setup_registers_links_and_denies(env):
 
 
 def test_idempotent(env):
-    answers = {"チャンネル ID": "C0TEST123", "Slack での表示名": "Bot", "アイコン（絵文字": ":robot_face:"}
+    answers = {"チャンネル ID": "C0TEST123", "表示名": "Bot", "アイコン絵文字": ":robot_face:"}
     run(env, Scripted(answers))
     snap = lambda: (settings(env), (env.target / ".gitignore").read_text(), (env.cfg / "config.yaml").read_text())
     before = snap()
-    run(env, Scripted({"Slack チャンネルとの対応づけ": "y"}))  # Enter on every value keeps it
+    run(env, Scripted({"Slack チャンネルを対応づけ": "y"}))  # Enter on every value keeps it
     assert snap() == before
     assert len(env.registered) == 1
 
 
 def test_declined_registration_still_sets_up_files_but_nothing_project_specific(env):
-    ask = Scripted({"agy にまだ登録されていません": "n", "Drive CLI": "y"})
+    ask = Scripted({"agy に登録しますか": "n", "Drive CLI": "y"})
     run(env, ask)
     assert env.registered == []
     assert not any("チャンネル" in p for p in ask.asked)
@@ -180,7 +180,7 @@ def test_git_is_mandatory_and_initialized_without_asking(env, tmp_path, capsys):
 
 def test_missing_target_is_created_when_confirmed(env, tmp_path):
     new = tmp_path / "brand-new"
-    run(env, Scripted({"作成しますか": "y"}), target=new)
+    run(env, Scripted({"ディレクトリ": "y"}), target=new)
     assert (new / ".git").is_dir() and (new / ".agents/rules/agent-safety-rules.md").is_symlink()
 
 
@@ -240,8 +240,8 @@ def test_warns_when_profile_missing(env, capsys):
 
 def test_channel_mapping_written_with_project_id_and_all_fields(env):
     run(env, Scripted({
-        "チャンネル ID": "C0TEST123", "Slack での表示名": "Helper", "アイコン（絵文字": ":abacus:",
-        "モデル（`agy": "gemini-x", "effort": "high", "監視する設定ファイル": ".agents/local-tools.md, a/b.md",
+        "チャンネル ID": "C0TEST123", "表示名": "Helper", "アイコン絵文字": ":abacus:",
+        "モデル": "gemini-x", "effort": "high", "監視するファイル": ".agents/local-tools.md, a/b.md",
         "権限ボタンの統計": "y"}))
     pid = project_json(env).stem
     assert channels(env) == {"C0TEST123": {
@@ -255,15 +255,15 @@ def test_channel_mapping_written_with_project_id_and_all_fields(env):
 
 def test_channel_prompts_reject_bad_values_then_accept(env):
     ask = Scripted({"チャンネル ID": ["nope", "C0TEST123"], "effort": ["extreme", "low"],
-                    "アイコン（絵文字": ["abacus", ":abacus:"], "監視する設定ファイル": ["/etc/passwd", "../x", "ok.md"]})
+                    "アイコン絵文字": ["abacus", ":abacus:"], "監視するファイル": ["/etc/passwd", "../x", "ok.md"]})
     run(env, ask)
     e = channels(env)["C0TEST123"]
     assert (e["effort"], e["icon_emoji"], e["watched_config_files"]) == ("low", ":abacus:", ["ok.md"])
 
 
 def test_rerun_shows_current_values_and_dash_clears(env):
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "Slack での表示名": "Helper", "モデル（`agy": "m1"}))
-    ask = Scripted({"Slack チャンネルとの対応づけ": "y", "モデル（`agy": "-", "Slack での表示名": "Renamed"})
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "表示名": "Helper", "モデル": "m1"}))
+    ask = Scripted({"Slack チャンネルを対応づけ": "y", "モデル": "-", "表示名": "Renamed"})
     run(env, ask)
     e = channels(env)["C0TEST123"]
     assert e["display_name"] == "Renamed" and "model" not in e
@@ -276,18 +276,18 @@ def test_unknown_keys_of_an_existing_entry_are_preserved(env):
     data = yaml.safe_load(cfg.read_text())
     data["channels"]["C0TEST123"]["future_key"] = {"a": 1}
     cfg.write_text(yaml.safe_dump(data))
-    run(env, Scripted({"Slack チャンネルとの対応づけ": "y", "Slack での表示名": "X"}))
+    run(env, Scripted({"Slack チャンネルを対応づけ": "y", "表示名": "X"}))
     assert channels(env)["C0TEST123"]["future_key"] == {"a": 1}
 
 
 def test_channel_of_another_project_is_not_taken_over_by_default(env, tmp_path):
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "Slack での表示名": "first"}))
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "表示名": "first"}))
     second = tmp_path / "proj2"
     second.mkdir()
     subprocess.run(["git", "init", "-q", str(second)], check=True)
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "Slack での表示名": "second"}), target=second)
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "表示名": "second"}), target=second)
     assert channels(env)["C0TEST123"]["display_name"] == "first"
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "置き換えますか": "y", "Slack での表示名": "second"}),
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "置き換えますか": "y", "表示名": "second"}),
         target=second)
     assert channels(env)["C0TEST123"]["display_name"] == "second"
 
@@ -342,7 +342,7 @@ def test_project_without_a_directory_only_gets_drive_and_channel_setup(env):
 def test_menu_rejects_unknown_numbers_and_accepts_a_path_or_zero(env, tmp_path):
     _existing_project(env, "one", None)
     new = tmp_path / "fresh"
-    ask = Scripted({"番号": ["7", "0"], "新しいプロジェクトのディレクトリ": str(new), "作成しますか": "y"})
+    ask = Scripted({"番号": ["7", "0"], "ディレクトリのパス": str(new), "ディレクトリ": "y"})
     run_menu(env, ask)
     assert (new / ".git").is_dir()
     assert len(env.registered) == 1
@@ -416,7 +416,7 @@ def seed_profile(env, **extra):
 
 
 def test_missing_profile_is_created_interactively_with_default_policy(env):
-    ask = Scripted({**PROFILE_Q, "今作成しますか": "y", "認証の種類": "oauth",
+    ask = Scripted({**PROFILE_Q, "プロファイルを作成しますか": "y", "認証の種類": "oauth",
                     "資格情報を取り出すコマンド": "op read 'op://vault/item/token json'"})
     run(env, ask)
     data = json.loads(profile_path(env).read_text())
@@ -426,8 +426,8 @@ def test_missing_profile_is_created_interactively_with_default_policy(env):
 
 
 def test_custom_scopes_are_asked_only_on_request(env):
-    ask = Scripted({**PROFILE_Q, "今作成しますか": "y", "認証の種類": "service_account",
-                    "資格情報を取り出すコマンド": "cat /k", "スコープは既定のまま": "n",
+    ask = Scripted({**PROFILE_Q, "プロファイルを作成しますか": "y", "認証の種類": "service_account",
+                    "資格情報を取り出すコマンド": "cat /k", "スコープを既定のまま": "n",
                     "読み取りに使うスコープ": ["bad", "https://www.googleapis.com/auth/drive.file"],
                     "書き込みに使うスコープ": "https://www.googleapis.com/auth/drive.file"})
     run(env, ask)
@@ -436,19 +436,19 @@ def test_custom_scopes_are_asked_only_on_request(env):
 
 
 def test_declining_to_create_or_missing_input_leaves_no_profile_and_all_reads_allowed(env):
-    run(env, Scripted({**PROFILE_Q, "今作成しますか": "n"}))
+    run(env, Scripted({**PROFILE_Q, "プロファイルを作成しますか": "n"}))
     assert not profile_path(env).exists()
     assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
-    run(env, Scripted({**PROFILE_Q, "今作成しますか": "y"}))  # no kind entered
+    run(env, Scripted({**PROFILE_Q, "プロファイルを作成しますか": "y"}))  # no kind entered
     assert not profile_path(env).exists()
 
 
 def test_policy_change_writes_only_deviations_and_keeps_credentials_and_scopes(env):
     before = seed_profile(env)
-    ask = Scripted({**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": "list,read",
-                    "許可フォルダ（Drive": f"https://drive.google.com/drive/folders/{FOLDER}?usp=sharing",
-                    "アップロード拒否パターンの扱い": "a", "拒否するファイル名パターンを追加": "*.sqlite, *.db",
-                    "拒否するディレクトリ名を追加": "private"})
+    ask = Scripted({**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": "list,read",
+                    "許可フォルダ": f"https://drive.google.com/drive/folders/{FOLDER}?usp=sharing",
+                    "アップロード拒否パターン（k": "a", "追加する拒否ファイル名パターン": "*.sqlite, *.db",
+                    "追加する拒否ディレクトリ名": "private"})
     run(env, ask)
     data = json.loads(profile_path(env).read_text())
     assert data["kind"] == before["kind"] and data["credentials"] == before["credentials"]
@@ -463,16 +463,16 @@ def test_disabling_a_command_removes_the_allow_entry_setup_added_earlier(env):
     seed_profile(env)
     run(env, Scripted(PROFILE_Q))
     assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
-    run(env, Scripted({**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": "list,meta"}))
+    run(env, Scripted({**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": "list,meta"}))
     assert subs_in(allow(env)) == ["list", "meta"]
-    run(env, Scripted({**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": "all", "緩める変更を適用しますか": "y"}))
+    run(env, Scripted({**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": "all", "緩める変更を適用しますか": "y"}))
     assert subs_in(allow(env)) == ["download", "list", "meta", "read", "search"]
 
 
 def test_loosening_needs_a_separate_yes_and_is_dropped_on_no(env):
     seed_profile(env, allowed_folders=[FOLDER], commands=["list"])
     original = profile_path(env).read_text()
-    base = {**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": "list,upload", "許可フォルダ（Drive": "-"}
+    base = {**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": "list,upload", "許可フォルダ": "-"}
     ask = Scripted({**base, "緩める変更を適用しますか": "n"})
     run(env, ask)
     assert profile_path(env).read_text() == original
@@ -484,7 +484,7 @@ def test_loosening_needs_a_separate_yes_and_is_dropped_on_no(env):
 
 def test_tightening_does_not_ask_for_the_loosening_confirmation(env):
     seed_profile(env)
-    ask = Scripted({**PROFILE_Q, "方針（コマンド": "y", "許可フォルダ（Drive": FOLDER})
+    ask = Scripted({**PROFILE_Q, "方針を変更": "y", "許可フォルダ": FOLDER})
     run(env, ask)
     assert json.loads(profile_path(env).read_text())["allowed_folders"] == [FOLDER]
     assert not any("緩める変更" in p for p in ask.asked)
@@ -492,8 +492,8 @@ def test_tightening_does_not_ask_for_the_loosening_confirmation(env):
 
 def test_policy_prompts_reject_bad_input_then_accept(env):
     seed_profile(env)
-    ask = Scripted({**PROFILE_Q, "方針（コマンド": "y", "有効にするコマンド": ["delete", "list"],
-                    "許可フォルダ（Drive": ["https://example.com/x", FOLDER]})
+    ask = Scripted({**PROFILE_Q, "方針を変更": "y", "有効にするコマンド": ["delete", "list"],
+                    "許可フォルダ": ["https://example.com/x", FOLDER]})
     run(env, ask)
     data = json.loads(profile_path(env).read_text())
     assert data["commands"] == ["list"] and data["allowed_folders"] == [FOLDER]
@@ -519,7 +519,7 @@ def test_broken_or_invalid_profile_is_never_overwritten(env, capsys):
 
 
 def test_credential_command_that_does_not_exist_needs_confirmation(env):
-    base = {**PROFILE_Q, "今作成しますか": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "drive"}
+    base = {**PROFILE_Q, "プロファイルを作成しますか": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "drive"}
     run(env, Scripted(base))  # "drive" is not a command: default answer is no -> nothing written
     assert not profile_path(env).exists()
     run(env, Scripted({**base, "というコマンドが見つかりません": "y"}))
@@ -532,12 +532,11 @@ def test_credential_command_that_does_not_exist_needs_confirmation(env):
     assert profile_path(env).exists()
 
 
-def test_authentication_kind_defaults_to_service_account_and_oauth_warns(env, capsys):
-    ask = Scripted({**PROFILE_Q, "今作成しますか": "y", "資格情報を取り出すコマンド": "cat /k"})  # Enter on the kind
+def test_authentication_kind_defaults_to_service_account_and_prompt_is_short(env, capsys):
+    ask = Scripted({**PROFILE_Q, "プロファイルを作成しますか": "y", "資格情報を取り出すコマンド": "cat /k"})  # Enter on the kind
     run(env, ask)
     assert json.loads(profile_path(env).read_text())["kind"] == "service_account"
-    assert "7 日で失効" not in capsys.readouterr().out
-    profile_path(env).unlink()
-    run(env, Scripted({**PROFILE_Q, "今作成しますか": "y", "認証の種類（service_account / oauth）": "oauth",
-                       "資格情報を取り出すコマンド": "cat /k"}))
-    assert "7 日で失効" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "7 日で失効" not in out and "同意画面" not in out  # explanations live in the docs
+    kind_prompt = next(p for p in ask.asked if "認証の種類" in p)
+    assert len(kind_prompt) < 80

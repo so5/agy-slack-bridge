@@ -16,54 +16,187 @@ Slack から agy のエージェントと話せるようにするブリッジで
 
 ## ⚠ セキュリティの前提
 
-ブリッジされたチャンネルに投稿できる人は、対応する agy プロジェクトに、**このマシン上で**作業させられます
+ブリッジされたチャンネルに投稿できる人は、対応する agy プロジェクトに、**マシン上で**作業させることができます
 （コマンドの実行、ファイルの編集など。プロジェクトの許可の範囲で）。メンバーを信頼できる**非公開チャンネル**を
 使ってください。
 
-エージェントはブリッジと同じ OS ユーザーで動くため、権限の仕組みは完全な防壁ではありません。誤りと
-安易な探りを大きな音で失敗させる仕組みです（deny ルール、安全規則、スクリプト改ざん検知など）。
+エージェントはブリッジと同じ OS ユーザーで動くため、権限の仕組みは完全な防壁ではありません。誤操作や安易な探りが、
+気づかれないまま通ってしまわないよう、はっきりエラーとして表に出す仕組みです（deny ルール、安全規則、スクリプト改ざん検知など）。
 詳細は [docs/usage.md](docs/usage.md) の「Keeping the agent inside its lane」と
 [docs/permissions.md](docs/permissions.md) を参照してください。
 
-## クイックスタート
+## セットアップ手順
 
-必要なもの: Linux、Python 3.10 以上、`git`、**ログイン済みの `agy`**、Slack ワークスペース。
-詳しい手順と、うまくいかないときの確認項目は [docs/install.md](docs/install.md) にあります。
+最初から最後まで、この README だけで進められるように書いてあります。各ステップの詳細な背景や
+うまくいかないときの確認項目は、リンク先のドキュメントにあります。
 
-**1. Slack アプリを作る**（約 5 分）— [docs/slack-app.md](docs/slack-app.md)
+**必要なもの**: Linux（`systemd --user` が使えるもの）、Python 3.10 以上（`venv` つき）、`git`、
+**ブリッジを動かすユーザーでログイン済みの `agy`**、Slack ワークスペース（アプリを作れる権限）。
 
-同梱の [`slack-app-manifest.yaml`](slack-app-manifest.yaml) を Slack の「From an app manifest」に貼り付け、
-App-Level Token（`connections:write`）を作ってアプリをインストールします。トークン 2 つ
-（`xapp-…`、`xoxb-…`）と、ボットを招待したチャンネルの ID を控えます。
+セットアップは、人間が端末で実行します（エージェントに実行させるものではありません）。
+質問では、`[...]` の中が既定値で、**Enter で既定値のまま進み、`-` で値を消せます**。空欄でスキップできる質問もあります。
+何度でも再実行でき（冪等）、2 回目以降は現在の値が既定値として表示されます。
 
-**2. インストールする**
+### 1. Slack アプリを作る（約 5 分）
+
+詳細: [docs/slack-app.md](docs/slack-app.md)
+
+1. <https://api.slack.com/apps> → **Create New App** → **From an app manifest** → ワークスペースを選ぶ。
+2. [`slack-app-manifest.yaml`](slack-app-manifest.yaml) の中身を貼り付けて作成する。
+3. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes** で、スコープ
+   `connections:write` のトークンを作る。`xapp-…` で始まる値が **App トークン**（`SLACK_APP_TOKEN`）。
+4. **Install App** → **Install to Workspace**。表示される `xoxb-…` が **Bot トークン**（`SLACK_BOT_TOKEN`）。
+5. ブリッジに使う**非公開チャンネル**を作り、ボットを招待する（チャンネルで `/invite @agy`）。
+6. チャンネルの ID（チャンネルの詳細の一番下にある `C…` / `G…`）を控える。
+
+手元に残すもの: App トークン、Bot トークン、チャンネル ID。
+
+> ⚠ このマニフェストでアプリを新規作成する手順は、まだ実際に試せていません（スコープなどの一覧は
+> 運用中のアプリと突き合わせてあります）。うまくいかなければ、[docs/slack-app.md](docs/slack-app.md) の
+> 設定一覧を見ながら手で設定してください。
+
+### 2. インストールする
 
 ```sh
 git clone https://github.com/so5/agy-slack-bridge.git
 cd agy-slack-bridge
-python3 tools/install.py            # Google Drive CLI も使うなら --with-gdrive
+python3 tools/install.py --with-gdrive      # Drive CLI を使わないなら --with-gdrive は不要
 ```
 
-**3. プロジェクトを設定する**
+ブリッジ本体とツールを `~/.local/share/agy-slack-bridge`（以下 `<prefix>`）に読み取り専用で入れ、venv、
+設定ディレクトリ `~/.config/agy-slack-bridge`（`config.yaml` と `env` のひな形）、起動用の systemd ユニットを作り、
+agy の設定に「エージェントにインストール先と設定を触らせない」ルールとフックを登録します。
+`/opt` など別の場所に root で入れる方法と、オプションの一覧は [docs/install.md](docs/install.md)。
 
-`install.py` の最後に「続けてセットアップしますか?」と聞かれるので Y と答えます（後から
-`<prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py` でも実行できます）。対話で、
-agy プロジェクトの登録（または既存プロジェクトの選択）、Slack チャンネルとの対応づけ、
-トークンの入力を行います。
+最後に次の質問が出ます。
 
-**4. 起動する**
+| 質問 | 答え方 |
+|---|---|
+| `続けてセットアップを実行しますか? [Y/n]` | **Y**（そのまま次の「3」が始まります）。N なら、後で実行するコマンドが表示されます |
+
+### 3. プロジェクトを設定する（`setup_agy_project.py`）
+
+N と答えた場合や、設定を変えたいときは、次のコマンドで始めます。
+
+```sh
+~/.local/share/agy-slack-bridge/.venv/bin/python ~/.local/share/agy-slack-bridge/tools/setup_agy_project.py
+```
+
+質問は、次の順に出ます（該当しないものは出ません）。
+
+#### 3-1. 対象のプロジェクト
+
+| 質問 | 答え方 |
+|---|---|
+| `番号（0=新規）またはパス` | agy に登録済みのプロジェクトが一覧表示されるので、その**番号**を入力する。新しく作るなら **0**、またはディレクトリの**パス**を直接入力する |
+| `ディレクトリのパス`（0 を選んだとき） | 例: `~/WORK/my-project` |
+| `ディレクトリ <パス> を作成しますか? [Y/n]` | Y |
+
+ディレクトリが git リポジトリでなければ、自動で `git init` し、その旨が表示されます（git 管理は必須です。コミットはしません）。
+
+| 質問 | 答え方 |
+|---|---|
+| `agy に登録しますか?（`agy --new-project`） [Y/n]` | **Y**（モデルを 1 回呼びます） |
+
+続けて、次のことが自動で行われます（質問はありません）: 安全規則のリンクを `.agents/rules/` に置く、`.gitignore` に
+`scratch/` を追記、フックの状態ディレクトリを作る、agy の `trustedWorkspaces` に登録する。
+
+#### 3-2. Google Drive CLI（使わないなら飛ばす）
+
+| 質問 | 答え方 |
+|---|---|
+| `Drive CLI を使いますか? [y/N]` | 使わないなら **N**（次の 3-3 へ）。使うなら **y** |
+| `プロファイル名` | 英数字と `_` `-` だけ。プロジェクトごとに別の名前にする。既定はプロジェクト名。プロファイルは `<設定ディレクトリ>/gdrive/名前.json` |
+| `プロファイルを作成しますか? [Y/n]` | **Y** |
+| `認証の種類（service_account / oauth）` | 下の表を見て選ぶ。迷ったら Enter（`service_account`） |
+| `資格情報を取り出すコマンド` | 鍵／トークンの JSON を**標準出力に出すコマンド**（下の例）。スコープ（`drive` など）を入れないこと |
+| `` `…` というコマンドが見つかりません。このまま使いますか? [y/N]`` | コマンドが見つからないときだけ出ます。打ち間違いなら **N** にして、やり直す |
+| `スコープを既定のままにしますか? [Y/n]` | 既定は読み取り `drive.readonly` / 書き込み `drive`。普通は **Y**。OAuth で別のスコープで同意したトークンを使うときだけ **n** にして、読み取り用・書き込み用のスコープを入力する |
+| `方針を変更しますか? [y/N]` | 方針 = 有効なコマンド・許可フォルダ・アップロード拒否。まず **N**（既定値のまま）でも使えます。絞り込むなら **y** |
+
+**認証の種類の選び方**
+
+| | `service_account`（推奨） | `oauth` |
+|---|---|---|
+| 向いている用途 | Drive のフォルダを**読む・人が作ったファイルを更新する** | agy に**新規ファイルを自分で作らせたい**、ユーザー自身の権限で動かしたい |
+| 準備 | サービスアカウントを作り、フォルダをそのメールアドレスに共有するだけ | 同意画面の設定、リフレッシュトークンの取得が要る |
+| 見える範囲 | 共有されたものだけ | ユーザーの Drive 全体（許可フォルダで絞る） |
+| 注意 | 個人の Drive には**新規ファイルを作れません**（容量が無いため） | 同意画面が「テスト」だとトークンが 7 日で失効する。スコープは最初の同意と一致させる |
+
+サービスアカウントの準備: Google Cloud でプロジェクトを作って **Google Drive API** を有効にし、サービスアカウントと
+**JSON 鍵**を作る。Drive で使わせたいフォルダを、鍵の中の `client_email` に共有する（読み取りだけなら「閲覧者」、
+書き込みも許すなら「編集者」）。OAuth の準備と注意、新規ファイルの扱いは
+[tools/gdrive-profile.md](tools/gdrive-profile.md)。
+
+**資格情報を取り出すコマンドの例**（鍵の保管先に合わせる。`credentials.command` として、シェルを通さずに直接実行されます）
+
+```
+cat /home/you/secrets/drive-key.json
+op read 'op://Vault/Drive key/credential'
+aws secretsmanager get-secret-value --secret-id NAME --query SecretString --output text
+```
+
+その他の保管先（pass、GCP Secret Manager、Vault）の例は [tools/gdrive-profile.md](tools/gdrive-profile.md)。
+
+「方針を変更する」で **y** にしたときの質問:
+
+| 質問 | 答え方 |
+|---|---|
+| `有効にするコマンド（カンマ区切り or all）` | 使わせるサブコマンド。既定は読み取り系 5 つ（`list,search,meta,read,download`）。書き込み系（`mkdir` / `upload` / `update`）を足しても、許可リストには入らず、**毎回承認**が要る |
+| `許可フォルダ（URL か ID、カンマ区切り。`-` で制限なし）` | 操作を許すフォルダ。フォルダの URL を貼ってよい。`-` で制限なし。**指定を強く推奨**（OAuth はユーザーの Drive 全体が見える） |
+| `アップロード拒否パターン（k=今のまま / a=追加 / r=置換）` | 普通は **k**。a / r を選ぶと、拒否するファイル名パターン（例 `*.sqlite`）とディレクトリ名を聞かれる（`追加する拒否ファイル名パターン` など） |
+| `緩める変更を適用しますか? [y/N]` | 権限が広がる変更をしたときだけ。差分が表示されるので確認する |
+| `…json に書き込みますか? [Y/n]` | **Y** |
+
+読み取り系サブコマンドの許可は、**このプロジェクト自身の** `permissionGrants` にだけ追加されます。
+
+#### 3-3. Slack チャンネルとの対応づけ
+
+| 質問 | 答え方 |
+|---|---|
+| `Slack チャンネルを対応づけますか? [Y/n]` | **Y** |
+| `チャンネル ID` | 手順 1 で控えた `C…` / `G…` |
+| `名前（メモ）` | 既定はプロジェクト名 |
+| `表示名` | 空欄可。ボットの返信に付く名前（`chat:write.customize` が必要） |
+| `アイコン絵文字（:name:）` | 空欄可。例 `:robot_face:`。入力した場合、画像 URL は聞かれない |
+| `アイコン画像 URL` | 絵文字を空欄にしたときだけ。`https://` で始まる URL |
+| `モデル` | 空欄可（agy の既定）。`agy models` の名前 |
+| `effort（…）` | 空欄可。モデルの推論の深さ |
+| `監視するファイル（相対パス、カンマ区切り）` | 空欄可。エージェントが変えると警告したいファイル（例 `AGENTS.md`） |
+| `権限ボタンの統計を取りますか? [y/N]` | 普通は **N** |
+
+`config.yaml` を書き換える前に、元のファイルを `config.yaml.bak` に残します。
+
+#### 3-4. Slack のトークン
+
+| 質問 | 答え方 |
+|---|---|
+| `SLACK_BOT_TOKEN（xoxb-…）` | 手順 1 の Bot トークンを貼る（入力は画面に出ません）。空欄ならスキップ |
+| `SLACK_APP_TOKEN（xapp-…）` | 手順 1 の App トークンを貼る |
+
+トークンは `~/.config/agy-slack-bridge/env`（0600）に保存されます。設定済みのものは聞かれません。
+
+最後に `完了。設定を変えた場合は、ブリッジを再起動してください。` と表示されます。
+
+### 4. 起動する
 
 ```sh
 mkdir -p ~/.config/systemd/user
 cp ~/.local/share/agy-slack-bridge/systemd/agy-slack-bridge.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now agy-slack-bridge.service
+loginctl enable-linger "$USER"      # ログアウト後も動かす／起動時に自動で始める場合
 ```
 
-**5. 確かめる**
+起動に失敗する場合は `journalctl --user -u agy-slack-bridge.service -f` を見ます
+（`agy` が実行できないとき、ブリッジはその旨を出して終了します）。詳細は [docs/install.md](docs/install.md)。
+
+### 5. 動作を確かめる
 
 チャンネルで `@agy こんにちは` とメンションして送り、スレッドに返信が付けば完了です。「権限がない」と出たら
-許可ボタンを押してください（最初のうちはよく出ます）。
+**許可ボタン**を押してください（最初のうちはよく出ます）。続きはスレッドの中でメンションなしで返信できます。
+
+使い方（スラッシュコマンド、`resume`、統計、チャンネルごとの設定など）は [docs/usage.md](docs/usage.md)。
 
 ## 運用
 

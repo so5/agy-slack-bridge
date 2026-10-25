@@ -302,7 +302,7 @@ def choose_target(ask: "Prompter") -> "tuple[Path | None, dict | None]":
             print(f"    {i}) {pr['name']}  {where}  [{pr['id']}]")
         print("    0) 新しく作る")
     while True:
-        raw = ask.text("番号" + ("（0 は新規作成）" if projects else "") + "、またはディレクトリのパス")
+        raw = ask.text("番号（0=新規）またはパス" if projects else "ディレクトリのパス")
         if not raw:
             sys.exit("エラー: 対象が必要です。")
         if raw.isdigit() and projects:
@@ -311,7 +311,7 @@ def choose_target(ask: "Prompter") -> "tuple[Path | None, dict | None]":
                 pr = projects[n - 1]
                 return (pr["folder"].resolve() if pr["folder"] else None), pr
             if n == 0:
-                raw = ask.text("新しいプロジェクトのディレクトリのパス")
+                raw = ask.text("ディレクトリのパス")
                 if not raw:
                     sys.exit("エラー: 対象が必要です。")
             else:
@@ -431,32 +431,19 @@ def _validate_upload_mode(v):
 
 
 def ask_new_profile(ask: Prompter) -> "dict | None":
-    print("    認証の種類: service_account（推奨）は、Drive のフォルダをサービスアカウントのメールアドレスに共有するだけで使え、"
-          "共有されたものしか見えません。oauth は、サービスアカウントでは足りないとき（個人の Drive へのファイル作成など）に"
-          "選びます（同意画面、テストモードでの 7 日失効、スコープの一致が必要）。")
     kind = ask.text("認証の種類（service_account / oauth）", default="service_account", validate=_validate_kind)
-    if kind == "oauth":
-        print("    [注意] OAuth: 同意画面が「テスト」だとリフレッシュトークンは 7 日で失効します。スコープは最初の同意と"
-              "一致させてください（tools/gdrive-profile.md）。")
-    print("    次に、資格情報（鍵やトークンの JSON）を標準出力に出す「シェルのコマンド」を入力します。"
-          "スコープの質問は、このあとです。")
-    print("      例: cat /home/you/secrets/drive-token.json")
-    print("      例: op read 'op://Vault/Drive token/credential'")
-    print("      例: aws secretsmanager get-secret-value --secret-id NAME --query SecretString --output text")
-    command = ask.text("資格情報を取り出すコマンド（上の例のような、実行できるコマンド）",
+    command = ask.text("資格情報を取り出すコマンド",
                        validate=_validate_credential_command)
     if not command:
         print("  [スキップ] コマンドが未入力")
         return None
     head = shlex.split(command)[0]
     if not (shutil.which(head) or Path(head).expanduser().is_file()):
-        if not ask.yes_no(f"`{head}` というコマンドが見つかりません。このまま使いますか?"
-                          "（スコープをここに入れていませんか?）", default=False):
+        if not ask.yes_no(f"`{head}` というコマンドが見つかりません。このまま使いますか?", default=False):
             print("  [スキップ] コマンドを確認してから、もう一度実行してください")
             return None
     scopes = None
-    if not ask.yes_no("スコープは既定のままにしますか?（既定: drive.readonly / drive。OAuth では、最初に同意を"
-                      "得たときのスコープと一致させる必要があり、これは運用者の責任です）", default=True):
+    if not ask.yes_no("スコープを既定のままにしますか?", default=True):
         read = ask.text("読み取りに使うスコープ", default=gdrive_cli.SCOPE_READ_DEFAULT, validate=_validate_scope)
         write = ask.text("書き込みに使うスコープ", default=gdrive_cli.SCOPE_WRITE_DEFAULT, validate=_validate_scope)
         scopes = {"read": read, "write": write}
@@ -465,24 +452,22 @@ def ask_new_profile(ask: Prompter) -> "dict | None":
 
 def ask_policy(ask: Prompter, old: dict) -> dict:
     new = {k: list(v) for k, v in old.items()}
-    cmds = ask.text("有効にするコマンド（カンマ区切り、または all。write 系の mkdir / upload / update は"
-                    "許可リストに入らず、毎回承認が要ります）", default=",".join(old["commands"]),
+    cmds = ask.text("有効にするコマンド（カンマ区切り or all）", default=",".join(old["commands"]),
                     validate=_validate_commands)
     new["commands"] = gdrive_policy.ALL_COMMANDS[:] if (cmds or "").strip() == "all" else _csv(cmds)
-    folders = ask.text("許可フォルダ（Drive のフォルダ URL または ID、カンマ区切り。`-` で制限なし = "
-                       "認証情報で見える範囲すべて）", default=",".join(old["allowed_folders"]) or None,
+    folders = ask.text("許可フォルダ（URL か ID、カンマ区切り。`-` で制限なし）", default=",".join(old["allowed_folders"]) or None,
                        validate=_validate_folders)
     new["allowed_folders"] = [gdrive_cli.extract_drive_id(x) for x in _csv(folders)]
-    mode = ask.text("アップロード拒否パターンの扱い（k=今のまま / a=既定に追加 / r=置き換え）", default="k",
+    mode = ask.text("アップロード拒否パターン（k=今のまま / a=追加 / r=置換）", default="k",
                     validate=_validate_upload_mode)
     if mode == "a":
-        for key, label in (("deny_names", "拒否するファイル名パターンを追加（例: *.sqlite、カンマ区切り）"),
-                           ("deny_dirs", "拒否するディレクトリ名を追加（カンマ区切り）")):
+        for key, label in (("deny_names", "追加する拒否ファイル名パターン（カンマ区切り）"),
+                           ("deny_dirs", "追加する拒否ディレクトリ名（カンマ区切り）")):
             extra = _csv(ask.text(label))
             new[key] = new[key] + [x for x in extra if x not in new[key]]
     elif mode == "r":
-        names = ask.text("拒否するファイル名パターン（置き換え。カンマ区切り）", default=",".join(old["deny_names"]) or None)
-        dirs = ask.text("拒否するディレクトリ名（置き換え。カンマ区切り）", default=",".join(old["deny_dirs"]) or None)
+        names = ask.text("拒否ファイル名パターン（カンマ区切り）", default=",".join(old["deny_names"]) or None)
+        dirs = ask.text("拒否ディレクトリ名（カンマ区切り）", default=",".join(old["deny_dirs"]) or None)
         new["deny_names"], new["deny_dirs"] = _csv(names), _csv(dirs)
     return new
 
@@ -499,7 +484,7 @@ def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "
         return None
     created = data is None
     if created:
-        if not ask.yes_no(f"プロファイル {path} がありません。今作成しますか?", default=True):
+        if not ask.yes_no("プロファイルを作成しますか?", default=True):
             return None
         data = ask_new_profile(ask)
         if data is None:
@@ -516,7 +501,7 @@ def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "
     for line in gdrive_policy.describe(old):
         print(f"      {line}")
     new = old
-    if ask.yes_no("方針（コマンド・許可フォルダ・アップロード拒否）を変更しますか?", default=False):
+    if ask.yes_no("方針を変更しますか?", default=False):
         new = ask_policy(ask, old)
         for line in gdrive_policy.diff(old, new):
             print(f"      変更: {line}")
@@ -579,7 +564,7 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
     mine = [cid for cid, e in channels.items() if (e or {}).get("project") == project_id]
     if mine:
         print(f"  このプロジェクトに割り当て済みのチャンネル: {', '.join(mine)}")
-    if not ask.yes_no("Slack チャンネルとの対応づけを設定・変更しますか?", default=not mine):
+    if not ask.yes_no("Slack チャンネルを対応づけますか?", default=not mine):
         return
     channel_id = ask.text("チャンネル ID", default=mine[0] if len(mine) == 1 else None,
                           validate=_validate_channel_id)
@@ -592,26 +577,26 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
                           default=False):
             return
     entry["project"] = project_id
-    _set_or_pop(entry, "name", ask.text("名前（自分用のメモ。ブリッジは読まない）",
+    _set_or_pop(entry, "name", ask.text("名前（メモ）",
                                         default=entry.get("name") or project_name))
-    _set_or_pop(entry, "display_name", ask.text("Slack での表示名", default=entry.get("display_name")))
-    emoji = ask.text("アイコン（絵文字 :name:）", default=entry.get("icon_emoji"), validate=_validate_emoji)
+    _set_or_pop(entry, "display_name", ask.text("表示名", default=entry.get("display_name")))
+    emoji = ask.text("アイコン絵文字（:name:）", default=entry.get("icon_emoji"), validate=_validate_emoji)
     _set_or_pop(entry, "icon_emoji", emoji)
     if emoji:
         entry.pop("icon_url", None)
     else:
-        _set_or_pop(entry, "icon_url", ask.text("アイコン（画像 URL）", default=entry.get("icon_url"),
+        _set_or_pop(entry, "icon_url", ask.text("アイコン画像 URL", default=entry.get("icon_url"),
                                                 validate=_validate_url))
-    _set_or_pop(entry, "model", ask.text("モデル（`agy models` の名前。空欄は agy の既定）",
+    _set_or_pop(entry, "model", ask.text("モデル",
                                          default=entry.get("model")))
     _set_or_pop(entry, "effort", ask.text(f"effort（{' / '.join(EFFORTS)}）", default=entry.get("effort"),
                                           validate=_validate_effort))
-    watched = ask.text("監視する設定ファイル（プロジェクトからの相対パス、カンマ区切り）",
+    watched = ask.text("監視するファイル（相対パス、カンマ区切り）",
                        default=",".join(entry.get("watched_config_files") or []) or None,
                        validate=_validate_rel_paths)
     _set_or_pop(entry, "watched_config_files", [s.strip() for s in watched.split(",")] if watched else None)
     telemetry = dict(entry.get("telemetry") or {})
-    stats = ask.yes_no("権限ボタンの統計を取りますか?（telemetry.permission_stats）",
+    stats = ask.yes_no("権限ボタンの統計を取りますか?",
                        default=bool(telemetry.get("permission_stats")))
     if stats or "permission_stats" in telemetry:
         telemetry["permission_stats"] = stats
@@ -679,7 +664,7 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
             sys.exit("エラー: インストール先・設定ディレクトリの中をプロジェクトにはできません。")
         print(f"=== {target_dir} をセットアップ ===")
         if not target_dir.is_dir():
-            if not ask.yes_no(f"{target_dir} がありません。作成しますか?"):
+            if not ask.yes_no(f"ディレクトリ {target_dir} を作成しますか?"):
                 sys.exit("中止しました。")
             target_dir.mkdir(parents=True)
         if not (target_dir / ".git").exists():
@@ -692,7 +677,7 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
     print("-- agy プロジェクト --")
     project_json = existing["json"] if existing else find_agy_project_json(target_dir)
     if project_json is None:
-        if ask.yes_no("agy にまだ登録されていません。`agy --new-project` で登録しますか?（モデルを 1 回呼びます）"):
+        if ask.yes_no("agy に登録しますか?（`agy --new-project`）"):
             register_agy_project(target_dir)
             project_json = find_agy_project_json(target_dir)
         if project_json is None:
@@ -725,12 +710,12 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
     if project_json is not None:
         print("-- Google Drive CLI --")
         current = current_gdrive_profile(project_json, prefix)
-        if ask.yes_no("Drive CLI（gdrive_cli.py）を使いますか?", default=current is not None):
+        if ask.yes_no("Drive CLI を使いますか?", default=current is not None):
             if re.search(r"\s", str(prefix)):
                 print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
             else:
                 default = current or re.sub(r"[^A-Za-z0-9_-]", "-", project_name)
-                profile = ask.text("プロファイル名（プロジェクトごとに別の名前にする）", default=default,
+                profile = ask.text("プロファイル名", default=default,
                                    validate=lambda v: None if _PROFILE_NAME_RE.match(v)
                                    else "英数字と _ - だけ使えます")
                 if profile:

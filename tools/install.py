@@ -203,7 +203,7 @@ def offer_setup(prefix: Path, config_dir: Path, input_fn=input, runner=subproces
     cmd = setup_command(prefix, config_dir)
     print("\n続けて agy プロジェクトを設定します(チャンネルとの対応づけ、権限など)。")
     while True:
-        raw = input_fn("setup_agy_project.py を今実行しますか? [Y/n]: ").strip().lower()
+        raw = input_fn("続けてセットアップを実行しますか? [Y/n]: ").strip().lower()
         if raw in ("", "y", "yes"):
             runner(cmd)
             return

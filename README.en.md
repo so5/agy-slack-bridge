@@ -25,44 +25,182 @@ It makes mistakes and casual probing fail loudly (deny rules, safety rules, scri
 detection, ...). See "Keeping the agent inside its lane" in [docs/usage.en.md](docs/usage.en.md) and
 [docs/permissions.en.md](docs/permissions.en.md).
 
-## Quick start
+## Setup walkthrough
 
-You need: Linux, Python 3.10+, `git`, a **logged-in `agy`**, and a Slack workspace. Detailed steps
-and what to check when something goes wrong are in [docs/install.en.md](docs/install.en.md).
+This README is written so you can go from start to finish without opening anything else. The linked
+documents hold background and troubleshooting for each step.
 
-**1. Create the Slack app** (about 5 minutes) — [docs/slack-app.en.md](docs/slack-app.en.md)
+**You need**: Linux with `systemd --user`, Python 3.10+ (with `venv`), `git`, **`agy` logged in as the user who
+will run the bridge**, and a Slack workspace where you can create apps.
 
-Paste the bundled [`slack-app-manifest.yaml`](slack-app-manifest.yaml) into Slack's "From an app
-manifest", create an App-Level Token (`connections:write`) and install the app. Note the two tokens
-(`xapp-…`, `xoxb-…`) and the ID of the channel you invited the bot to.
+A human runs the setup from a terminal (not the agent). The setup script's screen is in Japanese; each
+prompt below is quoted as shown, with its meaning. In a prompt, the `[...]` is the default: **Enter keeps the
+default and `-` clears the value**. Some prompts can be left empty to skip. You can re-run it any time
+(idempotent); the current values show up as defaults.
 
-**2. Install**
+### 1. Create the Slack app (about 5 minutes)
+
+Details: [docs/slack-app.en.md](docs/slack-app.en.md)
+
+1. <https://api.slack.com/apps> → **Create New App** → **From an app manifest** → choose the workspace.
+2. Paste the contents of [`slack-app-manifest.yaml`](slack-app-manifest.yaml) and create the app.
+3. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes**: create a token with the
+   scope `connections:write`. The value starting with `xapp-…` is the **App token** (`SLACK_APP_TOKEN`).
+4. **Install App** → **Install to Workspace**. The `xoxb-…` shown is the **Bot token** (`SLACK_BOT_TOKEN`).
+5. Create a **private channel** for the bridge and invite the bot (`/invite @agy` in the channel).
+6. Note the channel ID (`C…` / `G…`, at the bottom of the channel details).
+
+Keep: the App token, the Bot token, the channel ID.
+
+> ⚠ Creating a new app from this manifest has not actually been tried yet (the scope list was checked
+> against the running app). If it fails, configure the app by hand using the list in
+> [docs/slack-app.en.md](docs/slack-app.en.md).
+
+### 2. Install
 
 ```sh
 git clone https://github.com/so5/agy-slack-bridge.git
 cd agy-slack-bridge
-python3 tools/install.py            # add --with-gdrive if you want the Google Drive CLI
+python3 tools/install.py --with-gdrive      # leave out --with-gdrive if you will not use the Drive CLI
 ```
 
-**3. Set up a project**
+This installs the bridge and tools read-only under `~/.local/share/agy-slack-bridge` (`<prefix>` below),
+creates the venv, the config directory `~/.config/agy-slack-bridge` (sample `config.yaml` and `env`) and the
+systemd unit, and registers deny rules and a hook in agy's settings so the agent cannot touch the install
+or the config. For installing as root under `/opt` and the full option list, see
+[docs/install.en.md](docs/install.en.md).
 
-At the end of `install.py` it asks whether to continue with the project setup; answer Y (you can also
-run `<prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py` later). The dialogue registers an
-agy project (or picks an existing one), maps a Slack channel and takes the tokens.
+At the end it asks:
 
-**4. Start**
+| Prompt | Answer |
+|---|---|
+| `続けてセットアップを実行しますか? [Y/n]` (Run the setup now?) | **Y** (step 3 starts right away). On N it prints the command to run later |
+
+### 3. Set up the project (`setup_agy_project.py`)
+
+If you answered N, or want to change settings later, start it with:
+
+```sh
+~/.local/share/agy-slack-bridge/.venv/bin/python ~/.local/share/agy-slack-bridge/tools/setup_agy_project.py
+```
+
+Questions come in this order (ones that do not apply are not asked).
+
+#### 3-1. The target project
+
+| Prompt | Answer |
+|---|---|
+| `番号（0=新規）またはパス` (number, 0 = new, or path) | Projects already registered in agy are listed: enter its **number**. For a new one enter **0**, or type a directory **path** directly |
+| `ディレクトリのパス` (directory path; after choosing 0) | e.g. `~/WORK/my-project` |
+| `ディレクトリ <path> を作成しますか? [Y/n]` (create the directory?) | Y |
+
+If the directory is not a git repository, it is initialised with `git init` and you are told so (git is
+required; nothing is committed).
+
+| Prompt | Answer |
+|---|---|
+| `agy に登録しますか?（`agy --new-project`） [Y/n]` (register with agy?) | **Y** (this calls the model once) |
+
+Then these happen automatically (no questions): the safety-rules link is placed in `.agents/rules/`,
+`scratch/` is appended to `.gitignore`, the hook state directory is created, and the project is added to
+agy's `trustedWorkspaces`.
+
+#### 3-2. Google Drive CLI (skip if unused)
+
+| Prompt | Answer |
+|---|---|
+| `Drive CLI を使いますか? [y/N]` (use the Drive CLI?) | **N** to skip (go to 3-3); **y** to use it |
+| `プロファイル名` (profile name) | Letters, digits, `_`, `-`. Use a different name per project. Default: the project name. The profile is `<config dir>/gdrive/NAME.json` |
+| `プロファイルを作成しますか? [Y/n]` (create the profile?) | **Y** |
+| `認証の種類（service_account / oauth）` (authentication type) | See the table below. If unsure, press Enter (`service_account`) |
+| `資格情報を取り出すコマンド` (command that prints the credentials) | A **command that prints the key / token JSON to stdout** (examples below). Do not type a scope (`drive` etc.) here |
+| `` `…` というコマンドが見つかりません。このまま使いますか? [y/N]`` (command not found; use anyway?) | Only shown when the command is not found. If it is a typo, answer **N** and start again |
+| `スコープを既定のままにしますか? [Y/n]` (keep the default scopes?) | Defaults: read `drive.readonly`, write `drive`. Normally **Y**. Answer **n** only for an OAuth token consented with other scopes; then enter the read and write scopes |
+| `方針を変更しますか? [y/N]` (change the policy?) | Policy = enabled commands, allowed folders, upload deny patterns. **N** works to begin with (defaults). **y** to narrow it |
+
+**Which authentication**
+
+| | `service_account` (recommended) | `oauth` |
+|---|---|---|
+| Good for | **Reading** Drive folders and **updating files a person created** | Letting agy **create new files itself**, or acting with the user's own permissions |
+| Preparation | Create a service account and share the folders with its email address | Consent screen and a refresh token are needed |
+| What it can see | Only what is shared with it | The user's whole Drive (narrow it with allowed folders) |
+| Caveats | **Cannot create new files** in a personal Drive (no storage quota) | If the consent screen is in "Testing", the token expires in 7 days; scopes must match the original consent |
+
+Service account preparation: in Google Cloud create a project and enable the **Google Drive API**, then create
+the service account and a **JSON key**. In Drive, share the folders you want to allow with the `client_email`
+in the key ("Viewer" for read-only, "Editor" to allow writes). For OAuth preparation and caveats and for how new
+files are handled, see [tools/gdrive-profile.en.md](tools/gdrive-profile.en.md).
+
+**Examples of the credential command** (match your key store; it is run directly, without a shell)
+
+```
+cat /home/you/secrets/drive-key.json
+op read 'op://Vault/Drive key/credential'
+aws secretsmanager get-secret-value --secret-id NAME --query SecretString --output text
+```
+
+More stores (pass, GCP Secret Manager, Vault) are in [tools/gdrive-profile.en.md](tools/gdrive-profile.en.md).
+
+Prompts when you answered **y** to "change the policy":
+
+| Prompt | Answer |
+|---|---|
+| `有効にするコマンド（カンマ区切り or all）` (enabled commands) | Subcommands to allow. Default: the five read ones (`list,search,meta,read,download`). Write commands (`mkdir` / `upload` / `update`) never enter the allow list; they **ask for approval every time** |
+| `許可フォルダ（URL か ID、カンマ区切り。`-` で制限なし）` (allowed folders) | Folders that may be touched; a folder URL can be pasted. `-` = no limit. **Strongly recommended** (OAuth sees the user's whole Drive) |
+| `アップロード拒否パターン（k=今のまま / a=追加 / r=置換）` (upload deny patterns) | Normally **k**. a / r then ask for file-name patterns (e.g. `*.sqlite`) and directory names |
+| `緩める変更を適用しますか? [y/N]` (apply the loosening change?) | Only when you widened permissions; the diff is shown first |
+| `…json に書き込みますか? [Y/n]` (write the file?) | **Y** |
+
+The allow entries for the read subcommands are added **only to this project's own** `permissionGrants`.
+
+#### 3-3. Mapping a Slack channel
+
+| Prompt | Answer |
+|---|---|
+| `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | **Y** |
+| `チャンネル ID` (channel ID) | The `C…` / `G…` from step 1 |
+| `名前（メモ）` (name, a memo) | Default: the project name |
+| `表示名` (display name) | Optional. The name on the bot's replies (needs `chat:write.customize`) |
+| `アイコン絵文字（:name:）` (icon emoji) | Optional, e.g. `:robot_face:`. If given, the image URL is not asked |
+| `アイコン画像 URL` (icon image URL) | Only when the emoji is empty. A URL starting with `https://` |
+| `モデル` (model) | Optional (agy's default). A name from `agy models` |
+| `effort` | Optional. How deeply the model reasons |
+| `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Optional. Files you want a warning about if the agent changes them (e.g. `AGENTS.md`) |
+| `権限ボタンの統計を取りますか? [y/N]` (collect permission-button stats?) | Normally **N** |
+
+Before `config.yaml` is rewritten, the original is kept as `config.yaml.bak`.
+
+#### 3-4. Slack tokens
+
+| Prompt | Answer |
+|---|---|
+| `SLACK_BOT_TOKEN（xoxb-…）` | Paste the Bot token from step 1 (input is not echoed). Empty skips |
+| `SLACK_APP_TOKEN（xapp-…）` | Paste the App token from step 1 |
+
+The tokens are saved to `~/.config/agy-slack-bridge/env` (0600). Ones already set are not asked again.
+
+It ends with `完了。設定を変えた場合は、ブリッジを再起動してください。` (Done; restart the bridge if you changed settings).
+
+### 4. Start
 
 ```sh
 mkdir -p ~/.config/systemd/user
 cp ~/.local/share/agy-slack-bridge/systemd/agy-slack-bridge.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now agy-slack-bridge.service
+loginctl enable-linger "$USER"      # keep it running after logout / start at boot
 ```
 
-**5. Check**
+If it fails to start, look at `journalctl --user -u agy-slack-bridge.service -f` (if `agy` cannot be run, the
+bridge says so and exits). Details: [docs/install.en.md](docs/install.en.md).
 
-Send `@agy hello` in the channel; a reply in the thread means it works. If you see "permission denied",
-press the permission button (expect many at first).
+### 5. Check that it works
+
+In the channel, send `@agy hello` as a mention. If a reply appears in the thread, you are done. If it says
+permission is missing, press the **permission button** (common at first). Replies inside the thread need no mention.
+
+For usage (slash commands, `resume`, stats, per-channel settings) see [docs/usage.en.md](docs/usage.en.md).
 
 ## Operation
 
