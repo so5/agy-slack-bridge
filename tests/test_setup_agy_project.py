@@ -561,3 +561,62 @@ def test_authentication_kind_defaults_to_service_account_and_prompt_is_short(env
     assert "7 日で失効" not in out and "同意画面" not in out  # explanations live in the docs
     kind_prompt = next(p for p in ask.asked if "認証の種類" in p)
     assert len(kind_prompt) < 80
+
+
+# --- menu-style shell ----------------------------------------------------------------
+
+def shell(env, ask=None, target=None):
+    session = setup.Session(ask or Scripted(), env.prefix.resolve(), env.cfg.resolve())
+    return setup.SetupShell(session, str(target) if target else None), session
+
+
+def test_shell_commands_run_stages_individually_and_status_reflects_them(env, capsys):
+    sh, session = shell(env, Scripted({"Drive CLI": "n", "Slack チャンネルを対応づけ": "y", "チャンネル ID": "C0TEST123"}))
+    sh.onecmd(f"project {env.target}")
+    assert session.project_json is not None and session.project_name == "proj"
+    assert "channels" not in yaml.safe_load((env.cfg / "config.yaml").read_text()) or not channels(env)
+    sh.onecmd("channel")
+    assert channels(env)["C0TEST123"]["project"] == session.project_id
+    capsys.readouterr()
+    sh.onecmd("status")
+    out = capsys.readouterr().out
+    assert "C0TEST123" in out and "SLACK_BOT_TOKEN: 未設定" in out
+
+
+def test_shell_drive_before_project_selects_a_project_first(env):
+    sh, session = shell(env, Scripted({"ディレクトリのパス": str(env.target), "Drive CLI": "n"}))
+    sh.onecmd("drive")
+    assert session.selected and session.project_json is not None
+
+
+def test_shell_survives_errors_unknown_commands_and_quits(env, capsys):
+    sh, _ = shell(env)
+    sh.onecmd("nonsense")
+    sh.onecmd(f"project {env.prefix}")           # inside the install prefix: sys.exit(message)
+    out = capsys.readouterr().out
+    assert "不明なコマンド: nonsense" in out and "インストール先" in out
+    assert sh.onecmd("") is False                 # empty line does nothing
+    assert sh.onecmd("quit") is True and sh.onecmd("EOF") is True
+
+
+def test_shell_help_lists_every_command(env, capsys):
+    sh, _ = shell(env)
+    sh.onecmd("help")
+    out = capsys.readouterr().out
+    for name in ("all", "project", "drive", "channel", "tokens", "status", "quit"):
+        assert name in out
+    sh.onecmd("help drive")
+    assert "Drive" in capsys.readouterr().out
+
+
+def test_shell_all_matches_the_straight_run(env):
+    sh, _ = shell(env, Scripted({"Drive CLI": "y"}))
+    sh.onecmd(f"all {env.target}")
+    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == "proj"
+
+
+def test_path_completion_expands_tilde_and_marks_directories(tmp_path, monkeypatch):
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "alps.txt").write_text("")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert setup.complete_path("~/al") == [str(tmp_path / "alpha") + "/", str(tmp_path / "alps.txt")]

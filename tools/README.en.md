@@ -60,7 +60,9 @@ location yourself are deleted. Existing files in the config directory are not ov
 Installed files are 0444 (this prevents accidents; it is not a defense). The checkout itself
 cannot be used as `--prefix`.
 
-`setup_agy_project.py` is interactive. It is safe to run any number of times, and current
+`setup_agy_project.py` is an interactive menu-style shell (Python's `cmd`). At the `(setup)` prompt you can run
+`all` (everything in order), `project`, `drive`, `channel`, `tokens`, `status`, `help` and `quit`. With `--all` it
+runs `all` without opening the shell. Path prompts complete with Tab. `all` is safe to run any number of times, and current
 values appear as defaults, so changing or repairing settings uses the same command (Enter:
 keep as is, `-`: clear the value). It performs the following in order.
 

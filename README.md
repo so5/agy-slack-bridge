@@ -59,11 +59,27 @@ python3 tools/install.py --with-gdrive      # Drive CLI を使わないなら --
 
 ### 3. プロジェクトを設定する（`setup_agy_project.py`）
 
-後から実行する（N と答えた場合、設定を変える場合）ときは:
+後から実行する（N と答えた場合、設定を変える場合）ときは、次のコマンドを実行します。
 
 ```sh
 ~/.local/share/agy-slack-bridge/.venv/bin/python ~/.local/share/agy-slack-bridge/tools/setup_agy_project.py
 ```
+
+`(setup)` というプロンプトのシェルが開きます。**初めてのときは `all`** と入力します（以下の 3-1 から 3-4 を順に聞かれます）。
+個別のコマンドもあります（タブで補完できます）。
+
+| コマンド | 内容 |
+|---|---|
+| `all [パス]` | 3-1 から 3-4 を順に実行する |
+| `project [パス]` | 3-1 対象のプロジェクト |
+| `drive` | 3-2 Google Drive CLI |
+| `channel` | 3-3 Slack チャンネルとの対応づけ |
+| `tokens` | 3-4 Slack のトークン |
+| `status` | 現在の設定状態を表示する |
+| `help [コマンド]` | 説明を表示する |
+| `quit` | 終了する（Ctrl-D でも可） |
+
+`drive` と `channel` は、プロジェクトが未選択なら先に 3-1 を行います。パスを入力する質問では、タブでパスを補完できます。
 
 #### 3-1. 対象のプロジェクト
 

@@ -67,6 +67,22 @@ To run it later (you answered N, or want to change settings):
 ~/.local/share/agy-slack-bridge/.venv/bin/python ~/.local/share/agy-slack-bridge/tools/setup_agy_project.py
 ```
 
+A shell with a `(setup)` prompt opens. **The first time, type `all`** (you are asked 3-1 to 3-4 below in order).
+There are also individual commands (Tab completes them).
+
+| Command | What it does |
+|---|---|
+| `all [path]` | Runs 3-1 to 3-4 in order |
+| `project [path]` | 3-1 The target project |
+| `drive` | 3-2 Google Drive CLI |
+| `channel` | 3-3 Mapping a Slack channel |
+| `tokens` | 3-4 Slack tokens |
+| `status` | Shows the current settings |
+| `help [command]` | Shows an explanation |
+| `quit` | Exits (Ctrl-D also works) |
+
+`drive` and `channel` run 3-1 first if no project is selected yet. Prompts that ask for a path complete it with Tab.
+
 #### 3-1. The target project
 
 The directory you specify here is the agy project directory (the root agy works in).

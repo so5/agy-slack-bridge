@@ -16,6 +16,10 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
 使い方:
     <prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py [対象のパス] [オプション]
 
+  `(setup)` プロンプトのシェル(Python の cmd)が開く。初めてなら all。project / drive / channel /
+  tokens で段階ごとに実行でき、status は現在の状態、help は説明、quit は終了。--all を付けると
+  シェルを開かず、all だけ実行して終わる。
+
   対象のパスを省略すると、agy に登録済みのプロジェクトの一覧から選ぶか、新しい
   ディレクトリのパスを入力する。既存のプロジェクトを選ぶと、そのディレクトリを使う
   (ディレクトリの無いプロジェクトは、Drive の許可とチャンネルの対応づけだけ行う)。
@@ -56,7 +60,9 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
 設定ファイルを変えたあとは、ブリッジの再起動が必要な場合があります。
 """
 import argparse
+import cmd
 import getpass
+import glob
 import json
 import os
 import re
@@ -112,16 +118,56 @@ def project_deny_rules(target_dir: Path) -> list[str]:
 
 # --- 対話 ---------------------------------------------------------------------
 
+def complete_path(text: str) -> list[str]:
+    """タブ補完用: ~ を展開して一致するパスを返す(ディレクトリには / を付ける)。"""
+    found = glob.glob(os.path.expanduser(text) + "*")
+    return sorted(f + "/" if os.path.isdir(f) else f for f in found)
+
+
+class path_completion:
+    """入力の間だけ、readline のタブ補完をパス補完にする(readline が無ければ何もしない)。"""
+
+    def __init__(self, enabled: bool):
+        self.enabled = enabled and sys.stdin.isatty()
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        try:
+            import readline
+        except ImportError:
+            self.enabled = False
+            return self
+        self._rl, self._old = readline, (readline.get_completer(), readline.get_completer_delims())
+        matches: list[str] = []
+
+        def completer(text, state):
+            nonlocal matches
+            if state == 0:
+                matches = complete_path(text)
+            return matches[state] if state < len(matches) else None
+
+        readline.set_completer(completer)
+        readline.set_completer_delims(" \t\n")
+        return self
+
+    def __exit__(self, *exc):
+        if self.enabled:
+            self._rl.set_completer(self._old[0])
+            self._rl.set_completer_delims(self._old[1])
+
+
 class Prompter:
     """質問は Enter で既定値(現在値)、`-` で値を消す(None を返す)。"""
 
     def __init__(self, input_fn=input, secret_fn=getpass.getpass, out=print):
         self._input, self._secret, self.out = input_fn, secret_fn, out
 
-    def text(self, label, default=None, validate=None):
+    def text(self, label, default=None, validate=None, paths=False):
         hint = f" [{default}]" if default not in (None, "") else "（空欄でスキップ）"
         while True:
-            raw = self._input(f"  {label}{hint}: ").strip()
+            with path_completion(paths):
+                raw = self._input(f"  {label}{hint}: ").strip()
             if raw == "":
                 return default if default != "" else None
             if raw == "-":
@@ -302,7 +348,7 @@ def choose_target(ask: "Prompter") -> "tuple[Path | None, dict | None]":
             print(f"    {i}) {pr['name']}  {where}  [{pr['id']}]")
         print("    0) 新しく作る")
     while True:
-        raw = ask.text("番号（0=新規）またはパス" if projects else "ディレクトリのパス")
+        raw = ask.text("番号（0=新規）またはパス" if projects else "ディレクトリのパス", paths=True)
         if not raw:
             sys.exit("エラー: 対象が必要です。")
         if raw.isdigit() and projects:
@@ -311,7 +357,7 @@ def choose_target(ask: "Prompter") -> "tuple[Path | None, dict | None]":
                 pr = projects[n - 1]
                 return (pr["folder"].resolve() if pr["folder"] else None), pr
             if n == 0:
-                raw = ask.text("ディレクトリのパス")
+                raw = ask.text("ディレクトリのパス", paths=True)
                 if not raw:
                     sys.exit("エラー: 対象が必要です。")
             else:
@@ -459,7 +505,7 @@ def ask_new_profile(ask: Prompter, config_dir: Path, profile: str) -> "dict | No
     kind = ask.text("認証の種類（service_account / oauth）", default="service_account", validate=_validate_kind)
     credentials_paths = None
     if kind == "service_account":
-        key_file = ask.text("サービスアカウントの JSON 鍵のパス（空欄で別の保管先）", validate=_validate_sa_key_file)
+        key_file = ask.text("サービスアカウントの JSON 鍵のパス（空欄で別の保管先）", validate=_validate_sa_key_file, paths=True)
         if key_file:
             dest, email = store_sa_key(Path(key_file).expanduser(), config_dir, profile)
             print(f"  [保存] {dest}（0600）。元の鍵ファイルは削除してください")
@@ -685,12 +731,240 @@ def configure_tokens(ask: Prompter, env_path: Path) -> None:
 
 # --- main -----------------------------------------------------------------------
 
+class Session:
+    """セットアップの状態(対象プロジェクトなど)と、段階ごとの処理。シェルの各コマンドと
+    `all`(順に全部)が、同じ処理を使う。"""
+
+    def __init__(self, ask: Prompter, prefix: Path, config_dir: Path):
+        self.ask, self.prefix, self.config_dir = ask, prefix, config_dir
+        self.target_dir: "Path | None" = None
+        self.existing: "dict | None" = None
+        self.project_json: "Path | None" = None
+        self.project_id = self.project_name = None
+        self.selected = False
+
+    # --- 対象のプロジェクト ---
+    def project(self, target_arg: "str | None" = None) -> None:
+        ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
+        existing = None
+        if target_arg:
+            target_dir = Path(target_arg).expanduser().resolve()
+        else:
+            target_dir, existing = choose_target(ask)
+
+        if target_dir is not None:
+            if prefix == target_dir or prefix in target_dir.parents or config_dir in (target_dir, *target_dir.parents):
+                sys.exit("エラー: インストール先・設定ディレクトリの中をプロジェクトにはできません。")
+            print(f"=== {target_dir} をセットアップ ===")
+            if not target_dir.is_dir():
+                if not ask.yes_no(f"ディレクトリ {target_dir} を作成しますか?"):
+                    sys.exit("中止しました。")
+                target_dir.mkdir(parents=True)
+            if not (target_dir / ".git").exists():
+                # git 管理は必須(恒久許可コマンドの commit-before-run 判定の前提)
+                subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
+                print(f"  [git init] {target_dir} は git リポジトリではなかったので初期化しました（git 管理は必須です。コミットはしていません）")
+        else:
+            print(f"=== {existing['name']}（ディレクトリ無しのプロジェクト）をセットアップ ===")
+        self.target_dir, self.existing, self.selected = target_dir, existing, True
+
+        print("-- agy プロジェクト --")
+        project_json = existing["json"] if existing else find_agy_project_json(target_dir)
+        if project_json is None:
+            if ask.yes_no("agy に登録しますか?（`agy --new-project`）"):
+                register_agy_project(target_dir)
+                project_json = find_agy_project_json(target_dir)
+            if project_json is None:
+                print("  [未登録] 登録されていないので、許可の登録とチャンネルの対応づけは行えません"
+                      "（登録してから、もう一度 project を実行してください）。")
+        self.project_json = project_json
+        if project_json is not None:
+            project = load_json(project_json)
+            self.project_id = project["id"]
+            self.project_name = project.get("name") or (target_dir.name if target_dir else self.project_id)
+            print(f"  [OK] {self.project_name}（{self.project_id}）")
+
+        if target_dir is not None:
+            print("-- 共有ファイル --")
+            remove_legacy_includes(target_dir, prefix, config_dir)
+            absolute_symlink(target_dir, f"{RULES_DIR / SAFETY_RULES}", prefix / "tools" / SAFETY_RULES)
+            for name in OPTIONAL_SHARED_FILES:
+                src = config_dir / "shared" / name
+                if src.exists():
+                    absolute_symlink(target_dir, f"{RULES_DIR / name}", src)
+                    warn_if_no_frontmatter(src)
+            remove_project_hook(target_dir)
+            register_with_hook(target_dir, config_dir)
+            ensure_scratch_ignored(target_dir)
+
+            print("-- machine-wide settings --")
+            agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
+        else:
+            print("  [スキップ] ディレクトリが無いので、ファイルの配置は行いません")
+
+    def ready(self) -> bool:
+        """Drive・チャンネルの設定に要る agy プロジェクトが決まっているか。未選択なら先に選ぶ。"""
+        if not self.selected:
+            self.project()
+        if self.project_json is None:
+            print("  先に agy プロジェクトを登録してください（project）。")
+            return False
+        return True
+
+    # --- Drive CLI ---
+    def drive(self) -> None:
+        if not self.ready():
+            return
+        ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
+        print("-- Google Drive CLI --")
+        current = current_gdrive_profile(self.project_json, prefix)
+        if ask.yes_no("Drive CLI を使いますか?", default=current is not None):
+            if re.search(r"\s", str(prefix)):
+                print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
+                return
+            default = current or re.sub(r"[^A-Za-z0-9_-]", "-", self.project_name)
+            profile = ask.text("プロファイル名", default=default,
+                               validate=lambda v: None if _PROFILE_NAME_RE.match(v)
+                               else "英数字と _ - だけ使えます")
+            if profile:
+                enabled = configure_gdrive_profile(ask, config_dir, profile)
+                update_project_gdrive_allow(self.project_json, prefix, profile, enabled)
+                warn_if_profile_missing(config_dir, profile)
+                warn_if_gdrive_packages_missing(prefix)
+
+    # --- Slack ---
+    def channel(self) -> None:
+        if not self.ready():
+            return
+        print("-- Slack チャンネル --")
+        configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name)
+
+    def tokens(self) -> None:
+        print("-- Slack トークン --")
+        configure_tokens(self.ask, self.config_dir / "env")
+
+    # --- 状態 ---
+    def status(self) -> None:
+        print("-- 現在の状態 --")
+        if not self.selected:
+            print("  プロジェクト: 未選択（project で選ぶ）")
+        else:
+            where = self.target_dir or "(ディレクトリ無し)"
+            print(f"  プロジェクト: {self.project_name or '未登録'}  {where}")
+        if self.project_json is not None:
+            profile = current_gdrive_profile(self.project_json, self.prefix)
+            print(f"  Drive CLI: {profile + '（プロファイル名）' if profile else '使わない'}")
+            cfg = self.config_dir / "config.yaml"
+            mine = []
+            if cfg.exists():
+                mine = [cid for cid, e in bridge_config.read_channels(cfg.read_text(encoding="utf-8")).items()
+                        if (e or {}).get("project") == self.project_id]
+            print(f"  Slack チャンネル: {', '.join(mine) if mine else '未設定'}")
+        env = self.config_dir / "env"
+        if env.exists():
+            text = env.read_text(encoding="utf-8")
+            for key, hint in (("SLACK_BOT_TOKEN", "xoxb-"), ("SLACK_APP_TOKEN", "xapp-")):
+                value = bridge_config.get_env_value(text, key)
+                print(f"  {key}: {'設定済み' if value and value != hint + '...' else '未設定'}")
+
+    def run_all(self, target_arg: "str | None" = None) -> None:
+        self.project(target_arg)
+        if self.project_json is not None:
+            self.drive()
+            self.channel()
+        self.tokens()
+        print("\n完了。設定を変えた場合は、ブリッジを再起動してください。")
+
+
+class SetupShell(cmd.Cmd):
+    """メニュー型のセットアップ。コマンドを好きな順に実行できる(タブで補完、help で説明)。"""
+
+    intro = None
+    banner = ("agy-slack-bridge セットアップ\n"
+              "  all で最初から順に設定できます。個別に実行するなら project / drive / channel / tokens、"
+              "現在の状態は status、説明は help、終了は quit です（タブでコマンドを補完できます）。")
+    prompt = "(setup) "
+
+    def __init__(self, session: Session, target_arg: "str | None" = None):
+        super().__init__()
+        self.session, self.target_arg = session, target_arg
+
+    def preloop(self):
+        print(self.banner)
+        if self.target_arg:
+            self.onecmd(f"project {self.target_arg}")
+        self.session.status()
+
+    def onecmd(self, line):
+        try:
+            return bool(super().onecmd(line))
+        except SystemExit as e:           # 段階の中の sys.exit(メッセージ) でシェルを閉じない
+            if e.code not in (None, 0):
+                print(e.code)
+        except KeyboardInterrupt:
+            print("\n  [中断] 入力を取り消しました")
+        return False
+
+    def emptyline(self):
+        pass
+
+    def default(self, line):
+        print(f"  不明なコマンド: {line.split()[0]}（help で一覧）")
+
+    def do_all(self, arg):
+        """all  — project, drive, channel, tokens を順に実行する（最初のセットアップ向け）"""
+        self.session.run_all(arg.strip() or None)
+
+    def do_project(self, arg):
+        """project [パス]  — 対象の agy プロジェクトを選ぶ・登録する（ルールの配置と agy の設定も行う）"""
+        self.session.project(arg.strip() or None)
+
+    def complete_project(self, text, line, begidx, endidx):
+        return complete_path(text)
+
+    def do_drive(self, arg):
+        """drive  — Google Drive CLI のプロファイルと許可を設定する"""
+        self.session.drive()
+
+    def do_channel(self, arg):
+        """channel  — Slack チャンネルとの対応づけ（表示名・アイコン・モデルなど）を設定する"""
+        self.session.channel()
+
+    def do_tokens(self, arg):
+        """tokens  — Slack のトークン（SLACK_BOT_TOKEN / SLACK_APP_TOKEN）を設定する"""
+        self.session.tokens()
+
+    def do_status(self, arg):
+        """status  — 現在の設定状態を表示する"""
+        self.session.status()
+
+    def do_quit(self, arg):
+        """quit  — 終了する（Ctrl-D でも終了）"""
+        print("設定を変えた場合は、ブリッジを再起動してください。")
+        return True
+
+    do_exit = do_quit
+
+    def do_EOF(self, arg):
+        print()
+        return self.do_quit(arg)
+
+    def do_help(self, arg):
+        """help [コマンド]  — コマンドの一覧、または個別の説明"""
+        if arg:
+            return super().do_help(arg)
+        print("コマンド（Enter だけなら何もしません。タブで補完できます）:")
+        for name in ("all", "project", "drive", "channel", "tokens", "status", "help", "quit"):
+            print("  " + getattr(self, "do_" + name).__doc__.strip())
+
+
 def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("target", nargs="?", help="セットアップするプロジェクトのディレクトリ"
                     "（省略すると、登録済みのプロジェクトから選ぶか、パスを入力する）")
     ap.add_argument("--prefix", type=Path, default=HERE.parent)
     ap.add_argument("--bridge-config-dir", type=Path, default=DEFAULT_BRIDGE_CONFIG_DIR)
+    ap.add_argument("--all", action="store_true", help="シェルを開かず、全部の段階を順に実行して終わる")
     args = ap.parse_args(argv)
 
     if ask is None:
@@ -703,84 +977,11 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
     if not (prefix / "bridge.py").exists() or not (prefix / "tools" / "hooks.json").exists():
         sys.exit(f"エラー: {prefix} にインストールされていません。先に tools/install.py を実行してください。")
 
-    existing = None
-    if args.target:
-        target_dir = Path(args.target).expanduser().resolve()
+    session = Session(ask, prefix, config_dir)
+    if args.all or type(ask) is not Prompter:   # 自動実行(テストの Prompter の差し替えを含む)は一本道
+        session.run_all(args.target)
     else:
-        target_dir, existing = choose_target(ask)
-
-    if target_dir is not None:
-        if prefix == target_dir or prefix in target_dir.parents or config_dir in (target_dir, *target_dir.parents):
-            sys.exit("エラー: インストール先・設定ディレクトリの中をプロジェクトにはできません。")
-        print(f"=== {target_dir} をセットアップ ===")
-        if not target_dir.is_dir():
-            if not ask.yes_no(f"ディレクトリ {target_dir} を作成しますか?"):
-                sys.exit("中止しました。")
-            target_dir.mkdir(parents=True)
-        if not (target_dir / ".git").exists():
-            # git 管理は必須(恒久許可コマンドの commit-before-run 判定の前提)
-            subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
-            print(f"  [git init] {target_dir} は git リポジトリではなかったので初期化しました（git 管理は必須です。コミットはしていません）")
-    else:
-        print(f"=== {existing['name']}（ディレクトリ無しのプロジェクト）をセットアップ ===")
-
-    print("-- agy プロジェクト --")
-    project_json = existing["json"] if existing else find_agy_project_json(target_dir)
-    if project_json is None:
-        if ask.yes_no("agy に登録しますか?（`agy --new-project`）"):
-            register_agy_project(target_dir)
-            project_json = find_agy_project_json(target_dir)
-        if project_json is None:
-            print("  [未登録] 登録されていないので、許可の登録とチャンネルの対応づけは行えません"
-                  "（登録してから、このコマンドを再実行してください）。")
-    if project_json is not None:
-        project = load_json(project_json)
-        project_id = project["id"]
-        project_name = project.get("name") or (target_dir.name if target_dir else project_id)
-        print(f"  [OK] {project_name}（{project_id}）")
-
-    if target_dir is not None:
-        print("-- 共有ファイル --")
-        remove_legacy_includes(target_dir, prefix, config_dir)
-        absolute_symlink(target_dir, f"{RULES_DIR / SAFETY_RULES}", prefix / "tools" / SAFETY_RULES)
-        for name in OPTIONAL_SHARED_FILES:
-            src = config_dir / "shared" / name
-            if src.exists():
-                absolute_symlink(target_dir, f"{RULES_DIR / name}", src)
-                warn_if_no_frontmatter(src)
-        remove_project_hook(target_dir)
-        register_with_hook(target_dir, config_dir)
-        ensure_scratch_ignored(target_dir)
-
-        print("-- machine-wide settings --")
-        agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
-    else:
-        print("  [スキップ] ディレクトリが無いので、ファイルの配置は行いません")
-
-    if project_json is not None:
-        print("-- Google Drive CLI --")
-        current = current_gdrive_profile(project_json, prefix)
-        if ask.yes_no("Drive CLI を使いますか?", default=current is not None):
-            if re.search(r"\s", str(prefix)):
-                print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
-            else:
-                default = current or re.sub(r"[^A-Za-z0-9_-]", "-", project_name)
-                profile = ask.text("プロファイル名", default=default,
-                                   validate=lambda v: None if _PROFILE_NAME_RE.match(v)
-                                   else "英数字と _ - だけ使えます")
-                if profile:
-                    enabled = configure_gdrive_profile(ask, config_dir, profile)
-                    update_project_gdrive_allow(project_json, prefix, profile, enabled)
-                    warn_if_profile_missing(config_dir, profile)
-                    warn_if_gdrive_packages_missing(prefix)
-
-        print("-- Slack チャンネル --")
-        configure_channel(ask, config_dir / "config.yaml", project_id, project_name)
-
-    print("-- Slack トークン --")
-    configure_tokens(ask, config_dir / "env")
-
-    print("\n完了。設定を変えた場合は、ブリッジを再起動してください。")
+        SetupShell(session, args.target).cmdloop()
 
 
 if __name__ == "__main__":
