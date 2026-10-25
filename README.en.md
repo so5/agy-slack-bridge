@@ -11,7 +11,6 @@ can talk to your agy agents from Slack.
 - When an action is denied, Slack shows **permission buttons**, so you can approve even from a phone.
 - Switching models, checking quota and running agy's slash commands also work from Slack.
 - Images, PDFs, CSVs etc. that agy generates are uploaded to the thread; Mermaid diagrams become images.
-- It runs over Slack's **Socket Mode**: no public URL or inbound port.
 
 ## ⚠ Security assumptions
 
