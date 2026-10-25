@@ -563,56 +563,61 @@ def test_authentication_kind_defaults_to_service_account_and_prompt_is_short(env
     assert len(kind_prompt) < 80
 
 
-# --- menu-style shell ----------------------------------------------------------------
+# --- menus -----------------------------------------------------------------------------
 
-def shell(env, ask=None, target=None):
-    session = setup.Session(ask or Scripted(), env.prefix.resolve(), env.cfg.resolve())
-    return setup.SetupShell(session, str(target) if target else None), session
+def menu_session(env, answers):
+    ask = Scripted(answers)
+    return setup.Session(ask, env.prefix.resolve(), env.cfg.resolve()), ask
 
 
-def test_shell_commands_run_stages_individually_and_status_reflects_them(env, capsys):
-    sh, session = shell(env, Scripted({"Drive CLI": "n", "Slack チャンネルを対応づけ": "y", "チャンネル ID": "C0TEST123"}))
-    sh.onecmd(f"project {env.target}")
-    assert session.project_json is not None and session.project_name == "proj"
-    assert "channels" not in yaml.safe_load((env.cfg / "config.yaml").read_text()) or not channels(env)
-    sh.onecmd("channel")
+def test_main_menu_lists_projects_and_quits_on_enter(env, capsys):
+    session, ask = menu_session(env, {})
+    setup.main_menu(session)                      # Enter = the default, q
+    out = capsys.readouterr().out
+    assert "新しいプロジェクトを作る" in out and "終了" in out and "トークン" in out
+    assert "再起動" in out
+
+
+def test_new_project_then_project_menu_runs_everything_and_returns(env, capsys):
+    session, ask = menu_session(env, {"選択": ["n", "1", "b", "q"],
+                                      "新しいプロジェクトのディレクトリ": str(env.target),
+                                      "Drive CLI": "n", "Slack チャンネルを対応づけ": "y",
+                                      "チャンネル ID": "C0TEST123"})
+    setup.main_menu(session)
     assert channels(env)["C0TEST123"]["project"] == session.project_id
-    capsys.readouterr()
-    sh.onecmd("status")
+    assert (env.target / ".agents/rules/agent-safety-rules.md").is_symlink()
+
+
+def test_selecting_an_existing_project_by_number(env, capsys):
+    run(env)                                      # registers env.target
+    session, ask = menu_session(env, {"選択": ["1", "5", "b", "q"]})
+    setup.main_menu(session)
     out = capsys.readouterr().out
-    assert "C0TEST123" in out and "SLACK_BOT_TOKEN: 未設定" in out
+    assert "1) proj" in out and "プロジェクト: proj" in out and "Slack チャンネル: 未設定" in out
 
 
-def test_shell_drive_before_project_selects_a_project_first(env):
-    sh, session = shell(env, Scripted({"ディレクトリのパス": str(env.target), "Drive CLI": "n"}))
-    sh.onecmd("drive")
-    assert session.selected and session.project_json is not None
-
-
-def test_shell_survives_errors_unknown_commands_and_quits(env, capsys):
-    sh, _ = shell(env)
-    sh.onecmd("nonsense")
-    sh.onecmd(f"project {env.prefix}")           # inside the install prefix: sys.exit(message)
+def test_menu_rejects_unknown_choices_and_survives_errors(env, capsys):
+    session, ask = menu_session(env, {"選択": ["zzz", "n", "q"],
+                                      "新しいプロジェクトのディレクトリ": str(env.prefix)})  # inside the install prefix
+    setup.main_menu(session)
     out = capsys.readouterr().out
-    assert "不明なコマンド: nonsense" in out and "インストール先" in out
-    assert sh.onecmd("") is False                 # empty line does nothing
-    assert sh.onecmd("quit") is True and sh.onecmd("EOF") is True
+    assert sum("選択" in p for p in ask.asked) == 3  # "zzz" was rejected and asked again
+    assert "インストール先" in out and "再起動" in out
 
 
-def test_shell_help_lists_every_command(env, capsys):
-    sh, _ = shell(env)
-    sh.onecmd("help")
-    out = capsys.readouterr().out
-    for name in ("all", "project", "drive", "channel", "tokens", "status", "quit"):
-        assert name in out
-    sh.onecmd("help drive")
-    assert "Drive" in capsys.readouterr().out
+def test_menu_tokens_item_is_global(env):
+    session, ask = menu_session(env, {"選択": ["t", "q"]})
+    session.ask.secrets = {"SLACK_BOT_TOKEN": "xoxb-1", "SLACK_APP_TOKEN": "xapp-1"}
+    setup.main_menu(session)
+    env_text = (env.cfg / "env").read_text()
+    assert "xoxb-1" in env_text and "xapp-1" in env_text
 
 
-def test_shell_all_matches_the_straight_run(env):
-    sh, _ = shell(env, Scripted({"Drive CLI": "y"}))
-    sh.onecmd(f"all {env.target}")
-    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == "proj"
+def test_drive_and_channel_need_a_registered_project(env, capsys):
+    session, _ = menu_session(env, {})
+    session.drive()
+    session.channel()
+    assert capsys.readouterr().out.count("登録されたプロジェクトが必要") == 2
 
 
 def test_path_completion_expands_tilde_and_marks_directories(tmp_path, monkeypatch):

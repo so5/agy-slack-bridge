@@ -64,9 +64,9 @@ Run the second line as your normal user (so the config goes to your home, not ro
 Interactive; a human runs it from a terminal (the agent must not run it). Answer Y at the end of
 `install.py` to start it directly. It:
 
-A shell with a `(setup)` prompt opens; the first time, type `all` (you are asked 1–6 below in order). `project`, `drive`,
-`channel` and `tokens` run the stages individually, `status` shows the current state and `help` explains. With `--all`
-it runs `all` without opening the shell.
+A project-list menu opens: choose the project to set up, or create a new one. Choosing "Set up everything" in the
+project menu asks 1–5 below in order (the Slack tokens are `t` in the list menu). With `--all` it runs everything
+in order without showing the menu.
 
 1. Picks the target (choose from the projects agy already knows, or enter a new directory path).
    A directory that is not a git repository gets `git init` (git is mandatory).

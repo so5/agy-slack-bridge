@@ -67,30 +67,30 @@ To run it later (you answered N, or want to change settings):
 ~/.local/share/agy-slack-bridge/.venv/bin/python ~/.local/share/agy-slack-bridge/tools/setup_agy_project.py
 ```
 
-A shell with a `(setup)` prompt opens. **The first time, type `all`** (you are asked 3-1 to 3-4 below in order).
-There are also individual commands (Tab completes them).
+A menu opens. Choose by typing a number or key (the `[...]` item is chosen with Enter).
 
-| Command | What it does |
+1. **First screen**: the projects registered in agy are listed. Choose the number of the project to set up, or `n`
+   (create a new project). `t` sets the Slack tokens (shared by everything) and `q` quits.
+2. **Project menu**: after choosing a project you get the items below. **The first time, choose `1`.**
+
+| Item | What it does |
 |---|---|
-| `all [path]` | Runs 3-1 to 3-4 in order |
-| `project [path]` | 3-1 The target project |
-| `drive` | 3-2 Google Drive CLI |
-| `channel` | 3-3 Mapping a Slack channel |
-| `tokens` | 3-4 Slack tokens |
-| `status` | Shows the current settings |
-| `help [command]` | Shows an explanation |
-| `quit` | Exits (Ctrl-D also works) |
+| `1` Set up everything | 3-1, then 3-2 and 3-3 in order (first time, or updating) |
+| `2` Place / update the rules and hook | Only the placement part of 3-1 |
+| `3` Set up the Google Drive CLI | 3-2 |
+| `4` Set up the Slack channel mapping | 3-3 |
+| `5` Show the current state | |
+| `b` Back to the project list | |
 
-`drive` and `channel` run 3-1 first if no project is selected yet. Prompts that ask for a path complete it with Tab.
+To set up another project, go back with `b` and choose again. Prompts that ask for a path complete it with Tab.
 
 #### 3-1. The target project
 
-The directory you specify here is the agy project directory (the root agy works in).
+The directory you specify for a new project is the agy project directory (the root agy works in).
 
 | Prompt | Answer |
 |---|---|
-| `番号（0=新規）またはパス` (number, 0 = new, or path) | Projects already registered in agy are listed: enter its **number**. For a new one enter **0**, or type a directory **path** directly |
-| `ディレクトリのパス` (directory path; after choosing 0) | e.g. `~/WORK/my-project` |
+| `新しいプロジェクトのディレクトリのパス` (directory path of the new project; after choosing `n` on the first screen) | e.g. `~/WORK/my-project`. Not asked when you choose an already registered project |
 | `ディレクトリ <path> を作成しますか? [Y/n]` (create the directory?) | Y |
 
 If the directory is not a git repository, it is initialised with `git init` and you are told so (git is required; nothing is committed).

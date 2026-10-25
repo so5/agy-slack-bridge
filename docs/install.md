@@ -61,8 +61,8 @@ python3 /opt/agy-slack-bridge/tools/install.py --prefix /opt/agy-slack-bridge --
 ```
 
 対話式で、人間が端末から実行します（エージェントに実行させるものではありません）。
-`(setup)` プロンプトのシェルが開くので、初めてのときは `all` と入力します（以下の 1〜6 を順に聞かれます）。
-`project` / `drive` / `channel` / `tokens` で個別に実行でき、`status` で現在の状態、`help` で説明を表示します。
+プロジェクトの一覧のメニューが開くので、設定するプロジェクトを選ぶか、新規作成します。プロジェクトのメニューで
+「順に全部設定する」を選ぶと、以下の 1〜5 を順に聞かれます（Slack のトークンは一覧のメニューの `t`）。
 `install.py` の最後の確認で Y と答えれば、そのまま始まります。主な内容:
 
 1. 対象の指定（agy に登録済みのプロジェクトから選ぶか、新しいディレクトリのパスを入力）。
@@ -75,7 +75,7 @@ python3 /opt/agy-slack-bridge/tools/install.py --prefix /opt/agy-slack-bridge --
 6. Slack のトークン（未設定のとき）。
 
 何度実行しても安全で、現在の値が既定値として表示されます（Enter で維持、`-` で削除）。設定の変更や修復も
-同じコマンドです（`--all` を付けると、シェルを開かず `all` だけ実行して終わります）。詳細は [tools/README.md](../tools/README.md)。
+同じコマンドです（`--all` を付けると、メニューを出さず全部を順に実行して終わります）。詳細は [tools/README.md](../tools/README.md)。
 
 ## 3. 起動
 

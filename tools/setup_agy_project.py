@@ -16,9 +16,10 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
 使い方:
     <prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py [対象のパス] [オプション]
 
-  `(setup)` プロンプトのシェル(Python の cmd)が開く。初めてなら all。project / drive / channel /
-  tokens で段階ごとに実行でき、status は現在の状態、help は説明、quit は終了。--all を付けると
-  シェルを開かず、all だけ実行して終わる。
+  プロジェクトの一覧のメニューが開く。プロジェクトを選ぶか新規作成すると、そのプロジェクトの
+  メニュー(全部設定 / ルールとフック / Drive CLI / Slack チャンネル / 状態)が出る。Slack の
+  トークンは一覧のメニューから設定する(全体で共通)。--all を付けると、メニューを出さず、全部の
+  段階を順に実行して終わる。
 
   対象のパスを省略すると、agy に登録済みのプロジェクトの一覧から選ぶか、新しい
   ディレクトリのパスを入力する。既存のプロジェクトを選ぶと、そのディレクトリを使う
@@ -60,7 +61,6 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
 設定ファイルを変えたあとは、ブリッジの再起動が必要な場合があります。
 """
 import argparse
-import cmd
 import getpass
 import glob
 import json
@@ -732,8 +732,8 @@ def configure_tokens(ask: Prompter, env_path: Path) -> None:
 # --- main -----------------------------------------------------------------------
 
 class Session:
-    """セットアップの状態(対象プロジェクトなど)と、段階ごとの処理。シェルの各コマンドと
-    `all`(順に全部)が、同じ処理を使う。"""
+    """セットアップの状態(対象プロジェクトなど)と、段階ごとの処理。メニューの各項目と
+    `--all`(順に全部)が、同じ処理を使う。"""
 
     def __init__(self, ask: Prompter, prefix: Path, config_dir: Path):
         self.ask, self.prefix, self.config_dir = ask, prefix, config_dir
@@ -744,18 +744,14 @@ class Session:
         self.selected = False
 
     # --- 対象のプロジェクト ---
-    def project(self, target_arg: "str | None" = None) -> None:
+    def open_project(self, target_dir: "Path | None", existing: "dict | None" = None) -> None:
+        """対象を決める。ディレクトリが無ければ作り(確認あり)、git リポジトリでなければ git init し、
+        agy に未登録なら登録する(確認あり)。ルールやフックの配置は setup_files。"""
         ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
-        existing = None
-        if target_arg:
-            target_dir = Path(target_arg).expanduser().resolve()
-        else:
-            target_dir, existing = choose_target(ask)
-
         if target_dir is not None:
             if prefix == target_dir or prefix in target_dir.parents or config_dir in (target_dir, *target_dir.parents):
                 sys.exit("エラー: インストール先・設定ディレクトリの中をプロジェクトにはできません。")
-            print(f"=== {target_dir} をセットアップ ===")
+            print(f"=== {target_dir} ===")
             if not target_dir.is_dir():
                 if not ask.yes_no(f"ディレクトリ {target_dir} を作成しますか?"):
                     sys.exit("中止しました。")
@@ -765,7 +761,7 @@ class Session:
                 subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
                 print(f"  [git init] {target_dir} は git リポジトリではなかったので初期化しました（git 管理は必須です。コミットはしていません）")
         else:
-            print(f"=== {existing['name']}（ディレクトリ無しのプロジェクト）をセットアップ ===")
+            print(f"=== {existing['name']}（ディレクトリ無しのプロジェクト） ===")
         self.target_dir, self.existing, self.selected = target_dir, existing, True
 
         print("-- agy プロジェクト --")
@@ -776,38 +772,47 @@ class Session:
                 project_json = find_agy_project_json(target_dir)
             if project_json is None:
                 print("  [未登録] 登録されていないので、許可の登録とチャンネルの対応づけは行えません"
-                      "（登録してから、もう一度 project を実行してください）。")
+                      "（登録してから、もう一度やり直してください）。")
         self.project_json = project_json
+        self.project_id = self.project_name = None
         if project_json is not None:
             project = load_json(project_json)
             self.project_id = project["id"]
             self.project_name = project.get("name") or (target_dir.name if target_dir else self.project_id)
             print(f"  [OK] {self.project_name}（{self.project_id}）")
 
-        if target_dir is not None:
-            print("-- 共有ファイル --")
-            remove_legacy_includes(target_dir, prefix, config_dir)
-            absolute_symlink(target_dir, f"{RULES_DIR / SAFETY_RULES}", prefix / "tools" / SAFETY_RULES)
-            for name in OPTIONAL_SHARED_FILES:
-                src = config_dir / "shared" / name
-                if src.exists():
-                    absolute_symlink(target_dir, f"{RULES_DIR / name}", src)
-                    warn_if_no_frontmatter(src)
-            remove_project_hook(target_dir)
-            register_with_hook(target_dir, config_dir)
-            ensure_scratch_ignored(target_dir)
-
-            print("-- machine-wide settings --")
-            agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
-        else:
+    def setup_files(self) -> None:
+        """ルール・フック・agy の設定(deny / trustedWorkspaces)をプロジェクトに配置・更新する。"""
+        target_dir, prefix, config_dir = self.target_dir, self.prefix, self.config_dir
+        if target_dir is None:
             print("  [スキップ] ディレクトリが無いので、ファイルの配置は行いません")
+            return
+        print("-- 共有ファイル --")
+        remove_legacy_includes(target_dir, prefix, config_dir)
+        absolute_symlink(target_dir, f"{RULES_DIR / SAFETY_RULES}", prefix / "tools" / SAFETY_RULES)
+        for name in OPTIONAL_SHARED_FILES:
+            src = config_dir / "shared" / name
+            if src.exists():
+                absolute_symlink(target_dir, f"{RULES_DIR / name}", src)
+                warn_if_no_frontmatter(src)
+        remove_project_hook(target_dir)
+        register_with_hook(target_dir, config_dir)
+        ensure_scratch_ignored(target_dir)
+
+        print("-- machine-wide settings --")
+        agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
+
+    def project(self, target_arg: "str | None" = None) -> None:
+        """対象を選んで(または指定されて)決め、ファイルを配置する(`--all` 用)。"""
+        if target_arg:
+            self.open_project(Path(target_arg).expanduser().resolve())
+        else:
+            self.open_project(*choose_target(self.ask))
+        self.setup_files()
 
     def ready(self) -> bool:
-        """Drive・チャンネルの設定に要る agy プロジェクトが決まっているか。未選択なら先に選ぶ。"""
-        if not self.selected:
-            self.project()
-        if self.project_json is None:
-            print("  先に agy プロジェクトを登録してください（project）。")
+        if not self.selected or self.project_json is None:
+            print("  agy に登録されたプロジェクトが必要です。")
             return False
         return True
 
@@ -844,21 +849,26 @@ class Session:
         configure_tokens(self.ask, self.config_dir / "env")
 
     # --- 状態 ---
+    def mapped_channels(self, project_id: str) -> list[str]:
+        cfg = self.config_dir / "config.yaml"
+        if not cfg.exists():
+            return []
+        try:
+            channels = bridge_config.read_channels(cfg.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        return [cid for cid, e in channels.items() if (e or {}).get("project") == project_id]
+
     def status(self) -> None:
         print("-- 現在の状態 --")
         if not self.selected:
-            print("  プロジェクト: 未選択（project で選ぶ）")
+            print("  プロジェクト: 未選択")
         else:
-            where = self.target_dir or "(ディレクトリ無し)"
-            print(f"  プロジェクト: {self.project_name or '未登録'}  {where}")
+            print(f"  プロジェクト: {self.project_name or '未登録'}  {self.target_dir or '(ディレクトリ無し)'}")
         if self.project_json is not None:
             profile = current_gdrive_profile(self.project_json, self.prefix)
-            print(f"  Drive CLI: {profile + '（プロファイル名）' if profile else '使わない'}")
-            cfg = self.config_dir / "config.yaml"
-            mine = []
-            if cfg.exists():
-                mine = [cid for cid, e in bridge_config.read_channels(cfg.read_text(encoding="utf-8")).items()
-                        if (e or {}).get("project") == self.project_id]
+            print(f"  Drive CLI: {'プロファイル ' + profile if profile else '使わない'}")
+            mine = self.mapped_channels(self.project_id)
             print(f"  Slack チャンネル: {', '.join(mine) if mine else '未設定'}")
         env = self.config_dir / "env"
         if env.exists():
@@ -876,86 +886,82 @@ class Session:
         print("\n完了。設定を変えた場合は、ブリッジを再起動してください。")
 
 
-class SetupShell(cmd.Cmd):
-    """メニュー型のセットアップ。コマンドを好きな順に実行できる(タブで補完、help で説明)。"""
+# --- メニュー ------------------------------------------------------------------------
 
-    intro = None
-    banner = ("agy-slack-bridge セットアップ\n"
-              "  all で最初から順に設定できます。個別に実行するなら project / drive / channel / tokens、"
-              "現在の状態は status、説明は help、終了は quit です（タブでコマンドを補完できます）。")
-    prompt = "(setup) "
+def choose(ask: Prompter, title: str, options: "list[tuple[str, str]]", default: str) -> str:
+    """番号・キーを選ぶメニュー。Enter で default。"""
+    print(f"\n{title}")
+    for key, label in options:
+        print(f"    {key}) {label}")
+    keys = [k for k, _ in options]
+    return ask.text("選択", default=default,
+                    validate=lambda v: None if v in keys else "表示されている番号かキーを入力してください")
 
-    def __init__(self, session: Session, target_arg: "str | None" = None):
-        super().__init__()
-        self.session, self.target_arg = session, target_arg
 
-    def preloop(self):
-        print(self.banner)
-        if self.target_arg:
-            self.onecmd(f"project {self.target_arg}")
-        self.session.status()
-
-    def onecmd(self, line):
+def project_menu(session: Session) -> None:
+    ask = session.ask
+    options = [("1", "順に全部設定する（初めて・更新）"),
+               ("2", "ルールとフックを配置・更新する"),
+               ("3", "Google Drive CLI を設定する"),
+               ("4", "Slack チャンネルとの対応づけを設定する"),
+               ("5", "現在の状態を表示する"),
+               ("b", "プロジェクトの一覧に戻る")]
+    while True:
+        key = choose(ask, f"プロジェクト: {session.project_name or '未登録'}  {session.target_dir or ''}", options, "b")
         try:
-            return bool(super().onecmd(line))
-        except SystemExit as e:           # 段階の中の sys.exit(メッセージ) でシェルを閉じない
+            if key == "b":
+                return
+            if key == "1":
+                session.setup_files()
+                if session.project_json is not None:
+                    session.drive()
+                    session.channel()
+            elif key == "2":
+                session.setup_files()
+            elif key == "3":
+                session.drive()
+            elif key == "4":
+                session.channel()
+            elif key == "5":
+                session.status()
+        except SystemExit as e:           # 段階の中の sys.exit(メッセージ) でメニューを閉じない
             if e.code not in (None, 0):
                 print(e.code)
-        except KeyboardInterrupt:
-            print("\n  [中断] 入力を取り消しました")
-        return False
 
-    def emptyline(self):
-        pass
 
-    def default(self, line):
-        print(f"  不明なコマンド: {line.split()[0]}（help で一覧）")
-
-    def do_all(self, arg):
-        """all  — project, drive, channel, tokens を順に実行する（最初のセットアップ向け）"""
-        self.session.run_all(arg.strip() or None)
-
-    def do_project(self, arg):
-        """project [パス]  — 対象の agy プロジェクトを選ぶ・登録する（ルールの配置と agy の設定も行う）"""
-        self.session.project(arg.strip() or None)
-
-    def complete_project(self, text, line, begidx, endidx):
-        return complete_path(text)
-
-    def do_drive(self, arg):
-        """drive  — Google Drive CLI のプロファイルと許可を設定する"""
-        self.session.drive()
-
-    def do_channel(self, arg):
-        """channel  — Slack チャンネルとの対応づけ（表示名・アイコン・モデルなど）を設定する"""
-        self.session.channel()
-
-    def do_tokens(self, arg):
-        """tokens  — Slack のトークン（SLACK_BOT_TOKEN / SLACK_APP_TOKEN）を設定する"""
-        self.session.tokens()
-
-    def do_status(self, arg):
-        """status  — 現在の設定状態を表示する"""
-        self.session.status()
-
-    def do_quit(self, arg):
-        """quit  — 終了する（Ctrl-D でも終了）"""
-        print("設定を変えた場合は、ブリッジを再起動してください。")
-        return True
-
-    do_exit = do_quit
-
-    def do_EOF(self, arg):
-        print()
-        return self.do_quit(arg)
-
-    def do_help(self, arg):
-        """help [コマンド]  — コマンドの一覧、または個別の説明"""
-        if arg:
-            return super().do_help(arg)
-        print("コマンド（Enter だけなら何もしません。タブで補完できます）:")
-        for name in ("all", "project", "drive", "channel", "tokens", "status", "help", "quit"):
-            print("  " + getattr(self, "do_" + name).__doc__.strip())
+def main_menu(session: Session) -> None:
+    ask = session.ask
+    while True:
+        projects = list_agy_projects()
+        options = []
+        for i, pr in enumerate(projects, 1):
+            marks = session.mapped_channels(pr["id"])
+            options.append((str(i), f"{pr['name']}  {pr['folder'] or '(ディレクトリ無し)'}"
+                                    + (f"  [Slack: {', '.join(marks)}]" if marks else "")))
+        options += [("n", "新しいプロジェクトを作る"), ("t", "Slack のトークンを設定する（全体で共通）"), ("q", "終了")]
+        key = choose(ask, "agy-slack-bridge セットアップ — 設定するプロジェクトを選んでください",
+                     options, "q")
+        try:
+            if key == "q":
+                print("設定を変えた場合は、ブリッジを再起動してください。")
+                return
+            if key == "t":
+                session.tokens()
+            elif key == "n":
+                raw = ask.text("新しいプロジェクトのディレクトリのパス", paths=True)
+                if raw:
+                    session.open_project(Path(raw).expanduser().resolve())
+                    project_menu(session)
+            else:
+                pr = projects[int(key) - 1]
+                session.open_project(pr["folder"].resolve() if pr["folder"] else None, pr)
+                project_menu(session)
+        except SystemExit as e:
+            if e.code not in (None, 0):
+                print(e.code)
+        except (KeyboardInterrupt, EOFError):
+            print("\n中断しました。")
+            return
 
 
 def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None:
@@ -964,7 +970,7 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
                     "（省略すると、登録済みのプロジェクトから選ぶか、パスを入力する）")
     ap.add_argument("--prefix", type=Path, default=HERE.parent)
     ap.add_argument("--bridge-config-dir", type=Path, default=DEFAULT_BRIDGE_CONFIG_DIR)
-    ap.add_argument("--all", action="store_true", help="シェルを開かず、全部の段階を順に実行して終わる")
+    ap.add_argument("--all", action="store_true", help="メニューを出さず、全部の段階を順に実行して終わる")
     args = ap.parse_args(argv)
 
     if ask is None:
@@ -980,8 +986,11 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
     session = Session(ask, prefix, config_dir)
     if args.all or type(ask) is not Prompter:   # 自動実行(テストの Prompter の差し替えを含む)は一本道
         session.run_all(args.target)
+    elif args.target:
+        session.open_project(Path(args.target).expanduser().resolve())
+        project_menu(session)
     else:
-        SetupShell(session, args.target).cmdloop()
+        main_menu(session)
 
 
 if __name__ == "__main__":
