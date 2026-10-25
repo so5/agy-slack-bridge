@@ -12,7 +12,6 @@ can talk to your agy agents from Slack.
 - Switching models, checking quota and running agy's slash commands also work from Slack.
 - Images, PDFs, CSVs etc. that agy generates are uploaded to the thread; Mermaid diagrams become images.
 - It runs over Slack's **Socket Mode**: no public URL or inbound port.
-- It is a thin wrapper around `agy -p`, not a reimplementation of what agy does.
 
 ## ⚠ Security assumptions
 
@@ -27,20 +26,14 @@ detection, ...). See "Keeping the agent inside its lane" in [docs/usage.en.md](d
 
 ## Setup walkthrough
 
-This README is written so you can go from start to finish without opening anything else. The linked
-documents hold background and troubleshooting for each step.
-
 **You need**: Linux with `systemd --user`, Python 3.10+ (with `venv`), `git`, **`agy` logged in as the user who
 will run the bridge**, and a Slack workspace where you can create apps.
 
-A human runs the setup from a terminal (not the agent). The setup script's screen is in Japanese; each
-prompt below is quoted as shown, with its meaning. In a prompt, the `[...]` is the default: **Enter keeps the
-default and `-` clears the value**. Some prompts can be left empty to skip. You can re-run it any time
-(idempotent); the current values show up as defaults.
+A human runs the setup from a terminal. The setup screen is in Japanese; each prompt below is quoted as
+shown, with its meaning. `[...]` in a prompt is the default: **Enter keeps it, `-` clears the value**.
+When you re-run it, the current values appear as defaults.
 
-### 1. Create the Slack app (about 5 minutes)
-
-Details: [docs/slack-app.en.md](docs/slack-app.en.md)
+### 1. Create the Slack app
 
 1. <https://api.slack.com/apps> → **Create New App** → **From an app manifest** → choose the workspace.
 2. Paste the contents of [`slack-app-manifest.yaml`](slack-app-manifest.yaml) and create the app.
@@ -49,8 +42,6 @@ Details: [docs/slack-app.en.md](docs/slack-app.en.md)
 4. **Install App** → **Install to Workspace**. The `xoxb-…` shown is the **Bot token** (`SLACK_BOT_TOKEN`).
 5. Create a **private channel** for the bridge and invite the bot (`/invite @agy` in the channel).
 6. Note the channel ID (`C…` / `G…`, at the bottom of the channel details).
-
-Keep: the App token, the Bot token, the channel ID.
 
 > ⚠ Creating a new app from this manifest has not actually been tried yet (the scope list was checked
 > against the running app). If it fails, configure the app by hand using the list in
@@ -64,27 +55,21 @@ cd agy-slack-bridge
 python3 tools/install.py --with-gdrive      # leave out --with-gdrive if you will not use the Drive CLI
 ```
 
-This installs the bridge and tools read-only under `~/.local/share/agy-slack-bridge` (`<prefix>` below),
-creates the venv, the config directory `~/.config/agy-slack-bridge` (sample `config.yaml` and `env`) and the
-systemd unit, and registers deny rules and a hook in agy's settings so the agent cannot touch the install
-or the config. For installing as root under `/opt` and the full option list, see
+The install location is `~/.local/share/agy-slack-bridge` (`<prefix>` below); the config is
+`~/.config/agy-slack-bridge`. For installing as root under `/opt` and the options, see
 [docs/install.en.md](docs/install.en.md).
-
-At the end it asks:
 
 | Prompt | Answer |
 |---|---|
-| `続けてセットアップを実行しますか? [Y/n]` (Run the setup now?) | **Y** (step 3 starts right away). On N it prints the command to run later |
+| `続けてセットアップを実行しますか? [Y/n]` (Run the setup now?) | **Y** (step 3 starts). On N it prints the command to run later |
 
 ### 3. Set up the project (`setup_agy_project.py`)
 
-If you answered N, or want to change settings later, start it with:
+To run it later (you answered N, or want to change settings):
 
 ```sh
 ~/.local/share/agy-slack-bridge/.venv/bin/python ~/.local/share/agy-slack-bridge/tools/setup_agy_project.py
 ```
-
-Questions come in this order (ones that do not apply are not asked).
 
 #### 3-1. The target project
 
@@ -94,16 +79,11 @@ Questions come in this order (ones that do not apply are not asked).
 | `ディレクトリのパス` (directory path; after choosing 0) | e.g. `~/WORK/my-project` |
 | `ディレクトリ <path> を作成しますか? [Y/n]` (create the directory?) | Y |
 
-If the directory is not a git repository, it is initialised with `git init` and you are told so (git is
-required; nothing is committed).
+If the directory is not a git repository, it is initialised with `git init` and you are told so (git is required; nothing is committed).
 
 | Prompt | Answer |
 |---|---|
 | `agy に登録しますか?（`agy --new-project`） [Y/n]` (register with agy?) | **Y** (this calls the model once) |
-
-Then these happen automatically (no questions): the safety-rules link is placed in `.agents/rules/`,
-`scratch/` is appended to `.gitignore`, the hook state directory is created, and the project is added to
-agy's `trustedWorkspaces`.
 
 #### 3-2. Google Drive CLI (skip if unused)
 
@@ -116,7 +96,7 @@ agy's `trustedWorkspaces`.
 | `資格情報を取り出すコマンド` (command that prints the credentials) | A **command that prints the key / token JSON to stdout** (examples below). Do not type a scope (`drive` etc.) here |
 | `` `…` というコマンドが見つかりません。このまま使いますか? [y/N]`` (command not found; use anyway?) | Only shown when the command is not found. If it is a typo, answer **N** and start again |
 | `スコープを既定のままにしますか? [Y/n]` (keep the default scopes?) | Defaults: read `drive.readonly`, write `drive`. Normally **Y**. Answer **n** only for an OAuth token consented with other scopes; then enter the read and write scopes |
-| `方針を変更しますか? [y/N]` (change the policy?) | Policy = enabled commands, allowed folders, upload deny patterns. **N** works to begin with (defaults). **y** to narrow it |
+| `方針を変更しますか? [y/N]` (change the policy?) | Policy = enabled commands, allowed folders, upload deny patterns. **N** keeps the defaults; **y** to narrow it |
 
 **Which authentication**
 
@@ -132,7 +112,7 @@ the service account and a **JSON key**. In Drive, share the folders you want to 
 in the key ("Viewer" for read-only, "Editor" to allow writes). For OAuth preparation and caveats and for how new
 files are handled, see [tools/gdrive-profile.en.md](tools/gdrive-profile.en.md).
 
-**Examples of the credential command** (match your key store; it is run directly, without a shell)
+**Examples of the credential command** (match your key store; run directly, not through a shell)
 
 ```
 cat /home/you/secrets/drive-key.json
@@ -152,8 +132,6 @@ Prompts when you answered **y** to "change the policy":
 | `緩める変更を適用しますか? [y/N]` (apply the loosening change?) | Only when you widened permissions; the diff is shown first |
 | `…json に書き込みますか? [Y/n]` (write the file?) | **Y** |
 
-The allow entries for the read subcommands are added **only to this project's own** `permissionGrants`.
-
 #### 3-3. Mapping a Slack channel
 
 | Prompt | Answer |
@@ -169,7 +147,7 @@ The allow entries for the read subcommands are added **only to this project's ow
 | `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Optional. Files you want a warning about if the agent changes them (e.g. `AGENTS.md`) |
 | `権限ボタンの統計を取りますか? [y/N]` (collect permission-button stats?) | Normally **N** |
 
-Before `config.yaml` is rewritten, the original is kept as `config.yaml.bak`.
+The original `config.yaml` is kept as `config.yaml.bak`.
 
 #### 3-4. Slack tokens
 
@@ -179,8 +157,6 @@ Before `config.yaml` is rewritten, the original is kept as `config.yaml.bak`.
 | `SLACK_APP_TOKEN（xapp-…）` | Paste the App token from step 1 |
 
 The tokens are saved to `~/.config/agy-slack-bridge/env` (0600). Ones already set are not asked again.
-
-It ends with `完了。設定を変えた場合は、ブリッジを再起動してください。` (Done; restart the bridge if you changed settings).
 
 ### 4. Start
 
@@ -198,7 +174,7 @@ bridge says so and exits). Details: [docs/install.en.md](docs/install.en.md).
 ### 5. Check that it works
 
 In the channel, send `@agy hello` as a mention. If a reply appears in the thread, you are done. If it says
-permission is missing, press the **permission button** (common at first). Replies inside the thread need no mention.
+permission is missing, press the **permission button** (common at first).
 
 For usage (slash commands, `resume`, stats, per-channel settings) see [docs/usage.en.md](docs/usage.en.md).
 

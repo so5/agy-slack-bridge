@@ -1,6 +1,5 @@
 # How Execution Permissions Work
 
-This document explains how agy is granted permission when it runs `run_command` (shell commands) or MCP tools.
 For how to operate permissions from Slack, see "Managing permissions from Slack" in [usage.en.md](usage.en.md).
 
 ## 1. Permission layers

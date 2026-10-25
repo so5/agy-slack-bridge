@@ -1,6 +1,5 @@
 # 実行許可の仕組み
 
-agy が `run_command`（シェルコマンド）や MCP ツールを実行するとき、どう許可されるかをまとめる。
 Slack からの操作方法は [usage.md](usage.md) の「Managing permissions from Slack」を参照。
 
 ## 1. 許可の層

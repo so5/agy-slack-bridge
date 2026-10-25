@@ -1,6 +1,5 @@
 # Usage and behavior reference
 
-What the bridge does once it is running, and how to operate it from Slack.
 Setup is in [install.en.md](install.en.md) and [slack-app.en.md](slack-app.en.md);
 where permissions are stored is in [permissions.en.md](permissions.en.md).
 

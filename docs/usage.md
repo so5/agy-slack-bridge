@@ -1,6 +1,5 @@
 # 使い方と動作リファレンス
 
-ブリッジを起動したあと、何をするのか、そして Slack からどう操作するのかをまとめます。
 セットアップは [install.md](install.md) と [slack-app.md](slack-app.md) に、
 許可の保存場所は [permissions.md](permissions.md) にあります。
 
