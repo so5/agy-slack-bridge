@@ -168,7 +168,7 @@ aws secretsmanager get-secret-value --secret-id NAME --query SecretString --outp
 | `アイコン画像 URL` | 絵文字を空欄にしたときだけ。`https://` で始まる URL |
 | `モデル` | 空欄可（agy の既定）。`agy models` の名前 |
 | `effort（…）` | 空欄可。モデルの推論の深さ |
-| `監視するファイル（相対パス、カンマ区切り）` | 空欄可。エージェントが変えると警告したいファイル（例 `AGENTS.md`） |
+| `監視するファイル（相対パス、カンマ区切り）` | 既定は空（何も監視しない）。プロジェクトのディレクトリからの相対パス（例 `AGENTS.md`）。エージェントによる変更を止めはせず、変更後に差分つきの通知が Slack に届きます（確認間隔は既定 30 分）。通知のボタンで、変更を承認するか元に戻せます。詳細は [usage.md](docs/usage.md) の「Config drift detection」 |
 | `権限ボタンの統計を取りますか? [y/N]` | 普通は **N** |
 
 元の `config.yaml` は `config.yaml.bak` に残ります。

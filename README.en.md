@@ -172,7 +172,7 @@ Prompts when you answered **y** to "change the advanced settings":
 | `アイコン画像 URL` (icon image URL) | Only when the emoji is empty. A URL starting with `https://` |
 | `モデル` (model) | Optional (agy's default). A name from `agy models` |
 | `effort` | Optional. How deeply the model reasons |
-| `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Optional. Files you want a warning about if the agent changes them (e.g. `AGENTS.md`) |
+| `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Default: empty (nothing is watched). Paths relative to the project directory (e.g. `AGENTS.md`). Changes are not blocked: after a change, Slack gets a notice with a diff (checked every 30 minutes by default), and its buttons let you accept the change or restore the file. See "Config drift detection" in [usage.en.md](docs/usage.en.md) |
 | `権限ボタンの統計を取りますか? [y/N]` (collect permission-button stats?) | Normally **N** |
 
 The original `config.yaml` is kept as `config.yaml.bak`.
