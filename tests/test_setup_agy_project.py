@@ -245,7 +245,7 @@ def test_channel_mapping_written_with_project_id_and_all_fields(env):
         "権限ボタンの統計": "y"}))
     pid = project_json(env).stem
     assert channels(env) == {"C0TEST123": {
-        "project": pid, "name": "proj", "display_name": "Helper", "icon_emoji": ":abacus:",
+        "project": pid, "display_name": "Helper", "icon_emoji": ":abacus:",
         "model": "gemini-x", "effort": "high",
         "watched_config_files": [".agents/local-tools.md", "a/b.md"],
         "telemetry": {"permission_stats": True}}}

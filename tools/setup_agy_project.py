@@ -673,8 +673,6 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
                           default=False):
             return
     entry["project"] = project_id
-    _set_or_pop(entry, "name", ask.text("名前（メモ）",
-                                        default=entry.get("name") or project_name))
     _set_or_pop(entry, "display_name", ask.text("表示名", default=entry.get("display_name")))
     emoji = ask.text("アイコン絵文字（:name:）", default=entry.get("icon_emoji"), validate=_validate_emoji)
     _set_or_pop(entry, "icon_emoji", emoji)

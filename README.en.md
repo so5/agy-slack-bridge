@@ -167,7 +167,6 @@ Prompts when you answered **y** to "change the advanced settings":
 |---|---|
 | `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | **Y** |
 | `チャンネル ID` (channel ID) | The `C…` / `G…` from step 1 |
-| `名前（メモ）` (name, a memo) | Default: the project name |
 | `表示名` (display name) | Optional. The name on the bot's replies (needs `chat:write.customize`) |
 | `アイコン絵文字（:name:）` (icon emoji) | Optional, e.g. `:robot_face:`. If given, the image URL is not asked |
 | `アイコン画像 URL` (icon image URL) | Only when the emoji is empty. A URL starting with `https://` |

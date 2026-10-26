@@ -163,7 +163,6 @@ aws secretsmanager get-secret-value --secret-id NAME --query SecretString --outp
 |---|---|
 | `Slack チャンネルを対応づけますか? [Y/n]` | **Y** |
 | `チャンネル ID` | 手順 1 で控えた `C…` / `G…` |
-| `名前（メモ）` | 既定はプロジェクト名 |
 | `表示名` | 空欄可。ボットの返信に付く名前（`chat:write.customize` が必要） |
 | `アイコン絵文字（:name:）` | 空欄可。例 `:robot_face:`。入力した場合、画像 URL は聞かれない |
 | `アイコン画像 URL` | 絵文字を空欄にしたときだけ。`https://` で始まる URL |
