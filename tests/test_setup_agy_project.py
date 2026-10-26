@@ -69,6 +69,12 @@ def env(tmp_path, monkeypatch):
                                 target=target, registered=registered))
 
 
+def pname(env, target=None):
+    """The default profile name of a project directory (name + hash of the full path)."""
+    t = (target or env.target).resolve()
+    return setup.default_profile_name(t, t.name, "unused")
+
+
 def run(env, ask=None, target=None, *extra):
     setup.main([str(target or env.target), "--prefix", str(env.prefix),
                 "--bridge-config-dir", str(env.cfg), *extra], ask=ask or Scripted())
@@ -200,7 +206,7 @@ def test_gdrive_grants_go_only_to_that_projects_file_pinned_and_absolute(env):
 
     py, script = env.prefix.resolve() / ".venv/bin/python", env.prefix.resolve() / "tools/gdrive_cli.py"
     allow = json.loads(mine.read_text())["permissionGrants"]["permissionGrants"]["allow"]
-    assert allow == [f"command({py} -I {script} --profile proj {s})"
+    assert allow == [f"command({py} -I {script} --profile {pname(env)} {s})"
                      for s in ("list", "search", "meta", "read", "download")]
     assert "permissionGrants" not in json.loads(other.read_text())
     assert "allow" not in settings(env)["permissions"]
@@ -212,10 +218,10 @@ def test_gdrive_grants_go_only_to_that_projects_file_pinned_and_absolute(env):
 
 def test_gdrive_profile_defaults_to_project_name_and_is_kept_on_rerun(env):
     run(env, Scripted({"Drive CLI": "y"}))
-    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == "proj"
+    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == pname(env)
     ask = Scripted()
     run(env, ask)  # Enter everywhere: "use Drive CLI?" defaults to yes now, profile kept
-    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == "proj"
+    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == pname(env)
     assert any("Drive CLI" in p and "[Y/n]" in p for p in ask.asked)
 
 
@@ -398,7 +404,8 @@ OTHER_FOLDER = "2AbCdEfGhIjKlMnOp"
 PROFILE_Q = {"Drive CLI": "y"}  # profile name defaults to the project dir name: "proj"
 
 
-def profile_path(env, name="proj"):
+def profile_path(env, name=None):
+    name = name or pname(env)
     return env.cfg / "gdrive" / f"{name}.json"
 
 
@@ -438,7 +445,7 @@ def test_service_account_key_file_is_stored_under_config_dir_and_wired_up(env, t
     ask = Scripted({**PROFILE_Q, "プロファイルを作成しますか": "y",
                     "サービスアカウントの JSON 鍵のパス": [str(bad), str(tmp_path / "none.json"), str(key)]})
     run(env, ask)
-    stored = env.cfg / "gdrive" / "proj.sa.json"
+    stored = env.cfg / "gdrive" / f"{pname(env)}.sa.json"
     assert stat.S_IMODE(os.stat(stored).st_mode) == 0o600
     assert json.loads(stored.read_text())["client_email"] == "bot@p.iam.gserviceaccount.com"
     data = json.loads(profile_path(env).read_text())
@@ -537,6 +544,7 @@ def test_broken_or_invalid_profile_is_never_overwritten(env, capsys):
     profile_path(env).write_text("{not json")
     run(env, Scripted(PROFILE_Q))
     assert profile_path(env).read_text() == "{not json"
+    profile_path(env).parent.mkdir(parents=True, exist_ok=True)
     profile_path(env).write_text(json.dumps({"kind": "oauth", "oops": 1}))
     run(env, Scripted(PROFILE_Q))
     assert json.loads(profile_path(env).read_text()) == {"kind": "oauth", "oops": 1}
@@ -671,3 +679,32 @@ def test_menu_items_3_and_4_do_not_ask_the_use_it_gate(env):
     setup.main_menu(session)
     assert not any("使いますか" in p or "対応づけますか" in p for p in ask.asked)
     assert channels(env)["C0TEST123"]["project"] == session.project_id
+
+
+def test_default_profile_names_never_collide_for_same_named_directories(env, tmp_path):
+    a, b = tmp_path / "x" / "app", tmp_path / "y" / "app"
+    assert setup.default_profile_name(a, "app", "1") != setup.default_profile_name(b, "app", "2")
+    assert setup.default_profile_name(a, "app", "1") == setup.default_profile_name(a, "app", "9")  # stable
+    assert setup._PROFILE_NAME_RE.match(setup.default_profile_name(None, "my proj; rm", "id-1"))
+
+
+def test_second_project_can_share_the_first_projects_profile_or_create_its_own(env, tmp_path):
+    run(env, Scripted({"Drive CLI": "y"}))                       # first project: its own profile
+    first = pname(env)
+    profile_path(env).parent.mkdir(parents=True, exist_ok=True)
+    profile_path(env).write_text(json.dumps({"kind": "oauth", "credentials": {"command": ["cat", "/k"]}}))
+    second = tmp_path / "second"
+    second.mkdir()
+    subprocess.run(["git", "init", "-q", str(second)], check=True)
+    ask = Scripted({"Drive CLI": "y", "選択": "1"})              # "proj と同じ設定・権限を使う"
+    run(env, ask, target=second)
+    mine = setup.find_agy_project_json(second.resolve())
+    assert setup.current_gdrive_profile(mine, env.prefix.resolve()) == first
+    assert not profile_path(env, pname(env, second)).exists()
+
+    third = tmp_path / "third"
+    third.mkdir()
+    subprocess.run(["git", "init", "-q", str(third)], check=True)
+    run(env, Scripted({"Drive CLI": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "cat /k"}), target=third)
+    t = setup.find_agy_project_json(third.resolve())
+    assert setup.current_gdrive_profile(t, env.prefix.resolve()) == pname(env, third) != first

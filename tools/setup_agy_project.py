@@ -63,6 +63,7 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
 import argparse
 import getpass
 import glob
+import hashlib
 import json
 import os
 import re
@@ -402,6 +403,19 @@ def current_gdrive_profile(project_json: Path, prefix: Path) -> "str | None":
         if marker in e:
             return e.split(marker, 1)[1].split()[0]
     return None
+
+
+def default_profile_name(target_dir: "Path | None", project_name: str, project_id: str) -> str:
+    """プロジェクトごとに必ず別になる名前: 名前の部分 + フルパス（ディレクトリが無ければ ID）のハッシュ。"""
+    base = re.sub(r"[^A-Za-z0-9_-]", "-", project_name)[:40] or "project"
+    key = str(target_dir) if target_dir is not None else project_id
+    return f"{base}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:8]}"
+
+
+def profile_users(prefix: Path, profile: str, exclude_id: "str | None" = None) -> list[str]:
+    """このプロファイルを許可エントリに使っているプロジェクトの名前。"""
+    return [pr["name"] for pr in list_agy_projects()
+            if pr["id"] != exclude_id and current_gdrive_profile(pr["json"], prefix) == profile]
 
 
 def warn_if_profile_missing(bridge_config_dir: Path, profile: str) -> None:
@@ -832,12 +846,33 @@ class Session:
         if re.search(r"\s", str(prefix)):
             print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
             return
-        profile = current or re.sub(r"[^A-Za-z0-9_-]", "-", self.project_name)   # 既定は プロジェクト名
+        profile = current or self.pick_profile()
         print(f"  プロファイル: {profile}（{config_dir / 'gdrive' / (profile + '.json')}）")
+        others = profile_users(prefix, profile, self.project_id)
+        if others:
+            print(f"  [注意] このプロファイルは {', '.join(others)} と共有です。方針を変えると、どちらにも反映されます。")
         enabled = configure_gdrive_profile(ask, config_dir, profile)
         update_project_gdrive_allow(self.project_json, prefix, profile, enabled)
         warn_if_profile_missing(config_dir, profile)
         warn_if_gdrive_packages_missing(prefix)
+
+    def pick_profile(self) -> str:
+        """新しいプロファイルを作るか、他のプロジェクトのプロファイル(同じ認証情報・方針)を使うかを選ぶ。"""
+        new = default_profile_name(self.target_dir, self.project_name, self.project_id)
+        existing = sorted(p.stem for p in (self.config_dir / "gdrive").glob("*.json")
+                          if _PROFILE_NAME_RE.match(p.stem) and p.stem != new) \
+            if (self.config_dir / "gdrive").is_dir() else []
+        if not existing:
+            return new
+        options = [("n", f"新しいプロファイルを作る（{new}）")]
+        names = {}
+        for i, name in enumerate(existing, 1):
+            users = profile_users(self.prefix, name, self.project_id)
+            who = f"「{'」「'.join(users)}」プロジェクト" if users else f"プロファイル {name}"
+            options.append((str(i), f"{who}と同じ設定・権限を使う（{name}）"))
+            names[str(i)] = name
+        key = choose(self.ask, "Google Drive CLI のプロファイル", options, "n")
+        return names.get(key, new)
 
     # --- Slack ---
     def channel(self, gate: bool = False) -> None:

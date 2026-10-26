@@ -86,8 +86,7 @@ keep as is, `-`: clear the value). It performs the following in order.
    not touched; the agent may edit it freely). Remove the links directly under `.agents/` and
    the `AGENTS.md` include lines created by earlier setups. Append `scratch/` to `.gitignore`
    (only if nothing about scratch is written there).
-5. Ask whether to use the Drive CLI (only for "set up everything"); if so, use the profile name derived from the project name (a different name for each
-   project) and interactively create and configure the profile
+5. Ask whether to use the Drive CLI (only for "set up everything"); if so, use the profile name derived from the directory name and a hash of its full path (never colliding; if other projects have profiles, choose between a new profile and sharing that project's settings and permissions) and interactively create and configure the profile
    (`<config directory>/gdrive/NAME.json`, [`gdrive-profile.en.md`](gdrive-profile.en.md)).
    - If it does not exist, ask for the authentication type (`service_account` (recommended: just share the Drive folders with its email address) / `oauth`) and
      the command that retrieves the credentials (and the scopes, if needed) and create it.

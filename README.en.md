@@ -102,7 +102,13 @@ These steps run without questions, and the results are displayed:
 
 #### 3-2. Google Drive CLI (skip if unused)
 
-Credentials are kept in a profile, `<config dir>/gdrive/<profile>.json`. The profile name is set automatically from the project directory name (characters other than letters, digits, `_` and `-` become `-`). Each project gets its own profile, so one project's Drive permission does not reach another project.
+Credentials and the Drive policy (enabled commands, allowed folders, upload deny list) are kept in a profile, `<config dir>/gdrive/<profile>.json`. The profile name is set automatically from the directory name and a hash of the full path (e.g. `my-project-1a2b3c4d`), so it never collides with another directory.
+
+If other projects have profiles, you first get this choice:
+
+| Prompt | Answer |
+|---|---|
+| `Google Drive CLI のプロファイル` (`選択`) (Drive CLI profile) | `n` (default): create a new profile for this project. A number: use the same settings and permissions as project "XXXX". Credentials and policy are shared, and changing the policy affects XXXX too |
 
 | Prompt | Answer |
 |---|---|
