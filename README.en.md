@@ -69,7 +69,7 @@ To run it later (you answered N, or want to change settings):
 
 A menu opens. Choose by typing a number or key (the `[...]` item is chosen with Enter).
 
-1. **First screen**: the projects registered in agy are listed. Choose the number of the project to set up, or `n`
+1. **First screen**: the projects registered in agy are listed with their setup status. Choose the number of the project to set up, or `n`
    (create a new project). `t` sets the Slack tokens (shared by everything; 3-3) and `q` quits.
 2. **Project menu**: after choosing a project you get the items below. **The first time, choose `1`.**
 
@@ -82,6 +82,17 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 | `5` Show the current state | |
 | `b` Back to the project list | |
 | `q` Quit | |
+
+**Statuses in the list**
+
+| Shown | Meaning |
+|---|---|
+| `[設定済み]` (configured) | The required settings (safety mechanisms: rules, hook, `deny`; and a Slack channel) are in place. "Configured" does **not** mean finished: every unset optional item is listed after `未設定（任意）:` (Drive CLI, display name, icon, model, effort, watched files, permission-button stats). Leave alone what you do not use |
+| `[途中]` (in progress) | Some required settings are missing; they are listed after `未設定（必須）:` |
+| `[未設定]` (not set up) | None of the required settings exist |
+| `⚠ …` | An inconsistency (a Drive permission without its profile, etc.) |
+
+The `t` line of the first screen also shows the Slack token status (`設定済み` / `未設定（必須）: …`).
 
 To set up another project, go back with `b` and choose again. Prompts that ask for a path complete it with Tab.
 

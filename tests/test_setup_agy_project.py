@@ -808,3 +808,62 @@ def test_required_settings_come_before_the_optional_drive_cli(env):
     order = [p for p in ask.asked if "チャンネル ID" in p or "Slack トークン" in p or "SLACK_" in p or "Drive CLI を使います" in p]
     assert [("チャンネル" in p, "Drive" in p) for p in order][0] == (True, False)
     assert "Drive" in order[-1]
+
+
+# --- project list status ------------------------------------------------------------------
+
+def _status(env, capsys):
+    session, ask = menu_session(env, {})
+    setup.main_menu(session)                 # Enter = quit; the list is what we look at
+    return capsys.readouterr().out
+
+
+def test_list_shows_unset_for_a_registered_but_unconfigured_project(env, capsys):
+    setup.register_agy_project(env.target.resolve())
+    out = _status(env, capsys)
+    assert "[未設定]" in out and "未設定（必須）: ルールとフック, Slack チャンネル" in out
+    assert "未設定（任意）" not in out
+
+
+def test_list_shows_in_progress_with_what_is_missing(env, capsys):
+    run(env)                                  # rules + hook, but no channel
+    out = _status(env, capsys)
+    assert "[途中]" in out and "未設定（必須）: Slack チャンネル" in out and "ルールとフック" not in out.split("未設定（必須）:")[1].splitlines()[0]
+
+
+def test_configured_project_lists_every_unset_optional_item(env, capsys):
+    run(env, Scripted({"チャンネル ID": "C0TEST123"}))
+    out = _status(env, capsys)
+    assert "[設定済み]" in out and "Slack: C0TEST123" in out
+    optional = [l for l in out.splitlines() if "未設定（任意）" in l][0]
+    for item in ("Drive CLI", "表示名", "アイコン", "モデル", "effort", "監視ファイル", "権限ボタンの統計"):
+        assert item in optional
+
+
+def test_optional_items_disappear_from_the_list_once_set(env, capsys):
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Bot", "アイコン絵文字": "robot_face",
+                       "モデル": "m", "effort": "high", "監視するファイル": "AGENTS.md", "権限ボタンの統計": "n",
+                       "Drive CLI": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "cat /k"}))
+    out = _status(env, capsys)
+    assert "[設定済み]" in out and "未設定（任意）" not in out
+
+
+def test_broken_safety_mechanism_makes_a_configured_project_incomplete(env, capsys):
+    run(env, Scripted({"チャンネル ID": "C0TEST123"}))
+    (env.target / ".agents/rules/agent-safety-rules.md").unlink()
+    out = _status(env, capsys)
+    assert "[途中]" in out and "未設定（必須）: ルールとフック" in out
+
+
+def test_list_warns_when_the_drive_profile_is_missing(env, capsys):
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "Drive CLI": "y", "認証の種類": "oauth",
+                       "資格情報を取り出すコマンド": "cat /k"}))
+    profile_path(env).unlink()
+    assert "⚠ Drive のプロファイルがありません" in _status(env, capsys)
+
+
+def test_main_menu_shows_whether_the_tokens_are_set(env, capsys):
+    out = _status(env, capsys)
+    assert "未設定（必須）: SLACK_BOT_TOKEN, SLACK_APP_TOKEN" in out
+    (env.cfg / "env").write_text("SLACK_BOT_TOKEN=xoxb-real\nSLACK_APP_TOKEN=xapp-real\n")
+    assert "[設定済み]" in _status(env, capsys)

@@ -80,6 +80,7 @@ import agy_settings  # noqa: E402
 import bridge_config  # noqa: E402
 import gdrive_cli  # noqa: E402
 import gdrive_policy  # noqa: E402
+import safety_stack  # noqa: E402
 import script_integrity  # noqa: E402
 from agy_settings import ensure_list_entries, load_json, save_json  # noqa: E402
 
@@ -738,8 +739,7 @@ def _ask_channel_options(ask: Prompter, entry: dict) -> None:
     _set_or_pop(entry, "watched_config_files", [s.strip() for s in watched.split(",")] if watched else None)
     telemetry = dict(entry.get("telemetry") or {})
     stats = ask.yes_no("権限ボタンの統計を取りますか?", default=bool(telemetry.get("permission_stats")))
-    if stats or "permission_stats" in telemetry:
-        telemetry["permission_stats"] = stats
+    telemetry["permission_stats"] = stats          # N も記録する（一覧で「回答済み」と分かるように）
     _set_or_pop(entry, "telemetry", telemetry or None)
 
 
@@ -1031,6 +1031,54 @@ class Session:
             return []
         return [cid for cid, e in channels.items() if (e or {}).get("project") == project_id]
 
+    def missing_tokens(self) -> "list[str]":
+        env = self.config_dir / "env"
+        if not env.exists():
+            return ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]
+        text = env.read_text(encoding="utf-8")
+        out = []
+        for key, hint in (("SLACK_BOT_TOKEN", "xoxb-"), ("SLACK_APP_TOKEN", "xapp-")):
+            v = bridge_config.get_env_value(text, key)
+            if not v or v == f"{hint}...":
+                out.append(key)
+        return out
+
+    def channel_entries(self, project_id: str) -> "list[dict]":
+        cfg = self.config_dir / "config.yaml"
+        if not cfg.exists():
+            return []
+        try:
+            channels = bridge_config.read_channels(cfg.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        return [dict(e or {}) for e in channels.values() if (e or {}).get("project") == project_id]
+
+    def project_status(self, pr: dict) -> dict:
+        """一覧に出す状態。必須 = 安全機構（ルール・フック・deny）と Slack チャンネル。
+        label: 設定済み / 途中 / 未設定。設定済みのときは、未設定の任意項目を全部挙げる。"""
+        folder = pr["folder"]
+        state = Path(script_integrity.state_dir(str(self.config_dir), str(folder))) if folder else None
+        problems = safety_stack.check(self.prefix, self.config_dir, folder, state,
+                                      agy_settings.GLOBAL_HOOKS_PATH, agy_settings.GLOBAL_SETTINGS_PATH)
+        entries = self.channel_entries(pr["id"])
+        missing = (["ルールとフック"] if problems else []) + ([] if entries else ["Slack チャンネル"])
+        label = "設定済み" if not missing else ("未設定" if len(missing) == 2 else "途中")
+        optional, warnings = [], []
+        if not missing:
+            if current_gdrive_profile(pr["json"], self.prefix) is None:
+                optional.append("Drive CLI")
+            for name, keys in (("表示名", ("display_name",)), ("アイコン", ("icon_emoji", "icon_url")),
+                               ("モデル", ("model",)), ("effort", ("effort",)),
+                               ("監視ファイル", ("watched_config_files",))):
+                if not any(e.get(k) for e in entries for k in keys):
+                    optional.append(name)
+            if not any("permission_stats" in (e.get("telemetry") or {}) for e in entries):
+                optional.append("権限ボタンの統計")
+        profile = current_gdrive_profile(pr["json"], self.prefix)
+        if profile and not (self.config_dir / "gdrive" / f"{profile}.json").exists():
+            warnings.append(f"Drive のプロファイルがありません（{profile}）")
+        return {"label": label, "missing": missing, "optional": optional, "warnings": warnings}
+
     def status(self) -> None:
         print("-- 現在の状態 --")
         if not self.selected:
@@ -1113,9 +1161,20 @@ def main_menu(session: Session) -> None:
         options = []
         for i, pr in enumerate(projects, 1):
             marks = session.mapped_channels(pr["id"])
-            options.append((str(i), f"{pr['name']}  {pr['folder'] or '(ディレクトリ無し)'}"
-                                    + (f"  [Slack: {', '.join(marks)}]" if marks else "")))
-        options += [("n", "新しいプロジェクトを作る"), ("t", "Slack のトークンを設定する（全体で共通）"), ("q", "終了")]
+            st = session.project_status(pr)
+            label = (f"{pr['name']}  {pr['folder'] or '(ディレクトリ無し)'}  [{st['label']}]"
+                     + (f"  Slack: {', '.join(marks)}" if marks else ""))
+            if st["missing"]:
+                label += f"\n         未設定（必須）: {', '.join(st['missing'])}"
+            if st["optional"]:
+                label += f"\n         未設定（任意）: {', '.join(st['optional'])}"
+            for w in st["warnings"]:
+                label += f"\n         ⚠ {w}"
+            options.append((str(i), label))
+        missing_tokens = session.missing_tokens()
+        tok = f"未設定（必須）: {', '.join(missing_tokens)}" if missing_tokens else "設定済み"
+        options += [("n", "新しいプロジェクトを作る"),
+                    ("t", f"Slack のトークンを設定する（全体で共通）  [{tok}]"), ("q", "終了")]
         key = choose(ask, "agy-slack-bridge セットアップ — 設定するプロジェクトを選んでください",
                      options, "q")
         try:
