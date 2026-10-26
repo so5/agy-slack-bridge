@@ -86,7 +86,7 @@ keep as is, `-`: clear the value). It performs the following in order.
    not touched; the agent may edit it freely). Remove the links directly under `.agents/` and
    the `AGENTS.md` include lines created by earlier setups. Append `scratch/` to `.gitignore`
    (only if nothing about scratch is written there).
-5. Ask whether to use the Drive CLI; if so, decide the profile name (a different name for each
+5. Ask whether to use the Drive CLI (only for "set up everything"); if so, use the profile name derived from the project name (a different name for each
    project) and interactively create and configure the profile
    (`<config directory>/gdrive/NAME.json`, [`gdrive-profile.en.md`](gdrive-profile.en.md)).
    - If it does not exist, ask for the authentication type (`service_account` (recommended: just share the Drive folders with its email address) / `oauth`) and
@@ -104,9 +104,9 @@ keep as is, `-`: clear the value). It performs the following in order.
      approval every time.
    - The profile is written with 0600 and its directory with 0700 (a corrupted profile is not
      overwritten).
-6. Slack channel mapping (`channels` in `config.yaml`): channel ID, name, display name, icon,
-   model, effort, config files to watch, and permission button statistics. Optional items can
-   be skipped. Only the relevant entry is rewritten; other comments and items are preserved
+6. Slack channel mapping (`channels` in `config.yaml`; for "set up everything" it first asks whether to map): channel ID, display name, icon,
+   model, effort, and config files to watch. Optional items can be skipped.
+   Permission button statistics are not asked (switch them with `/agy-stats on|off`). Only the relevant entry is rewritten; other comments and items are preserved
    (the original file is kept as `config.yaml.bak`).
 7. The Slack tokens in `env`, if not yet set.
 

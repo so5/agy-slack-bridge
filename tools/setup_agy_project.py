@@ -583,8 +583,6 @@ def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "
         return None
     created = data is None
     if created:
-        if not ask.yes_no("プロファイルを作成しますか?", default=True):
-            return None
         data = ask_new_profile(ask, config_dir, profile)
         if data is None:
             return None
@@ -618,8 +616,6 @@ def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "
                 print("    [取消] 方針の変更を取り消しました")
                 new = old
     if created or new != old:
-        if not ask.yes_no(f"{path} に書き込みますか?", default=True):
-            return None
         gdrive_policy.write_profile(path, gdrive_policy.apply_policy(data, new))
         print(f"  [書込] {path}")
     else:
@@ -659,7 +655,8 @@ def _set_or_pop(entry: dict, key: str, value) -> None:
         entry[key] = value
 
 
-def configure_channel(ask: Prompter, config_path: Path, project_id: str, project_name: str) -> None:
+def configure_channel(ask: Prompter, config_path: Path, project_id: str, project_name: str,
+                      gate: bool = False) -> None:
     if not config_path.exists():
         print(f"  [スキップ] {config_path} がありません（先に install.py を実行してください）")
         return
@@ -668,7 +665,7 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
     mine = [cid for cid, e in channels.items() if (e or {}).get("project") == project_id]
     if mine:
         print(f"  このプロジェクトに割り当て済みのチャンネル: {', '.join(mine)}")
-    if not ask.yes_no("Slack チャンネルを対応づけますか?", default=not mine):
+    if gate and not ask.yes_no("Slack チャンネルを対応づけますか?", default=not mine):
         return
     channel_id = ask.text("チャンネル ID", default=mine[0] if len(mine) == 1 else None,
                           validate=_validate_channel_id)
@@ -699,12 +696,6 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
                        default=",".join(entry.get("watched_config_files") or []) or None,
                        validate=_validate_rel_paths)
     _set_or_pop(entry, "watched_config_files", [s.strip() for s in watched.split(",")] if watched else None)
-    telemetry = dict(entry.get("telemetry") or {})
-    stats = ask.yes_no("権限ボタンの統計を取りますか?",
-                       default=bool(telemetry.get("permission_stats")))
-    if stats or "permission_stats" in telemetry:
-        telemetry["permission_stats"] = stats
-    _set_or_pop(entry, "telemetry", telemetry or None)
 
     new_text = bridge_config.upsert_channel(text, channel_id, entry)
     if new_text == text:
@@ -825,32 +816,30 @@ class Session:
         return True
 
     # --- Drive CLI ---
-    def drive(self) -> None:
+    def drive(self, gate: bool = False) -> None:
         if not self.ready():
             return
         ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
         print("-- Google Drive CLI --")
         current = current_gdrive_profile(self.project_json, prefix)
-        if ask.yes_no("Drive CLI を使いますか?", default=current is not None):
-            if re.search(r"\s", str(prefix)):
-                print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
-                return
-            default = current or re.sub(r"[^A-Za-z0-9_-]", "-", self.project_name)
-            profile = ask.text("プロファイル名", default=default,
-                               validate=lambda v: None if _PROFILE_NAME_RE.match(v)
-                               else "英数字と _ - だけ使えます")
-            if profile:
-                enabled = configure_gdrive_profile(ask, config_dir, profile)
-                update_project_gdrive_allow(self.project_json, prefix, profile, enabled)
-                warn_if_profile_missing(config_dir, profile)
-                warn_if_gdrive_packages_missing(prefix)
+        if gate and not ask.yes_no("Drive CLI を使いますか?", default=current is not None):
+            return
+        if re.search(r"\s", str(prefix)):
+            print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
+            return
+        profile = current or re.sub(r"[^A-Za-z0-9_-]", "-", self.project_name)   # 既定は プロジェクト名
+        print(f"  プロファイル: {profile}（{config_dir / 'gdrive' / (profile + '.json')}）")
+        enabled = configure_gdrive_profile(ask, config_dir, profile)
+        update_project_gdrive_allow(self.project_json, prefix, profile, enabled)
+        warn_if_profile_missing(config_dir, profile)
+        warn_if_gdrive_packages_missing(prefix)
 
     # --- Slack ---
-    def channel(self) -> None:
+    def channel(self, gate: bool = False) -> None:
         if not self.ready():
             return
         print("-- Slack チャンネル --")
-        configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name)
+        configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name, gate)
 
     def tokens(self) -> None:
         print("-- Slack トークン --")
@@ -888,8 +877,8 @@ class Session:
     def run_all(self, target_arg: "str | None" = None) -> None:
         self.project(target_arg)
         if self.project_json is not None:
-            self.drive()
-            self.channel()
+            self.drive(gate=True)
+            self.channel(gate=True)
         self.tokens()
         print("\n完了。設定を変えた場合は、ブリッジを再起動してください。")
 
@@ -926,8 +915,8 @@ def project_menu(session: Session) -> bool:
             if key == "1":
                 session.setup_files()
                 if session.project_json is not None:
-                    session.drive()
-                    session.channel()
+                    session.drive(gate=True)
+                    session.channel(gate=True)
             elif key == "2":
                 session.setup_files()
             elif key == "3":

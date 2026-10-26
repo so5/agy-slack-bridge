@@ -195,12 +195,12 @@ def test_refuses_without_a_terminal(env):
 def test_gdrive_grants_go_only_to_that_projects_file_pinned_and_absolute(env):
     other = env.gemini / "projects" / "other.json"
     other.write_text(json.dumps({"projectResources": {"resources": []}}))
-    run(env, Scripted({"Drive CLI": "y", "プロファイル名": "my-profile"}))
+    run(env, Scripted({"Drive CLI": "y"}))
     (mine,) = [p for p in (env.gemini / "projects").glob("*.json") if p != other]
 
     py, script = env.prefix.resolve() / ".venv/bin/python", env.prefix.resolve() / "tools/gdrive_cli.py"
     allow = json.loads(mine.read_text())["permissionGrants"]["permissionGrants"]["allow"]
-    assert allow == [f"command({py} -I {script} --profile my-profile {s})"
+    assert allow == [f"command({py} -I {script} --profile proj {s})"
                      for s in ("list", "search", "meta", "read", "download")]
     assert "permissionGrants" not in json.loads(other.read_text())
     assert "allow" not in settings(env)["permissions"]
@@ -219,10 +219,13 @@ def test_gdrive_profile_defaults_to_project_name_and_is_kept_on_rerun(env):
     assert any("Drive CLI" in p and "[Y/n]" in p for p in ask.asked)
 
 
-def test_gdrive_profile_name_is_validated(env):
-    ask = Scripted({"Drive CLI": "y", "プロファイル名": ["a b; rm", "../x", "ok-name"]})
-    run(env, ask)
-    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == "ok-name"
+def test_gdrive_profile_name_is_derived_from_the_project_name_and_sanitised(env, tmp_path):
+    odd = tmp_path / "my proj; rm"
+    odd.mkdir()
+    subprocess.run(["git", "init", "-q", str(odd)], check=True)
+    run(env, Scripted({"Drive CLI": "y"}), target=odd)
+    assert setup._PROFILE_NAME_RE.match(
+        setup.current_gdrive_profile(setup.find_agy_project_json(odd), env.prefix.resolve()))
 
 
 def test_profile_is_pinned_before_the_subcommand_in_every_entry(tmp_path):
@@ -242,14 +245,12 @@ def test_warns_when_profile_missing(env, capsys):
 def test_channel_mapping_written_with_project_id_and_all_fields(env):
     run(env, Scripted({
         "チャンネル ID": "C0TEST123", "表示名": "Helper", "アイコン絵文字": ":abacus:",
-        "モデル": "gemini-x", "effort": "high", "監視するファイル": ".agents/local-tools.md, a/b.md",
-        "権限ボタンの統計": "y"}))
+        "モデル": "gemini-x", "effort": "high", "監視するファイル": ".agents/local-tools.md, a/b.md"}))
     pid = project_json(env).stem
     assert channels(env) == {"C0TEST123": {
         "project": pid, "display_name": "Helper", "icon_emoji": ":abacus:",
         "model": "gemini-x", "effort": "high",
-        "watched_config_files": [".agents/local-tools.md", "a/b.md"],
-        "telemetry": {"permission_stats": True}}}
+        "watched_config_files": [".agents/local-tools.md", "a/b.md"]}}
     assert (env.cfg / "config.yaml.bak").exists()
     assert "# Example entries" in (env.cfg / "config.yaml").read_text()  # comments survive
 
@@ -659,3 +660,12 @@ def test_existing_directory_needs_overwrite_confirmation_and_new_one_does_not(en
     setup.main_menu(setup.Session(ask, env.prefix, env.cfg))
     assert not any("上書きしますか" in p or "作成しますか" in p or "登録しますか" in p for p in ask.asked)
     assert (tmp_path / "brand-new/.git").is_dir() and len(env.registered) == 1
+
+
+def test_menu_items_3_and_4_do_not_ask_the_use_it_gate(env):
+    run(env)   # registers env.target
+    session, ask = menu_session(env, {"選択": ["1", "3", "4", "b", "q"], "認証の種類": "oauth",
+                                      "資格情報を取り出すコマンド": "cat /k", "チャンネル ID": "C0TEST123"})
+    setup.main_menu(session)
+    assert not any("使いますか" in p or "対応づけますか" in p for p in ask.asked)
+    assert channels(env)["C0TEST123"]["project"] == session.project_id

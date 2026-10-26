@@ -102,16 +102,16 @@ These steps run without questions, and the results are displayed:
 
 #### 3-2. Google Drive CLI (skip if unused)
 
+Credentials are kept in a profile, `<config dir>/gdrive/<profile>.json`. The profile name is set automatically from the project directory name (characters other than letters, digits, `_` and `-` become `-`). Each project gets its own profile, so one project's Drive permission does not reach another project.
+
 | Prompt | Answer |
 |---|---|
-| `Drive CLI を使いますか? [y/N]` (use the Drive CLI?) | **N** to skip (go to 3-3); **y** to use it |
-| `プロファイル名` (profile name) | Letters, digits, `_`, `-`. Use a different name per project. Default: the project name. The profile is `<config dir>/gdrive/NAME.json` |
-| `プロファイルを作成しますか? [Y/n]` (create the profile?) | **Y** |
+| `Drive CLI を使いますか? [y/N]` (use the Drive CLI?) | Asked only for item `1` (set up everything). **N** to skip (go to 3-3); **y** to use it |
 | `認証の種類（service_account / oauth）` (authentication type) | See the table below. If unsure, press Enter (`service_account`) |
 | `サービスアカウントの JSON 鍵のパス` (path to the service account JSON key) | When you chose `service_account`. The path of the downloaded key file. It is saved as `<config dir>/gdrive/<profile>.sa.json` (0600) and the email address to share folders with is shown (delete the original key file). Empty = use another key store via the next prompt |
 | `資格情報を取り出すコマンド` (command that prints the credentials) | For `oauth`, or when the key path was left empty. A **command that prints the key / token JSON to stdout** (examples below). Do not type a scope (`drive` etc.) here |
 | `` `…` というコマンドが見つかりません。このまま使いますか? [y/N]`` (command not found; use anyway?) | Only shown when the command is not found. If it is a typo, answer **N** and start again |
-| `詳細設定（スコープ・方針）を変更しますか? [y/N]` (change the advanced settings?) | Scopes and policy (enabled commands, allowed folders, upload deny patterns). **N** keeps the defaults; **y** to change them |
+| `詳細設定（スコープ・方針）を変更しますか? [y/N]` (change the advanced settings?) | **N**: keep the defaults below. **y**: answer the advanced questions below. Defaults: scopes `drive.readonly` (read) / `drive` (write); all commands enabled (`list,search,meta,read,download,mkdir,upload,update`); no folder limit; upload deny list of secret-like files (`.env*`, `*.pem`, `*.key`, …) and directories (`.git`, `.ssh`, …). With no folder limit, everything the credentials can see is in scope, so setting folders is recommended |
 
 **Which authentication**
 
@@ -155,25 +155,23 @@ Prompts when you answered **y** to "change the advanced settings":
 | Prompt | Answer |
 |---|---|
 | `読み取りに使うスコープ` / `書き込みに使うスコープ` (read / write scope) | Only when creating the profile. Defaults: `drive.readonly` / `drive`. Change only for an OAuth token consented with other scopes |
-| `有効にするコマンド（カンマ区切り or all）` (enabled commands) | Subcommands to allow. Default: the five read ones (`list,search,meta,read,download`). Write commands (`mkdir` / `upload` / `update`) never enter the allow list; they **ask for approval every time** |
+| `有効にするコマンド（カンマ区切り or all）` (enabled commands) | Subcommands to allow. Default: all. The read ones (`list,search,meta,read,download`) are registered as permanent permissions. The write ones (`mkdir` / `upload` / `update`) never enter the allow list even when enabled; Slack asks for approval each time. To forbid writing entirely, enter only the read ones |
 | `許可フォルダ（URL か ID、カンマ区切り。`-` で制限なし）` (allowed folders) | Folders that may be touched; a folder URL can be pasted. `-` = no limit. **Strongly recommended** (OAuth sees the user's whole Drive) |
-| `アップロード拒否パターン（k=今のまま / a=追加 / r=置換）` (upload deny patterns) | Normally **k**. a / r then ask for file-name patterns (e.g. `*.sqlite`) and directory names |
-| `緩める変更を適用しますか? [y/N]` (apply the loosening change?) | Only when you widened permissions; the diff is shown first |
-| `…json に書き込みますか? [Y/n]` (write the file?) | **Y** |
+| `アップロード拒否パターン（k=今のまま / a=追加 / r=置換）` (upload deny patterns) | A deny list that stops secrets from being uploaded by mistake. **k**: keep the current list. **a**: add file-name patterns (e.g. `*.sqlite`) and directory names to the default list. **r**: type the whole list again (the default entries are dropped, so be careful) |
+| `緩める変更を適用しますか? [y/N]` (apply the loosening change?) | Only when you widened permissions (added a command, added a folder or removed the folder limit, removed a deny pattern). Read the diff shown just before: **y** if it is what you meant, **N** otherwise (only that change is cancelled) |
 
 #### 3-3. Mapping a Slack channel
 
 | Prompt | Answer |
 |---|---|
-| `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | **N** to skip (go on); **Y** to map |
+| `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | Asked only for item `1` (set up everything). **N** to skip (go on); **Y** to map |
 | `チャンネル ID` (channel ID) | The `C…` / `G…` from step 1 |
 | `表示名` (display name) | Optional. The name on the bot's replies (needs `chat:write.customize`) |
 | `アイコン絵文字` (icon emoji) | Optional, e.g. `robot_face` (the surrounding `:` are optional). Type `:` and a few letters in a Slack message box to see candidate names (custom emoji work the same way). If given, the image URL is not asked |
 | `アイコン画像 URL` (icon image URL) | Only when the emoji is empty. A URL starting with `https://` |
-| `モデル` (model) | Optional (agy's default). A name from `agy models` |
-| `effort` | Optional. How deeply the model reasons |
+| `モデル` (model) | Empty = agy's default model. Otherwise a name from `agy models`. A name with `-high` / `-low` already includes the reasoning depth, so leave `effort` empty |
+| `effort（low / medium / high / xhigh / max）` | Empty = agy's default. How deeply the model reasons. Leave it empty if the model name above ends in `-high` etc. (they conflict) |
 | `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Default: empty (nothing is watched). Paths relative to the project directory (e.g. `AGENTS.md`). Changes are not blocked: after a change, Slack gets a notice with a diff (checked every 30 minutes by default), and its buttons let you accept the change or restore the file. See "Config drift detection" in [usage.en.md](docs/usage.en.md) |
-| `権限ボタンの統計を取りますか? [y/N]` (collect permission-button stats?) | Normally **N** |
 
 The original `config.yaml` is kept as `config.yaml.bak`.
 
