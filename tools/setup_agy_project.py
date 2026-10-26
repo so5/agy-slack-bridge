@@ -338,6 +338,11 @@ def list_agy_projects() -> list[dict]:
     return sorted(found, key=lambda x: x["name"])
 
 
+def confirm_existing_dir(ask: "Prompter", path: Path) -> bool:
+    """入力されたパスが既にあるとき、ルール・設定の書き込み（上書き）を確認する。"""
+    return not path.exists() or ask.yes_no(f"{path} は既に存在します。上書きしますか?", default=False)
+
+
 def choose_target(ask: "Prompter") -> "tuple[Path | None, dict | None]":
     """(ディレクトリ, 既存プロジェクト)。既存を選ぶか、ディレクトリのパスを直接入力する。"""
     projects = list_agy_projects()
@@ -363,7 +368,10 @@ def choose_target(ask: "Prompter") -> "tuple[Path | None, dict | None]":
             else:
                 print("    一覧にある番号を入力してください")
                 continue
-        return Path(raw).expanduser().resolve(), None
+        path = Path(raw).expanduser().resolve()
+        if not confirm_existing_dir(ask, path):
+            sys.exit("中止しました。")
+        return path, None
 
 
 def register_agy_project(target_dir: Path) -> None:
@@ -745,17 +753,16 @@ class Session:
 
     # --- 対象のプロジェクト ---
     def open_project(self, target_dir: "Path | None", existing: "dict | None" = None) -> None:
-        """対象を決める。ディレクトリが無ければ作り(確認あり)、git リポジトリでなければ git init し、
-        agy に未登録なら登録する(確認あり)。ルールやフックの配置は setup_files。"""
+        """対象を決める。ディレクトリが無ければ作り、git リポジトリでなければ git init し、
+        agy に未登録なら登録する(いずれも確認なし。結果を表示する)。ルールやフックの配置は setup_files。"""
         ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
         if target_dir is not None:
             if prefix == target_dir or prefix in target_dir.parents or config_dir in (target_dir, *target_dir.parents):
                 sys.exit("エラー: インストール先・設定ディレクトリの中をプロジェクトにはできません。")
             print(f"=== {target_dir} ===")
             if not target_dir.is_dir():
-                if not ask.yes_no(f"ディレクトリ {target_dir} を作成しますか?"):
-                    sys.exit("中止しました。")
                 target_dir.mkdir(parents=True)
+                print(f"  [作成] {target_dir}")
             if not (target_dir / ".git").exists():
                 # git 管理は必須(恒久許可コマンドの commit-before-run 判定の前提)
                 subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
@@ -767,12 +774,13 @@ class Session:
         print("-- agy プロジェクト --")
         project_json = existing["json"] if existing else find_agy_project_json(target_dir)
         if project_json is None:
-            if ask.yes_no("agy に登録しますか?（`agy --new-project`）"):
-                register_agy_project(target_dir)
-                project_json = find_agy_project_json(target_dir)
+            register_agy_project(target_dir)
+            project_json = find_agy_project_json(target_dir)
             if project_json is None:
-                print("  [未登録] 登録されていないので、許可の登録とチャンネルの対応づけは行えません"
-                      "（登録してから、もう一度やり直してください）。")
+                print("  [失敗] agy への登録ができませんでした。許可の登録とチャンネルの対応づけは行えません"
+                      "（agy にログインしているか確認して、もう一度やり直してください）。")
+            else:
+                print("  [登録] agy に登録しました（agy --new-project）")
         self.project_json = project_json
         self.project_id = self.project_name = None
         if project_json is not None:
@@ -953,8 +961,9 @@ def main_menu(session: Session) -> None:
                 session.tokens()
             elif key == "n":
                 raw = ask.text("新しいプロジェクトのディレクトリのパス", paths=True)
-                if raw:
-                    session.open_project(Path(raw).expanduser().resolve())
+                path = Path(raw).expanduser().resolve() if raw else None
+                if path and confirm_existing_dir(ask, path):
+                    session.open_project(path)
                     if project_menu(session):
                         key = "q"
             else:

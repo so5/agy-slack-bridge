@@ -124,8 +124,9 @@ def test_idempotent(env):
     assert len(env.registered) == 1
 
 
-def test_declined_registration_still_sets_up_files_but_nothing_project_specific(env):
-    ask = Scripted({"agy に登録しますか": "n", "Drive CLI": "y"})
+def test_failed_registration_still_sets_up_files_but_nothing_project_specific(env, monkeypatch):
+    monkeypatch.setattr(setup, "register_agy_project", lambda d: None)
+    ask = Scripted({"Drive CLI": "y"})
     run(env, ask)
     assert env.registered == []
     assert not any("チャンネル" in p for p in ask.asked)
@@ -342,11 +343,11 @@ def test_project_without_a_directory_only_gets_drive_and_channel_setup(env):
 def test_menu_rejects_unknown_numbers_and_accepts_a_path_or_zero(env, tmp_path):
     _existing_project(env, "one", None)
     new = tmp_path / "fresh"
-    ask = Scripted({"番号": ["7", "0"], "ディレクトリのパス": str(new), "ディレクトリ": "y"})
+    ask = Scripted({"番号": ["7", "0"], "ディレクトリのパス": str(new)})
     run_menu(env, ask)
     assert (new / ".git").is_dir()
     assert len(env.registered) == 1
-    ask = Scripted({"番号": str(tmp_path / "other")})
+    ask = Scripted({"番号": str(tmp_path / "other"), "上書きしますか": "y"})
     (tmp_path / "other").mkdir()
     run_menu(env, ask)
     assert (tmp_path / "other/.git").is_dir()
@@ -581,7 +582,7 @@ def test_main_menu_lists_projects_and_quits_on_enter(env, capsys):
 def test_new_project_then_project_menu_runs_everything_and_returns(env, capsys):
     session, ask = menu_session(env, {"選択": ["n", "1", "b", "q"],
                                       "新しいプロジェクトのディレクトリ": str(env.target),
-                                      "Drive CLI": "n", "Slack チャンネルを対応づけ": "y",
+                                      "上書きしますか": "y", "Drive CLI": "n", "Slack チャンネルを対応づけ": "y",
                                       "チャンネル ID": "C0TEST123"})
     setup.main_menu(session)
     assert channels(env)["C0TEST123"]["project"] == session.project_id
@@ -598,7 +599,8 @@ def test_selecting_an_existing_project_by_number(env, capsys):
 
 def test_menu_rejects_unknown_choices_and_survives_errors(env, capsys):
     session, ask = menu_session(env, {"選択": ["zzz", "n", "q"],
-                                      "新しいプロジェクトのディレクトリ": str(env.prefix)})  # inside the install prefix
+                                      "新しいプロジェクトのディレクトリ": str(env.prefix),
+                                      "上書きしますか": "y"})  # inside the install prefix
     setup.main_menu(session)
     out = capsys.readouterr().out
     assert sum("選択" in p for p in ask.asked) == 3  # "zzz" was rejected and asked again
@@ -645,3 +647,15 @@ def test_icon_emoji_accepts_any_script_and_rejects_only_spaces_and_inner_colons(
     assert setup._validate_emoji(":試験管:") is None
     assert setup._validate_emoji("a b") is not None
     assert setup._validate_emoji("a:b") is not None
+
+
+def test_existing_directory_needs_overwrite_confirmation_and_new_one_does_not(env, tmp_path):
+    ask = Scripted({"選択": ["n", "q"], "新しいプロジェクトのディレクトリ": str(env.target)})  # 上書き: Enter = no
+    session = setup.Session(ask, env.prefix, env.cfg)
+    setup.main_menu(session)
+    assert any("上書きしますか" in p for p in ask.asked)
+    assert env.registered == []
+    ask = Scripted({"選択": ["n", "q"], "新しいプロジェクトのディレクトリ": str(tmp_path / "brand-new")})
+    setup.main_menu(setup.Session(ask, env.prefix, env.cfg))
+    assert not any("上書きしますか" in p or "作成しますか" in p or "登録しますか" in p for p in ask.asked)
+    assert (tmp_path / "brand-new/.git").is_dir() and len(env.registered) == 1

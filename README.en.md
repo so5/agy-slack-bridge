@@ -92,13 +92,13 @@ The directory you specify for a new project is the agy project directory (the ro
 | Prompt | Answer |
 |---|---|
 | `新しいプロジェクトのディレクトリのパス` (directory path of the new project; after choosing `n` on the first screen) | e.g. `~/WORK/my-project`. Not asked when you choose an already registered project |
-| `ディレクトリ <path> を作成しますか? [Y/n]` (create the directory?) | Y |
+| `<path> は既に存在します。上書きしますか? [y/N]` (already exists; overwrite?) | Only when you give an existing directory. **y** to set it up as is, **N** to cancel |
 
-If the directory is not a git repository, it is initialised with `git init` and you are told so (git is required; nothing is committed).
+These steps run without questions, and the results are displayed:
 
-| Prompt | Answer |
-|---|---|
-| `agy に登録しますか?（`agy --new-project`） [Y/n]` (register with agy?) | **Y** (this calls the model once) |
+- Creates the directory if it does not exist.
+- Runs `git init` if it is not a git repository (git is required; nothing is committed).
+- Registers it with agy if it is not registered yet (`agy --new-project`; calls the model once).
 
 #### 3-2. Google Drive CLI (skip if unused)
 
@@ -165,7 +165,7 @@ Prompts when you answered **y** to "change the advanced settings":
 
 | Prompt | Answer |
 |---|---|
-| `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | **Y** |
+| `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | **N** to skip (go on); **Y** to map |
 | `チャンネル ID` (channel ID) | The `C…` / `G…` from step 1 |
 | `表示名` (display name) | Optional. The name on the bot's replies (needs `chat:write.customize`) |
 | `アイコン絵文字` (icon emoji) | Optional, e.g. `robot_face` (the surrounding `:` are optional). Type `:` and a few letters in a Slack message box to see candidate names (custom emoji work the same way). If given, the image URL is not asked |
