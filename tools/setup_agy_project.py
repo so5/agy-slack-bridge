@@ -415,6 +415,28 @@ def profile_users(prefix: Path, profile: str, exclude_id: "str | None" = None) -
             if pr["id"] != exclude_id and current_gdrive_profile(pr["json"], prefix) == profile]
 
 
+def remove_project_gdrive_allow(project_json: Path, prefix: Path, profile: str) -> None:
+    """このプロジェクトの許可から、そのプロファイルの Drive CLI のエントリを全部外す。"""
+    head = gdrive_allow_entries(prefix, profile, ["x"])[0].rsplit(" x)", 1)[0] + " "
+    data = load_json(project_json)
+    allow = ((data.get("permissionGrants") or {}).get("permissionGrants") or {}).get("allow")
+    gone = [e for e in (allow or []) if e.startswith(head)]
+    if not gone:
+        return
+    for e in gone:
+        allow.remove(e)
+        print(f"  [削除] {project_json.name} permissionGrants.allow: {e}")
+    save_json(project_json, data)
+
+
+def delete_profile_files(config_dir: Path, profile: str) -> None:
+    for name in (f"{profile}.json", f"{profile}.sa.json"):
+        f = config_dir / "gdrive" / name
+        if f.exists():
+            f.unlink()
+            print(f"  [削除] {f}")
+
+
 def warn_if_profile_missing(bridge_config_dir: Path, profile: str) -> None:
     path = bridge_config_dir / "gdrive" / f"{profile}.json"
     if not path.exists():
@@ -551,10 +573,13 @@ def _finish_profile(kind: str, argv: list[str], paths: "list[str] | None") -> di
     return data
 
 
-def ask_scopes(ask: Prompter) -> "dict | None":
-    """既定と同じなら None(プロファイルには書かない)。"""
-    read = ask.text("読み取りに使うスコープ", default=gdrive_cli.SCOPE_READ_DEFAULT, validate=_validate_scope)
-    write = ask.text("書き込みに使うスコープ", default=gdrive_cli.SCOPE_WRITE_DEFAULT, validate=_validate_scope)
+def ask_scopes(ask: Prompter, current: "dict | None" = None) -> "dict | None":
+    """既定と同じなら None(プロファイルには書かない)。current は今の設定（入力の既定にする）。"""
+    current = current or {}
+    read = ask.text("読み取りに使うスコープ", default=current.get("read") or gdrive_cli.SCOPE_READ_DEFAULT,
+                    validate=_validate_scope)
+    write = ask.text("書き込みに使うスコープ", default=current.get("write") or gdrive_cli.SCOPE_WRITE_DEFAULT,
+                     validate=_validate_scope)
     if (read, write) == (gdrive_cli.SCOPE_READ_DEFAULT, gdrive_cli.SCOPE_WRITE_DEFAULT):
         return None
     return {"read": read, "write": write}
@@ -843,7 +868,14 @@ class Session:
         if re.search(r"\s", str(prefix)):
             print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
             return
-        profile = current or self.pick_profile()
+        if current and not gate:
+            self.drive_menu()
+            return
+        self.configure_profile(current or self.pick_profile())
+
+    def configure_profile(self, profile: str) -> None:
+        """プロファイルの作成・方針の設定と、このプロジェクトへの許可の登録。"""
+        ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
         print(f"  プロファイル: {profile}（{config_dir / 'gdrive' / (profile + '.json')}）")
         others = profile_users(prefix, profile, self.project_id)
         if others:
@@ -852,6 +884,106 @@ class Session:
         update_project_gdrive_allow(self.project_json, prefix, profile, enabled)
         warn_if_profile_missing(config_dir, profile)
         warn_if_gdrive_packages_missing(prefix)
+
+    def drive_menu(self) -> None:
+        """設定済みの Drive CLI の更新メニュー。"""
+        ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
+        while True:
+            current = current_gdrive_profile(self.project_json, prefix)
+            if not current:
+                return
+            others = profile_users(prefix, current, self.project_id)
+            shared = f"  共有: {', '.join(others)}" if others else ""
+            key = choose(ask, f"Google Drive CLI — プロファイル {current}{shared}",
+                         [("1", "方針（コマンド・許可フォルダ・アップロード拒否）を変更する"),
+                          ("2", "認証情報を入れ直す（鍵・取り出しコマンド・スコープ）"),
+                          ("3", "別のプロファイルに切り替える／専用に作り直す"),
+                          ("4", "このプロジェクトの Drive 設定を外す"),
+                          ("b", "戻る")], "b")
+            if key == "b":
+                return
+            if key == "1":
+                self.configure_profile(current)
+            elif key == "2":
+                self.reset_credentials(current, others)
+            elif key == "3":
+                self.switch_profile(current)
+            elif key == "4":
+                self.detach_drive(current)
+                return
+
+    def reset_credentials(self, profile: str, others: "list[str]") -> None:
+        ask, config_dir = self.ask, self.config_dir
+        path = config_dir / "gdrive" / f"{profile}.json"
+        try:
+            data = gdrive_policy.read_profile(path)
+            gdrive_cli.parse_profile(data or {})
+        except (ValueError, OSError, gdrive_cli.ProfileError) as e:
+            print(f"  [警告] {path} を読めません（{e}）。")
+            return
+        if data is None:
+            print(f"  [警告] {path} がありません。方針の変更から作り直してください。")
+            return
+        if others and not ask.yes_no(f"このプロファイルは {', '.join(others)} と共有です。入れ直すと、どちらにも反映されます。続けますか?",
+                                    default=False):
+            return
+        new = ask_new_profile(ask, config_dir, profile)
+        if new is None:
+            return
+        data["kind"], data["credentials"] = new["kind"], new["credentials"]
+        if ask.yes_no("スコープを変更しますか?", default=False):
+            scopes = ask_scopes(ask, data.get("scopes"))
+            if scopes:
+                data["scopes"] = scopes
+            else:
+                data.pop("scopes", None)
+        gdrive_policy.write_profile(path, data)
+        print(f"  [書込] {path}")
+        sa = config_dir / "gdrive" / f"{profile}.sa.json"
+        if sa.exists() and str(sa) not in json.dumps(data["credentials"]):
+            sa.unlink()
+            print(f"  [削除] {sa}（使わなくなった鍵）")
+
+    def switch_profile(self, current: str) -> None:
+        ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
+        own = default_profile_name(self.project_id)
+        options, names = [], {}
+        if current != own:
+            exists = (config_dir / "gdrive" / f"{own}.json").exists()
+            options.append(("n", f"このプロジェクト専用のプロファイル（{own}）を{'使う' if exists else '新しく作る'}"))
+            names["n"] = own
+        found = sorted(f.stem for f in (config_dir / "gdrive").glob("*.json")
+                       if _PROFILE_NAME_RE.match(f.stem) and f.stem not in (current, own)) \
+            if (config_dir / "gdrive").is_dir() else []
+        for i, name in enumerate(found, 1):
+            users = profile_users(prefix, name, self.project_id)
+            who = f"「{'」「'.join(users)}」プロジェクト" if users else f"プロファイル {name}"
+            options.append((str(i), f"{who}と同じ設定・権限を使う（{name}）"))
+            names[str(i)] = name
+        if not options:
+            print("  切り替え先がありません（専用のプロファイルを使用中で、他のプロファイルもありません）。")
+            return
+        options.append(("b", "戻る"))
+        key = choose(ask, "切り替え先", options, "b")
+        if key == "b":
+            return
+        new = names[key]
+        remove_project_gdrive_allow(self.project_json, prefix, current)
+        self.configure_profile(new)
+        self.offer_delete_if_unused(current)
+
+    def detach_drive(self, current: str) -> None:
+        remove_project_gdrive_allow(self.project_json, self.prefix, current)
+        print("  [OK] このプロジェクトでは Drive CLI を使えなくなりました。")
+        self.offer_delete_if_unused(current)
+
+    def offer_delete_if_unused(self, profile: str) -> None:
+        if profile_users(self.prefix, profile, self.project_id) or current_gdrive_profile(self.project_json, self.prefix) == profile:
+            return
+        path = self.config_dir / "gdrive" / f"{profile}.json"
+        if path.exists() and self.ask.yes_no(
+                f"プロファイル {profile} はどのプロジェクトからも使われていません。認証情報ごと削除しますか?", default=False):
+            delete_profile_files(self.config_dir, profile)
 
     def pick_profile(self) -> str:
         """新しいプロファイルを作るか、他のプロジェクトのプロファイル(同じ認証情報・方針)を使うかを選ぶ。"""

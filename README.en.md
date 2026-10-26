@@ -166,6 +166,18 @@ Prompts when you answered **y** to "change the advanced settings":
 | `アップロード拒否パターン（k=今のまま / a=追加 / r=置換）` (upload deny patterns) | A deny list that stops secrets from being uploaded by mistake. **k**: keep the current list. **a**: add file-name patterns (e.g. `*.sqlite`) and directory names to the default list. **r**: type the whole list again (the default entries are dropped, so be careful) |
 | `緩める変更を適用しますか? [y/N]` (apply the loosening change?) | Only when you widened permissions (added a command, added a folder or removed the folder limit, removed a deny pattern). Read the diff shown just before: **y** if it is what you meant, **N** otherwise (only that change is cancelled) |
 
+**Updating an already configured Drive CLI**
+
+Choosing item `3` in the project menu for a project whose Drive CLI is already configured opens an update menu.
+
+| Item | What it does |
+|---|---|
+| `1` Change the policy | Change enabled commands, allowed folders, and upload denials (the "advanced settings" questions above) |
+| `2` Re-enter the credentials | For an expired or leaked key, or a change of type (`service_account` ⇔ `oauth`). Asks again from `認証の種類`; the policy is kept. `スコープを変更しますか?` also lets you change the scopes. A stored service account key that is no longer used is deleted. For a shared profile, a confirmation is shown because other projects are affected |
+| `3` Switch to another profile | `n`: switch to this project's own profile (named after the project ID; created if missing). A number: switch to the same settings and permissions as project "XXXX". The old profile's permissions are removed from this project. If no project uses the old profile any more, you are asked whether to delete it (default N) |
+| `4` Remove this project's Drive settings | Removes this project's Drive CLI permissions. If no project uses the profile any more, you are asked whether to delete it with its credentials (default N) |
+| `b` Back | |
+
 #### 3-3. Mapping a Slack channel
 
 | Prompt | Answer |

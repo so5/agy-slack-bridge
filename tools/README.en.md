@@ -103,6 +103,11 @@ keep as is, `-`: clear the value). It performs the following in order.
      approval every time.
    - The profile is written with 0600 and its directory with 0700 (a corrupted profile is not
      overwritten).
+   - Choosing Drive for an already configured project opens an update menu: change the policy /
+     re-enter the credentials (the policy is kept; a stored key that is no longer used is deleted) /
+     switch to another profile (back to a dedicated one, or share another project's) / remove this
+     project's Drive settings. A profile that no project uses after removing or switching can be deleted
+     after confirmation (default: keep).
 6. Slack channel mapping (`channels` in `config.yaml`; for "set up everything" it first asks whether to map): channel ID, display name, icon,
    model, effort, config files to watch, and permission button statistics. Optional items can be skipped. Only the relevant entry is rewritten; other comments and items are preserved
    (the original file is kept as `config.yaml.bak`).

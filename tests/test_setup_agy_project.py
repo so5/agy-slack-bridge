@@ -702,3 +702,93 @@ def test_second_project_can_share_the_first_projects_profile_or_create_its_own(e
     run(env, Scripted({"Drive CLI": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "cat /k"}), target=third)
     t = setup.find_agy_project_json(third.resolve())
     assert setup.current_gdrive_profile(t, env.prefix.resolve()) == pname(env, third) != first
+
+
+# --- Drive CLI update menu (project already has a profile) -----------------------------
+
+def _drive_project(env, target=None, cmd="cat /k"):
+    """A project with an oauth profile created through the script; returns the profile name."""
+    t = target or env.target
+    run(env, Scripted({**PROFILE_Q, "認証の種類": "oauth", "資格情報を取り出すコマンド": cmd}), target=t)
+    return setup.current_gdrive_profile(setup.find_agy_project_json(t.resolve()), env.prefix.resolve())
+
+
+def _drive_menu(env, answers):
+    """main menu: project 1 -> project menu 3 (Drive) -> the scripted drive-menu answers -> back -> quit"""
+    session, ask = menu_session(env, answers)
+    setup.main_menu(session)
+    return ask
+
+
+def _second_project(env, tmp_path):
+    second = tmp_path / "second"
+    second.mkdir()
+    subprocess.run(["git", "init", "-q", str(second)], check=True)
+    return second
+
+
+def test_drive_menu_changes_the_policy_of_an_existing_profile(env):
+    _drive_project(env)
+    _drive_menu(env, {"選択": ["1", "3", "1", "b", "b", "q"], "詳細設定": "y", "有効にするコマンド": "list,read"})
+    assert json.loads(profile_path(env).read_text())["commands"] == ["list", "read"]
+    assert subs_in(allow(env)) == ["list", "read"]
+
+
+def test_drive_menu_reenters_credentials_keeping_the_policy(env):
+    _drive_project(env)
+    data = json.loads(profile_path(env).read_text())
+    data["allowed_folders"] = ["F" * 20]
+    profile_path(env).write_text(json.dumps(data))
+    _drive_menu(env, {"選択": ["1", "3", "2", "b", "b", "q"], "認証の種類": "oauth",
+                      "資格情報を取り出すコマンド": "cat /new"})
+    new = json.loads(profile_path(env).read_text())
+    assert new["credentials"]["command"][-1] == "/new" and new["allowed_folders"] == ["F" * 20]
+
+
+def test_drive_menu_reentering_a_service_account_key_replaces_the_stored_key_and_drops_unused_ones(env, tmp_path):
+    key = tmp_path / "sa.json"
+    key.write_text(json.dumps({"client_email": "sa@p.iam.gserviceaccount.com", "private_key": "k", "type": "service_account"}))
+    run(env, Scripted({**PROFILE_Q, "JSON 鍵のパス": str(key)}))
+    stored = env.cfg / "gdrive" / f"{pname(env)}.sa.json"
+    assert stored.exists()
+    _drive_menu(env, {"選択": ["1", "3", "2", "b", "b", "q"], "認証の種類": "oauth",
+                      "資格情報を取り出すコマンド": "cat /k"})
+    assert not stored.exists()                       # the plaintext key is not left behind
+    assert json.loads(profile_path(env).read_text())["kind"] == "oauth"
+
+
+def test_drive_menu_switches_to_another_projects_profile_and_back_to_a_dedicated_one(env, tmp_path):
+    first = _drive_project(env)
+    second = _second_project(env, tmp_path)
+    own = _drive_project(env, second, "cat /k2")
+    assert own != first
+    # projects are listed by name: proj (1), second (2). In second: Drive menu -> 3 (switch) -> 1 (proj's profile)
+    _drive_menu(env, {"選択": ["2", "3", "3", "1", "b", "b", "q"]})
+    mine = setup.find_agy_project_json(second.resolve())
+    assert setup.current_gdrive_profile(mine, env.prefix.resolve()) == first
+    assert not any(own in e for e in json.loads(mine.read_text())["permissionGrants"]["permissionGrants"]["allow"])
+    # own profile is now unused: deleting is offered, default no
+    assert (env.cfg / "gdrive" / f"{own}.json").exists()
+    # back to the dedicated profile (entry n): reused because it still exists
+    _drive_menu(env, {"選択": ["2", "3", "3", "n", "b", "b", "q"]})
+    assert setup.current_gdrive_profile(mine, env.prefix.resolve()) == own
+
+
+def test_drive_menu_detach_removes_only_this_projects_grants_and_offers_to_delete_the_unused_profile(env):
+    name = _drive_project(env)
+    ask = _drive_menu(env, {"選択": ["1", "3", "4", "q"], "削除しますか": "y"})
+    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) is None
+    assert not profile_path(env).exists()
+    assert any("削除しますか" in p for p in ask.asked)
+
+
+def test_drive_menu_detach_keeps_a_profile_another_project_still_uses(env, tmp_path):
+    first = _drive_project(env)
+    second = _second_project(env, tmp_path)
+    run(env, Scripted({"Drive CLI": "y", "選択": "1"}), target=second)      # shares the first profile
+    ask = _drive_menu(env, {"選択": ["2", "3", "4", "q"]})
+    assert setup.current_gdrive_profile(setup.find_agy_project_json(second.resolve()), env.prefix.resolve()) is None
+    first_json = setup.find_agy_project_json(env.target.resolve())
+    assert setup.current_gdrive_profile(first_json, env.prefix.resolve()) == first
+    assert profile_path(env).exists()
+    assert not any("削除しますか" in p for p in ask.asked)
