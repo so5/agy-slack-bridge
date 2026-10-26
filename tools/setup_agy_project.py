@@ -63,7 +63,6 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
 import argparse
 import getpass
 import glob
-import hashlib
 import json
 import os
 import re
@@ -405,11 +404,9 @@ def current_gdrive_profile(project_json: Path, prefix: Path) -> "str | None":
     return None
 
 
-def default_profile_name(target_dir: "Path | None", project_name: str, project_id: str) -> str:
-    """プロジェクトごとに必ず別になる名前: 名前の部分 + フルパス（ディレクトリが無ければ ID）のハッシュ。"""
-    base = re.sub(r"[^A-Za-z0-9_-]", "-", project_name)[:40] or "project"
-    key = str(target_dir) if target_dir is not None else project_id
-    return f"{base}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:8]}"
+def default_profile_name(project_id: str) -> str:
+    """プロファイルの既定名は agy のプロジェクト ID（一意）。他のプロジェクトと重ならない。"""
+    return re.sub(r"[^A-Za-z0-9_-]", "-", project_id)
 
 
 def profile_users(prefix: Path, profile: str, exclude_id: "str | None" = None) -> list[str]:
@@ -858,7 +855,7 @@ class Session:
 
     def pick_profile(self) -> str:
         """新しいプロファイルを作るか、他のプロジェクトのプロファイル(同じ認証情報・方針)を使うかを選ぶ。"""
-        new = default_profile_name(self.target_dir, self.project_name, self.project_id)
+        new = default_profile_name(self.project_id)
         existing = sorted(p.stem for p in (self.config_dir / "gdrive").glob("*.json")
                           if _PROFILE_NAME_RE.match(p.stem) and p.stem != new) \
             if (self.config_dir / "gdrive").is_dir() else []

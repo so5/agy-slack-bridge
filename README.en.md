@@ -102,7 +102,7 @@ These steps run without questions, and the results are displayed:
 
 #### 3-2. Google Drive CLI (skip if unused)
 
-Credentials and the Drive policy (enabled commands, allowed folders, upload deny list) are kept in a profile, `<config dir>/gdrive/<profile>.json`. The profile name is set automatically from the directory name and a hash of the full path (e.g. `my-project-1a2b3c4d`), so it never collides with another directory.
+Credentials and the Drive policy (enabled commands, allowed folders, upload deny list) are kept in a profile, `<config dir>/gdrive/<profile>.json`. The profile name is set automatically to the agy project ID (unique per project), so it never collides with another project.
 
 If other projects have profiles, you first get this choice:
 

@@ -70,9 +70,11 @@ def env(tmp_path, monkeypatch):
 
 
 def pname(env, target=None):
-    """The default profile name of a project directory (name + hash of the full path)."""
+    """The default profile name of a project: its agy project id."""
     t = (target or env.target).resolve()
-    return setup.default_profile_name(t, t.name, "unused")
+    if setup.find_agy_project_json(t) is None:
+        setup.register_agy_project(t)          # the id exists only once agy knows the project
+    return setup.find_agy_project_json(t).stem
 
 
 def run(env, ask=None, target=None, *extra):
@@ -223,15 +225,6 @@ def test_gdrive_profile_defaults_to_project_name_and_is_kept_on_rerun(env):
     run(env, ask)  # Enter everywhere: "use Drive CLI?" defaults to yes now, profile kept
     assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == pname(env)
     assert any("Drive CLI" in p and "[Y/n]" in p for p in ask.asked)
-
-
-def test_gdrive_profile_name_is_derived_from_the_project_name_and_sanitised(env, tmp_path):
-    odd = tmp_path / "my proj; rm"
-    odd.mkdir()
-    subprocess.run(["git", "init", "-q", str(odd)], check=True)
-    run(env, Scripted({"Drive CLI": "y"}), target=odd)
-    assert setup._PROFILE_NAME_RE.match(
-        setup.current_gdrive_profile(setup.find_agy_project_json(odd), env.prefix.resolve()))
 
 
 def test_profile_is_pinned_before_the_subcommand_in_every_entry(tmp_path):
@@ -681,11 +674,12 @@ def test_menu_items_3_and_4_do_not_ask_the_use_it_gate(env):
     assert channels(env)["C0TEST123"]["project"] == session.project_id
 
 
-def test_default_profile_names_never_collide_for_same_named_directories(env, tmp_path):
-    a, b = tmp_path / "x" / "app", tmp_path / "y" / "app"
-    assert setup.default_profile_name(a, "app", "1") != setup.default_profile_name(b, "app", "2")
-    assert setup.default_profile_name(a, "app", "1") == setup.default_profile_name(a, "app", "9")  # stable
-    assert setup._PROFILE_NAME_RE.match(setup.default_profile_name(None, "my proj; rm", "id-1"))
+def test_default_profile_name_is_the_project_id(env):
+    run(env, Scripted({"Drive CLI": "y"}))
+    pid = project_json(env).stem
+    assert setup.default_profile_name(pid) == pid
+    assert setup.default_profile_name("a b;c") == "a-b-c" and setup._PROFILE_NAME_RE.match(pid)
+    assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) == pid
 
 
 def test_second_project_can_share_the_first_projects_profile_or_create_its_own(env, tmp_path):
