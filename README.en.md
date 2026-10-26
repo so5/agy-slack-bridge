@@ -70,37 +70,53 @@ To run it later (you answered N, or want to change settings):
 A menu opens. Choose by typing a number or key (the `[...]` item is chosen with Enter).
 
 1. **First screen**: the projects registered in agy are listed. Choose the number of the project to set up, or `n`
-   (create a new project). `t` sets the Slack tokens (shared by everything) and `q` quits.
+   (create a new project). `t` sets the Slack tokens (shared by everything; 3-3) and `q` quits.
 2. **Project menu**: after choosing a project you get the items below. **The first time, choose `1`.**
 
 | Item | What it does |
 |---|---|
-| `1` Set up everything | 3-1, then 3-2 and 3-3 in order (first time, or updating) |
+| `1` Set up everything | 3-1 → 3-2 → 3-4 in order (first time, or updating). Required items come first; the optional Drive CLI (3-4) comes last |
 | `2` Place / update the rules and hook | Only the placement part of 3-1 |
-| `3` Set up the Google Drive CLI | 3-2 |
-| `4` Set up the Slack channel mapping | 3-3 |
+| `3` Set up the Slack channel mapping | 3-2 |
+| `4` Set up the Google Drive CLI | 3-4 |
 | `5` Show the current state | |
 | `b` Back to the project list | |
 | `q` Quit | |
 
 To set up another project, go back with `b` and choose again. Prompts that ask for a path complete it with Tab.
 
-#### 3-1. The target project
-
-The directory you specify for a new project is the agy project directory (the root agy works in).
+#### 3-2. Mapping a Slack channel
 
 | Prompt | Answer |
 |---|---|
-| `新しいプロジェクトのディレクトリのパス` (directory path of the new project; after choosing `n` on the first screen) | e.g. `~/WORK/my-project`. Not asked when you choose an already registered project |
-| `<path> は既に存在します。上書きしますか? [y/N]` (already exists; overwrite?) | Only when you give an existing directory. **y** to set it up as is, **N** to cancel |
+| `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | Asked only for item `1` (set up everything). **N** to skip (go on); **Y** to map |
+| `チャンネル ID` (channel ID) | **The only required item.** The `C…` / `G…` from step 1 |
+| `任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか? [y/N]` (also set the optional items?) | **N** (default): stop here. No display name etc. is set and the defaults apply (values already set are kept). **y**: go on to the questions below |
 
-These steps run without questions, and the results are displayed:
+Questions when you answer **y** to the optional items:
 
-- Creates the directory if it does not exist.
-- Runs `git init` if it is not a git repository (git is required; nothing is committed).
-- Registers it with agy if it is not registered yet (`agy --new-project`; calls the model once).
+| Prompt | Answer |
+|---|---|
+| `表示名` (display name) | Optional. The name on the bot's replies (needs `chat:write.customize`) |
+| `アイコン絵文字` (icon emoji) | Optional, e.g. `robot_face` (the surrounding `:` are optional). Type `:` and a few letters in a Slack message box to see candidate names (custom emoji work the same way). If given, the image URL is not asked |
+| `アイコン画像 URL` (icon image URL) | Only when the emoji is empty. A URL starting with `https://` |
+| `モデル` (model) | Empty = agy's default model. Otherwise a name from `agy models`. A name with `-high` / `-low` already includes the reasoning depth, so leave `effort` empty |
+| `effort（low / medium / high / xhigh / max）` | Empty = agy's default. How deeply the model reasons. Leave it empty if the model name above ends in `-high` etc. (they conflict) |
+| `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Default: empty (nothing is watched). Paths relative to the project directory (e.g. `AGENTS.md`). Changes are not blocked: after a change, Slack gets a notice with a diff (checked every 30 minutes by default), and its buttons let you accept the change or restore the file. See "Config drift detection" in [usage.en.md](docs/usage.en.md) |
+| `権限ボタンの統計を取りますか? [y/N]` (collect permission-button stats?) | **y**: record permission-button requests (one-time / permanent) and their results in this machine's state DB (nothing is sent elsewhere). **N**: do not record (default). Can also be switched later with `/agy-stats on\|off` in Slack. See "Usage statistics" in [usage.en.md](docs/usage.en.md) |
 
-#### 3-2. Google Drive CLI (skip if unused)
+The original `config.yaml` is kept as `config.yaml.bak`.
+
+#### 3-3. Slack tokens
+
+| Prompt | Answer |
+|---|---|
+| `SLACK_BOT_TOKEN（xoxb-…）` | Paste the Bot token from step 1 (input is not echoed). Empty skips |
+| `SLACK_APP_TOKEN（xapp-…）` | Paste the App token from step 1 |
+
+The tokens are saved to `~/.config/agy-slack-bridge/env` (0600). Ones already set are not asked again.
+
+#### 3-4. Google Drive CLI (optional; skip if unused)
 
 Credentials and the Drive policy (enabled commands, allowed folders, upload deny list) are kept in a profile, `<config dir>/gdrive/<profile>.json`. The profile name is set automatically to the agy project ID (unique per project), so it never collides with another project.
 
@@ -112,7 +128,7 @@ If other projects have profiles, you first get this choice:
 
 | Prompt | Answer |
 |---|---|
-| `Drive CLI を使いますか? [y/N]` (use the Drive CLI?) | Asked only for item `1` (set up everything). **N** to skip (go to 3-3); **y** to use it |
+| `Drive CLI を使いますか? [y/N]` (use the Drive CLI?) | Asked only for item `1` (set up everything). **N** to skip (setup is complete); **y** to use it |
 | `認証の種類（service_account / oauth）` (authentication type) | See the table below. If unsure, press Enter (`service_account`) |
 | `サービスアカウントの JSON 鍵のパス` (path to the service account JSON key) | When you chose `service_account`. The path of the downloaded key file. It is saved as `<config dir>/gdrive/<profile>.sa.json` (0600) and the email address to share folders with is shown (delete the original key file). Empty = use another key store via the next prompt |
 | `資格情報を取り出すコマンド` (command that prints the credentials) | For `oauth`, or when the key path was left empty. A **command that prints the key / token JSON to stdout** (examples below). Do not type a scope (`drive` etc.) here |
@@ -168,7 +184,7 @@ Prompts when you answered **y** to "change the advanced settings":
 
 **Updating an already configured Drive CLI**
 
-Choosing item `3` in the project menu for a project whose Drive CLI is already configured opens an update menu.
+Choosing item `4` in the project menu for a project whose Drive CLI is already configured opens an update menu.
 
 | Item | What it does |
 |---|---|
@@ -177,31 +193,6 @@ Choosing item `3` in the project menu for a project whose Drive CLI is already c
 | `3` Switch to another profile | `n`: switch to this project's own profile (named after the project ID; created if missing). A number: switch to the same settings and permissions as project "XXXX". The old profile's permissions are removed from this project. If no project uses the old profile any more, you are asked whether to delete it (default N) |
 | `4` Remove this project's Drive settings | Removes this project's Drive CLI permissions. If no project uses the profile any more, you are asked whether to delete it with its credentials (default N) |
 | `b` Back | |
-
-#### 3-3. Mapping a Slack channel
-
-| Prompt | Answer |
-|---|---|
-| `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | Asked only for item `1` (set up everything). **N** to skip (go on); **Y** to map |
-| `チャンネル ID` (channel ID) | The `C…` / `G…` from step 1 |
-| `表示名` (display name) | Optional. The name on the bot's replies (needs `chat:write.customize`) |
-| `アイコン絵文字` (icon emoji) | Optional, e.g. `robot_face` (the surrounding `:` are optional). Type `:` and a few letters in a Slack message box to see candidate names (custom emoji work the same way). If given, the image URL is not asked |
-| `アイコン画像 URL` (icon image URL) | Only when the emoji is empty. A URL starting with `https://` |
-| `モデル` (model) | Empty = agy's default model. Otherwise a name from `agy models`. A name with `-high` / `-low` already includes the reasoning depth, so leave `effort` empty |
-| `effort（low / medium / high / xhigh / max）` | Empty = agy's default. How deeply the model reasons. Leave it empty if the model name above ends in `-high` etc. (they conflict) |
-| `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Default: empty (nothing is watched). Paths relative to the project directory (e.g. `AGENTS.md`). Changes are not blocked: after a change, Slack gets a notice with a diff (checked every 30 minutes by default), and its buttons let you accept the change or restore the file. See "Config drift detection" in [usage.en.md](docs/usage.en.md) |
-| `権限ボタンの統計を取りますか? [y/N]` (collect permission-button stats?) | **y**: record permission-button requests (one-time / permanent) and their results in this machine's state DB (nothing is sent elsewhere). **N**: do not record (default). Can also be switched later with `/agy-stats on\|off` in Slack. See "Usage statistics" in [usage.en.md](docs/usage.en.md) |
-
-The original `config.yaml` is kept as `config.yaml.bak`.
-
-#### 3-4. Slack tokens
-
-| Prompt | Answer |
-|---|---|
-| `SLACK_BOT_TOKEN（xoxb-…）` | Paste the Bot token from step 1 (input is not echoed). Empty skips |
-| `SLACK_APP_TOKEN（xapp-…）` | Paste the App token from step 1 |
-
-The tokens are saved to `~/.config/agy-slack-bridge/env` (0600). Ones already set are not asked again.
 
 ### 4. Start
 

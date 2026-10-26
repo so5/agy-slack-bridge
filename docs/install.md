@@ -69,10 +69,10 @@ python3 /opt/agy-slack-bridge/tools/install.py --prefix /opt/agy-slack-bridge --
    ディレクトリが git リポジトリでなければ `git init` します（git 管理は必須です）。
 2. 未登録なら `agy --new-project` で登録（モデルを 1 回呼びます）。
 3. 安全規則（`.agents/rules/agent-safety-rules.md`）、trustedWorkspaces、フックの登録。
-4. Google Drive CLI を使うなら、プロファイルの作成と方針（有効なコマンド、許可フォルダ、
-   アップロード拒否パターン）の設定。
-5. Slack チャンネルとの対応づけ（チャンネル ID、表示名、アイコン、モデル、effort など。任意項目は飛ばせる）。
-6. Slack のトークン（未設定のとき）。
+4. Slack チャンネルとの対応づけ（必須はチャンネル ID だけ。表示名・アイコン・モデルなどの任意項目は、続けるかを聞かれます）。
+5. Slack のトークン（未設定のとき）。
+6. （任意）Google Drive CLI を使うなら、プロファイルの作成と方針（有効なコマンド、許可フォルダ、
+   アップロード拒否パターン）の設定。必須の設定が終わってから聞かれます。
 
 何度実行しても安全で、現在の値が既定値として表示されます（Enter で維持、`-` で削除）。設定の変更や修復も
 同じコマンドです（`--all` を付けると、メニューを出さず全部を順に実行して終わります）。詳細は [tools/README.md](../tools/README.md)。

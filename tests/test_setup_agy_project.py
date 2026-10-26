@@ -123,7 +123,7 @@ def test_fresh_setup_registers_links_and_denies(env):
 
 
 def test_idempotent(env):
-    answers = {"チャンネル ID": "C0TEST123", "表示名": "Bot", "アイコン絵文字": ":robot_face:"}
+    answers = {"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Bot", "アイコン絵文字": ":robot_face:"}
     run(env, Scripted(answers))
     snap = lambda: (settings(env), (env.target / ".gitignore").read_text(), (env.cfg / "config.yaml").read_text())
     before = snap()
@@ -243,7 +243,7 @@ def test_warns_when_profile_missing(env, capsys):
 
 def test_channel_mapping_written_with_project_id_and_all_fields(env):
     run(env, Scripted({
-        "チャンネル ID": "C0TEST123", "表示名": "Helper", "アイコン絵文字": ":abacus:",
+        "任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Helper", "アイコン絵文字": ":abacus:",
         "モデル": "gemini-x", "effort": "high", "監視するファイル": ".agents/local-tools.md, a/b.md",
         "権限ボタンの統計": "y"}))
     pid = project_json(env).stem
@@ -257,7 +257,7 @@ def test_channel_mapping_written_with_project_id_and_all_fields(env):
 
 
 def test_channel_prompts_reject_bad_values_then_accept(env):
-    ask = Scripted({"チャンネル ID": ["nope", "C0TEST123"], "effort": ["extreme", "low"],
+    ask = Scripted({"任意の項目": "y", "チャンネル ID": ["nope", "C0TEST123"], "effort": ["extreme", "low"],
                     "アイコン絵文字": ["bad name", "abacus"], "監視するファイル": ["/etc/passwd", "../x", "ok.md"]})
     run(env, ask)
     e = channels(env)["C0TEST123"]
@@ -265,8 +265,8 @@ def test_channel_prompts_reject_bad_values_then_accept(env):
 
 
 def test_rerun_shows_current_values_and_dash_clears(env):
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "表示名": "Helper", "モデル": "m1"}))
-    ask = Scripted({"Slack チャンネルを対応づけ": "y", "モデル": "-", "表示名": "Renamed"})
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Helper", "モデル": "m1"}))
+    ask = Scripted({"任意の項目": "y", "Slack チャンネルを対応づけ": "y", "モデル": "-", "表示名": "Renamed"})
     run(env, ask)
     e = channels(env)["C0TEST123"]
     assert e["display_name"] == "Renamed" and "model" not in e
@@ -279,18 +279,18 @@ def test_unknown_keys_of_an_existing_entry_are_preserved(env):
     data = yaml.safe_load(cfg.read_text())
     data["channels"]["C0TEST123"]["future_key"] = {"a": 1}
     cfg.write_text(yaml.safe_dump(data))
-    run(env, Scripted({"Slack チャンネルを対応づけ": "y", "表示名": "X"}))
+    run(env, Scripted({"任意の項目": "y", "Slack チャンネルを対応づけ": "y", "表示名": "X"}))
     assert channels(env)["C0TEST123"]["future_key"] == {"a": 1}
 
 
 def test_channel_of_another_project_is_not_taken_over_by_default(env, tmp_path):
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "表示名": "first"}))
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "first"}))
     second = tmp_path / "proj2"
     second.mkdir()
     subprocess.run(["git", "init", "-q", str(second)], check=True)
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "表示名": "second"}), target=second)
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "second"}), target=second)
     assert channels(env)["C0TEST123"]["display_name"] == "first"
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "置き換えますか": "y", "表示名": "second"}),
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "置き換えますか": "y", "表示名": "second"}),
         target=second)
     assert channels(env)["C0TEST123"]["display_name"] == "second"
 
@@ -642,7 +642,7 @@ def test_quit_from_project_menu_ends_the_whole_setup(env, capsys):
 
 
 def test_icon_emoji_colons_are_optional(env):
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "アイコン絵文字": "試験管"}))
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "アイコン絵文字": "試験管"}))
     assert channels(env)["C0TEST123"]["icon_emoji"] == ":試験管:"
 
 
@@ -729,7 +729,7 @@ def _second_project(env, tmp_path):
 
 def test_drive_menu_changes_the_policy_of_an_existing_profile(env):
     _drive_project(env)
-    _drive_menu(env, {"選択": ["1", "3", "1", "b", "b", "q"], "詳細設定": "y", "有効にするコマンド": "list,read"})
+    _drive_menu(env, {"選択": ["1", "4", "1", "b", "b", "q"], "詳細設定": "y", "有効にするコマンド": "list,read"})
     assert json.loads(profile_path(env).read_text())["commands"] == ["list", "read"]
     assert subs_in(allow(env)) == ["list", "read"]
 
@@ -739,7 +739,7 @@ def test_drive_menu_reenters_credentials_keeping_the_policy(env):
     data = json.loads(profile_path(env).read_text())
     data["allowed_folders"] = ["F" * 20]
     profile_path(env).write_text(json.dumps(data))
-    _drive_menu(env, {"選択": ["1", "3", "2", "b", "b", "q"], "認証の種類": "oauth",
+    _drive_menu(env, {"選択": ["1", "4", "2", "b", "b", "q"], "認証の種類": "oauth",
                       "資格情報を取り出すコマンド": "cat /new"})
     new = json.loads(profile_path(env).read_text())
     assert new["credentials"]["command"][-1] == "/new" and new["allowed_folders"] == ["F" * 20]
@@ -751,7 +751,7 @@ def test_drive_menu_reentering_a_service_account_key_replaces_the_stored_key_and
     run(env, Scripted({**PROFILE_Q, "JSON 鍵のパス": str(key)}))
     stored = env.cfg / "gdrive" / f"{pname(env)}.sa.json"
     assert stored.exists()
-    _drive_menu(env, {"選択": ["1", "3", "2", "b", "b", "q"], "認証の種類": "oauth",
+    _drive_menu(env, {"選択": ["1", "4", "2", "b", "b", "q"], "認証の種類": "oauth",
                       "資格情報を取り出すコマンド": "cat /k"})
     assert not stored.exists()                       # the plaintext key is not left behind
     assert json.loads(profile_path(env).read_text())["kind"] == "oauth"
@@ -763,20 +763,20 @@ def test_drive_menu_switches_to_another_projects_profile_and_back_to_a_dedicated
     own = _drive_project(env, second, "cat /k2")
     assert own != first
     # projects are listed by name: proj (1), second (2). In second: Drive menu -> 3 (switch) -> 1 (proj's profile)
-    _drive_menu(env, {"選択": ["2", "3", "3", "1", "b", "b", "q"]})
+    _drive_menu(env, {"選択": ["2", "4", "3", "1", "b", "b", "q"]})
     mine = setup.find_agy_project_json(second.resolve())
     assert setup.current_gdrive_profile(mine, env.prefix.resolve()) == first
     assert not any(own in e for e in json.loads(mine.read_text())["permissionGrants"]["permissionGrants"]["allow"])
     # own profile is now unused: deleting is offered, default no
     assert (env.cfg / "gdrive" / f"{own}.json").exists()
     # back to the dedicated profile (entry n): reused because it still exists
-    _drive_menu(env, {"選択": ["2", "3", "3", "n", "b", "b", "q"]})
+    _drive_menu(env, {"選択": ["2", "4", "3", "n", "b", "b", "q"]})
     assert setup.current_gdrive_profile(mine, env.prefix.resolve()) == own
 
 
 def test_drive_menu_detach_removes_only_this_projects_grants_and_offers_to_delete_the_unused_profile(env):
     name = _drive_project(env)
-    ask = _drive_menu(env, {"選択": ["1", "3", "4", "q"], "削除しますか": "y"})
+    ask = _drive_menu(env, {"選択": ["1", "4", "4", "q"], "削除しますか": "y"})
     assert setup.current_gdrive_profile(project_json(env), env.prefix.resolve()) is None
     assert not profile_path(env).exists()
     assert any("削除しますか" in p for p in ask.asked)
@@ -786,9 +786,25 @@ def test_drive_menu_detach_keeps_a_profile_another_project_still_uses(env, tmp_p
     first = _drive_project(env)
     second = _second_project(env, tmp_path)
     run(env, Scripted({"Drive CLI": "y", "選択": "1"}), target=second)      # shares the first profile
-    ask = _drive_menu(env, {"選択": ["2", "3", "4", "q"]})
+    ask = _drive_menu(env, {"選択": ["2", "4", "4", "q"]})
     assert setup.current_gdrive_profile(setup.find_agy_project_json(second.resolve()), env.prefix.resolve()) is None
     first_json = setup.find_agy_project_json(env.target.resolve())
     assert setup.current_gdrive_profile(first_json, env.prefix.resolve()) == first
     assert profile_path(env).exists()
     assert not any("削除しますか" in p for p in ask.asked)
+
+
+def test_channel_asks_only_the_channel_id_then_whether_to_continue_with_the_optional_items(env):
+    ask = Scripted({"チャンネル ID": "C0TEST123"})            # the optional-items question: Enter = no
+    run(env, ask)
+    assert channels(env)["C0TEST123"] == {"project": project_json(env).stem}
+    asked = [p for p in ask.asked if "表示名" in p or "モデル" in p or "effort" in p]
+    assert len(asked) == 1 and "任意の項目" in asked[0]       # only the gate mentions them
+
+
+def test_required_settings_come_before_the_optional_drive_cli(env):
+    ask = Scripted({"チャンネル ID": "C0TEST123", "Drive CLI": "y"})
+    run(env, ask)
+    order = [p for p in ask.asked if "チャンネル ID" in p or "Slack トークン" in p or "SLACK_" in p or "Drive CLI を使います" in p]
+    assert [("チャンネル" in p, "Drive" in p) for p in order][0] == (True, False)
+    assert "Drive" in order[-1]

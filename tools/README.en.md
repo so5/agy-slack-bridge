@@ -61,7 +61,7 @@ Installed files are 0444 (this prevents accidents; it is not a defense). The che
 cannot be used as `--prefix`.
 
 `setup_agy_project.py` is an interactive menu. First it shows the project list (plus new project, Slack tokens and quit);
-choosing a project shows that project's menu (set up everything, rules and hook, Drive CLI, Slack channel, state).
+choosing a project shows that project's menu (set up everything, rules and hook, Slack channel, Drive CLI, state).
 With `--all` it runs everything in order without the menu. Path prompts complete with Tab. "Set up everything" is safe to run any number of times, and current
 values appear as defaults, so changing or repairing settings uses the same command (Enter:
 keep as is, `-`: clear the value). It performs the following in order.
@@ -86,7 +86,11 @@ keep as is, `-`: clear the value). It performs the following in order.
    not touched; the agent may edit it freely). Remove the links directly under `.agents/` and
    the `AGENTS.md` include lines created by earlier setups. Append `scratch/` to `.gitignore`
    (only if nothing about scratch is written there).
-5. Ask whether to use the Drive CLI (only for "set up everything"); if so, use the profile name derived from the agy project ID (never colliding; if other projects have profiles, choose between a new profile and sharing that project's settings and permissions) and interactively create and configure the profile
+5. Slack channel mapping (`channels` in `config.yaml`; only the channel ID is required, then it asks whether to set the optional items): display name, icon,
+   model, effort, config files to watch, and permission button statistics. Optional items can be skipped. Only the relevant entry is rewritten; other comments and items are preserved
+   (the original file is kept as `config.yaml.bak`).
+6. The Slack tokens in `env`, if not yet set.
+7. (Optional, after the required setup) Ask whether to use the Drive CLI (only for "set up everything"); if so, use the profile name derived from the agy project ID (never colliding; if other projects have profiles, choose between a new profile and sharing that project's settings and permissions) and interactively create and configure the profile
    (`<config directory>/gdrive/NAME.json`, [`gdrive-profile.en.md`](gdrive-profile.en.md)).
    - If it does not exist, ask for the authentication type (`service_account` (recommended: just share the Drive folders with its email address) / `oauth`) and
      the command that retrieves the credentials (and the scopes, if needed) and create it.
@@ -108,10 +112,6 @@ keep as is, `-`: clear the value). It performs the following in order.
      switch to another profile (back to a dedicated one, or share another project's) / remove this
      project's Drive settings. A profile that no project uses after removing or switching can be deleted
      after confirmation (default: keep).
-6. Slack channel mapping (`channels` in `config.yaml`; for "set up everything" it first asks whether to map): channel ID, display name, icon,
-   model, effort, config files to watch, and permission button statistics. Optional items can be skipped. Only the relevant entry is rewritten; other comments and items are preserved
-   (the original file is kept as `config.yaml.bak`).
-7. The Slack tokens in `env`, if not yet set.
 
 After changing settings, a bridge restart may be needed.
 

@@ -17,7 +17,7 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
     <prefix>/.venv/bin/python <prefix>/tools/setup_agy_project.py [対象のパス] [オプション]
 
   プロジェクトの一覧のメニューが開く。プロジェクトを選ぶか新規作成すると、そのプロジェクトの
-  メニュー(全部設定 / ルールとフック / Drive CLI / Slack チャンネル / 状態)が出る。Slack の
+  メニュー(全部設定 / ルールとフック / Slack チャンネル / Drive CLI / 状態)が出る。Slack の
   トークンは一覧のメニューから設定する(全体で共通)。--all を付けると、メニューを出さず、全部の
   段階を順に実行して終わる。
 
@@ -47,16 +47,17 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
      へのリンクを置く。AGENTS.md は触らない(エージェントが編集してよい)。以前のセットアップが
      作った .agents/ 直下のリンクと AGENTS.md の読み込み行は取り除く。
      .gitignore に scratch/ の除外を追記(scratch について何も書かれていない場合のみ)。
-  5. Google Drive CLI を使う場合: プロファイル名を決め、プロファイル
+  5. Slack チャンネルとの対応づけ(config.yaml の channels。必須はチャンネル ID だけで、
+     その後に任意の項目(表示名、アイコン、モデル、effort、監視する設定ファイル、統計)を
+     設定するかを聞く)。
+  6. 未設定なら Slack のトークン(env)。
+  7. Google Drive CLI(任意。必須の設定が終わってから) を使う場合: プロファイル名を決め、プロファイル
      (<設定ディレクトリ>/gdrive/NAME.json、tools/gdrive-profile.md)を対話で作成・設定する。
      無ければ認証の種類と資格情報を取り出すコマンド(とスコープ)を聞いて作り、方針
      (有効なコマンド、許可フォルダ、アップロード拒否パターン)は、現在値(新規なら既定値)を
      見せて、変えるかを聞く。権限が広がる変更は、差分を見せたうえで別に確認する(既定は no)。
      既存のプロファイルの資格情報とスコープには触らない。有効な読み取り系サブコマンドを、
      そのプロジェクト自身の permissionGrants にだけ許可として追加し、無効にしたものの許可は外す。
-  6. Slack チャンネルとの対応づけ(config.yaml の channels): チャンネル ID、表示名、アイコン、
-     モデル、effort、監視する設定ファイル、統計。任意の項目は飛ばせる。
-  7. 未設定なら Slack のトークン(env)。
 
 設定ファイルを変えたあとは、ブリッジの再起動が必要な場合があります。
 """
@@ -691,8 +692,7 @@ def _set_or_pop(entry: dict, key: str, value) -> None:
         entry[key] = value
 
 
-def configure_channel(ask: Prompter, config_path: Path, project_id: str, project_name: str,
-                      gate: bool = False) -> None:
+def configure_channel(ask: Prompter, config_path: Path, project_id: str, project_name: str) -> None:
     if not config_path.exists():
         print(f"  [スキップ] {config_path} がありません（先に install.py を実行してください）")
         return
@@ -701,8 +701,6 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
     mine = [cid for cid, e in channels.items() if (e or {}).get("project") == project_id]
     if mine:
         print(f"  このプロジェクトに割り当て済みのチャンネル: {', '.join(mine)}")
-    if gate and not ask.yes_no("Slack チャンネルを対応づけますか?", default=not mine):
-        return
     channel_id = ask.text("チャンネル ID", default=mine[0] if len(mine) == 1 else None,
                           validate=_validate_channel_id)
     if not channel_id:
@@ -714,6 +712,12 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
                           default=False):
             return
     entry["project"] = project_id
+    if ask.yes_no("任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか?", default=False):
+        _ask_channel_options(ask, entry)
+    _write_channel(config_path, text, channel_id, entry)
+
+
+def _ask_channel_options(ask: Prompter, entry: dict) -> None:
     _set_or_pop(entry, "display_name", ask.text("表示名", default=entry.get("display_name")))
     emoji = ask.text("アイコン絵文字", default=entry.get("icon_emoji"), validate=_validate_emoji)
     if emoji:
@@ -738,6 +742,8 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
         telemetry["permission_stats"] = stats
     _set_or_pop(entry, "telemetry", telemetry or None)
 
+
+def _write_channel(config_path: Path, text: str, channel_id: str, entry: dict) -> None:
     new_text = bridge_config.upsert_channel(text, channel_id, entry)
     if new_text == text:
         print("  [OK] config.yaml は対応済み")
@@ -1004,11 +1010,11 @@ class Session:
         return names.get(key, new)
 
     # --- Slack ---
-    def channel(self, gate: bool = False) -> None:
+    def channel(self) -> None:
         if not self.ready():
             return
         print("-- Slack チャンネル --")
-        configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name, gate)
+        configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name)
 
     def tokens(self) -> None:
         print("-- Slack トークン --")
@@ -1046,9 +1052,10 @@ class Session:
     def run_all(self, target_arg: "str | None" = None) -> None:
         self.project(target_arg)
         if self.project_json is not None:
-            self.drive(gate=True)
-            self.channel(gate=True)
+            self.channel()
         self.tokens()
+        if self.project_json is not None:
+            self.drive(gate=True)
         print("\n完了。設定を変えた場合は、ブリッジを再起動してください。")
 
 
@@ -1069,8 +1076,8 @@ def project_menu(session: Session) -> bool:
     ask = session.ask
     options = [("1", "順に全部設定する（初めて・更新）"),
                ("2", "ルールとフックを配置・更新する"),
-               ("3", "Google Drive CLI を設定する"),
-               ("4", "Slack チャンネルとの対応づけを設定する"),
+               ("3", "Slack チャンネルとの対応づけを設定する"),
+               ("4", "Google Drive CLI を設定する"),
                ("5", "現在の状態を表示する"),
                ("b", "プロジェクトの一覧に戻る"),
                ("q", "終了")]
@@ -1084,14 +1091,14 @@ def project_menu(session: Session) -> bool:
             if key == "1":
                 session.setup_files()
                 if session.project_json is not None:
+                    session.channel()
                     session.drive(gate=True)
-                    session.channel(gate=True)
             elif key == "2":
                 session.setup_files()
             elif key == "3":
-                session.drive()
-            elif key == "4":
                 session.channel()
+            elif key == "4":
+                session.drive()
             elif key == "5":
                 session.status()
         except SystemExit as e:           # 段階の中の sys.exit(メッセージ) でメニューを閉じない

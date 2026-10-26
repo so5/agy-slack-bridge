@@ -72,10 +72,10 @@ in order without showing the menu.
    A directory that is not a git repository gets `git init` (git is mandatory).
 2. Registers it with agy (`agy --new-project`, one model call) if needed.
 3. Sets up the safety rules (`.agents/rules/agent-safety-rules.md`), trustedWorkspaces and the hook registration.
-4. For the Google Drive CLI: creates the profile and sets its policy (enabled commands, allowed
-   folders, upload deny patterns).
-5. Maps a Slack channel (channel ID, display name, icon, model, effort, ...; optional items can be skipped).
-6. Asks for the Slack tokens if they are not set yet.
+4. Maps a Slack channel (only the channel ID is required; you are asked whether to continue with the optional items: display name, icon, model, ...).
+5. Asks for the Slack tokens if they are not set yet.
+6. (Optional) For the Google Drive CLI: creates the profile and sets its policy (enabled commands, allowed
+   folders, upload deny patterns). Asked after the required setup is done.
 
 It is idempotent: the current values are the defaults (Enter keeps, `-` clears), so changing or
 repairing a setup is the same command. Details in [tools/README.en.md](../tools/README.en.md).
