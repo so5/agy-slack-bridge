@@ -245,12 +245,14 @@ def test_warns_when_profile_missing(env, capsys):
 def test_channel_mapping_written_with_project_id_and_all_fields(env):
     run(env, Scripted({
         "チャンネル ID": "C0TEST123", "表示名": "Helper", "アイコン絵文字": ":abacus:",
-        "モデル": "gemini-x", "effort": "high", "監視するファイル": ".agents/local-tools.md, a/b.md"}))
+        "モデル": "gemini-x", "effort": "high", "監視するファイル": ".agents/local-tools.md, a/b.md",
+        "権限ボタンの統計": "y"}))
     pid = project_json(env).stem
     assert channels(env) == {"C0TEST123": {
         "project": pid, "display_name": "Helper", "icon_emoji": ":abacus:",
         "model": "gemini-x", "effort": "high",
-        "watched_config_files": [".agents/local-tools.md", "a/b.md"]}}
+        "watched_config_files": [".agents/local-tools.md", "a/b.md"],
+        "telemetry": {"permission_stats": True}}}
     assert (env.cfg / "config.yaml.bak").exists()
     assert "# Example entries" in (env.cfg / "config.yaml").read_text()  # comments survive
 

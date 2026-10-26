@@ -168,6 +168,7 @@ aws secretsmanager get-secret-value --secret-id NAME --query SecretString --outp
 | `モデル` | 空欄なら agy の既定のモデル。指定するなら `agy models` で一覧できる名前。名前に `-high` `-low` が付くモデルは推論の深さを含んでいるので、下の `effort` は空欄にする |
 | `effort（low / medium / high / xhigh / max）` | 空欄なら agy の既定。モデルの推論の深さ。上のモデル名に `-high` などが付いている場合は空欄にする（競合します） |
 | `監視するファイル（相対パス、カンマ区切り）` | 既定は空（何も監視しない）。プロジェクトのディレクトリからの相対パス（例 `AGENTS.md`）。エージェントによる変更を止めはせず、変更後に差分つきの通知が Slack に届きます（確認間隔は既定 30 分）。通知のボタンで、変更を承認するか元に戻せます。詳細は [usage.md](docs/usage.md) の「Config drift detection」 |
+| `権限ボタンの統計を取りますか? [y/N]` | **y**: 権限ボタン（1 回限り / 恒久）の要求と結果を、このマシンの state DB に記録する（外部には送信されません）。**N**: 記録しない（既定）。あとで Slack の `/agy-stats on\|off` でも切り替えられる。詳細は [usage.md](docs/usage.md) の「Usage statistics」 |
 
 元の `config.yaml` は `config.yaml.bak` に残ります。
 

@@ -105,8 +105,7 @@ keep as is, `-`: clear the value). It performs the following in order.
    - The profile is written with 0600 and its directory with 0700 (a corrupted profile is not
      overwritten).
 6. Slack channel mapping (`channels` in `config.yaml`; for "set up everything" it first asks whether to map): channel ID, display name, icon,
-   model, effort, and config files to watch. Optional items can be skipped.
-   Permission button statistics are not asked (switch them with `/agy-stats on|off`). Only the relevant entry is rewritten; other comments and items are preserved
+   model, effort, config files to watch, and permission button statistics. Optional items can be skipped. Only the relevant entry is rewritten; other comments and items are preserved
    (the original file is kept as `config.yaml.bak`).
 7. The Slack tokens in `env`, if not yet set.
 

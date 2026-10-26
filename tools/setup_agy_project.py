@@ -696,6 +696,11 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
                        default=",".join(entry.get("watched_config_files") or []) or None,
                        validate=_validate_rel_paths)
     _set_or_pop(entry, "watched_config_files", [s.strip() for s in watched.split(",")] if watched else None)
+    telemetry = dict(entry.get("telemetry") or {})
+    stats = ask.yes_no("権限ボタンの統計を取りますか?", default=bool(telemetry.get("permission_stats")))
+    if stats or "permission_stats" in telemetry:
+        telemetry["permission_stats"] = stats
+    _set_or_pop(entry, "telemetry", telemetry or None)
 
     new_text = bridge_config.upsert_channel(text, channel_id, entry)
     if new_text == text:

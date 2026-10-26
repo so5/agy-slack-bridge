@@ -172,6 +172,7 @@ Prompts when you answered **y** to "change the advanced settings":
 | `モデル` (model) | Empty = agy's default model. Otherwise a name from `agy models`. A name with `-high` / `-low` already includes the reasoning depth, so leave `effort` empty |
 | `effort（low / medium / high / xhigh / max）` | Empty = agy's default. How deeply the model reasons. Leave it empty if the model name above ends in `-high` etc. (they conflict) |
 | `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Default: empty (nothing is watched). Paths relative to the project directory (e.g. `AGENTS.md`). Changes are not blocked: after a change, Slack gets a notice with a diff (checked every 30 minutes by default), and its buttons let you accept the change or restore the file. See "Config drift detection" in [usage.en.md](docs/usage.en.md) |
+| `権限ボタンの統計を取りますか? [y/N]` (collect permission-button stats?) | **y**: record permission-button requests (one-time / permanent) and their results in this machine's state DB (nothing is sent elsewhere). **N**: do not record (default). Can also be switched later with `/agy-stats on\|off` in Slack. See "Usage statistics" in [usage.en.md](docs/usage.en.md) |
 
 The original `config.yaml` is kept as `config.yaml.bak`.
 
