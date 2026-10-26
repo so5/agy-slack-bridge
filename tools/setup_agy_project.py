@@ -90,7 +90,7 @@ GDRIVE_READONLY_SUBCOMMANDS = ["list", "search", "meta", "read", "download"]
 # (gdrive_cli.py 側の PROFILE_NAME_RE と同じ)。
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CHANNEL_ID_RE = re.compile(r"^[CG][A-Z0-9]{5,}$")
-_EMOJI_RE = re.compile(r"^:?[a-z0-9_+\-]+:?$")
+_EMOJI_RE = re.compile(r"^:?[\w+\-]+:?$")   # \w は日本語などのカスタム絵文字名も含む
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 # プロジェクトのルールは .agents/rules/*.md に置く(AGENTS.md は、エージェントが自由に

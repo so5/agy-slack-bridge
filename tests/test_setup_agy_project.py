@@ -636,5 +636,5 @@ def test_quit_from_project_menu_ends_the_whole_setup(env, capsys):
 
 
 def test_icon_emoji_colons_are_optional(env):
-    run(env, Scripted({"チャンネル ID": "C0TEST123", "アイコン絵文字": "robot_face"}))
-    assert channels(env)["C0TEST123"]["icon_emoji"] == ":robot_face:"
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "アイコン絵文字": "試験管"}))
+    assert channels(env)["C0TEST123"]["icon_emoji"] == ":試験管:"
