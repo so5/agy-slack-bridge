@@ -69,6 +69,12 @@ AGY_TEMP_GRANT_SWEEP_INTERVAL_SEC = int(os.environ.get("AGY_TEMP_GRANT_SWEEP_INT
 # usable from another channel's (different project's) conversations.
 AGY_PROJECTS_DIR = Path("~/.gemini/config/projects").expanduser()
 AGY_BRAIN_DIR = Path("~/.gemini/antigravity-cli/brain").expanduser()
+# Read-only here (see _safety_mechanism_problems): agy's global hook list and settings.
+AGY_GLOBAL_HOOKS_PATH = Path("~/.gemini/config/hooks.json").expanduser()
+AGY_GLOBAL_SETTINGS_PATH = Path("~/.gemini/antigravity-cli/settings.json").expanduser()
+SAFETY_RULES_RELPATH = Path(".agents") / "rules" / "agent-safety-rules.md"
+SAFETY_HOOK_NAME = "script-integrity"
+SAFETY_MISSING_PREFIX = "安全機構が見つからないため agy を実行しません"
 # Extensions worth auto-uploading a local file agy mentions by file:// link
 # (a generated chart, report, etc.) - deliberately narrow so this can't turn
 # into a generic "fetch me any file on the box" primitive.
@@ -1202,6 +1208,65 @@ def _integrity_state_dir(root: Path) -> Path:
     key = hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:16]
     return CONFIG_PATH.resolve().parent / "integrity" / key
 
+class SafetyMechanismMissing(RuntimeError):
+    """The safety mechanisms (rules, hook, deny rules) are absent for a project."""
+
+
+def _safety_mechanism_problems(project_id: str) -> list:
+    """What is missing of the safety mechanisms agy must never run without:
+    the project's agent-safety rules (present, with `trigger: always_on` -
+    without it agy ignores the file), the global script-integrity hook (and
+    its script), the hook's state directory for this project, and the deny
+    rules that keep the agent out of the bridge's install and config dirs.
+    Only *presence* is checked: a policy the user deliberately loosened is
+    theirs to make, but a mechanism that was deleted or never installed is
+    not something the bridge will run without. An empty list = fine. A
+    project without a workspace (agy's built-in chat-only project) has no
+    project-side mechanisms; the machine-wide ones still apply."""
+    problems = []
+    prefix = Path(__file__).resolve().parent
+    config_dir = CONFIG_PATH.resolve().parent
+    root = _project_root(project_id)
+    if root is not None:
+        rules = root / SAFETY_RULES_RELPATH
+        try:
+            text = rules.read_text(encoding="utf-8")
+        except OSError:
+            problems.append(f"安全規則がありません: {rules}")
+        else:
+            head = text.split("\n---", 1)[0] if text.startswith("---") else ""
+            if not re.search(r"^trigger:\s*always_on\s*$", head, re.MULTILINE):
+                problems.append(f"安全規則の先頭に `trigger: always_on` がありません: {rules}")
+        if not _integrity_state_dir(root).is_dir():
+            problems.append(f"フックの状態ディレクトリがありません: {_integrity_state_dir(root)}")
+    try:
+        hooks = json.loads(AGY_GLOBAL_HOOKS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        hooks = {}
+    if not (isinstance(hooks, dict) and hooks.get(SAFETY_HOOK_NAME)):
+        problems.append(f"フック {SAFETY_HOOK_NAME} が登録されていません: {AGY_GLOBAL_HOOKS_PATH}")
+    if not (prefix / "tools" / "hooks" / "script_integrity.py").is_file():
+        problems.append(f"フックのスクリプトがありません: {prefix / 'tools' / 'hooks' / 'script_integrity.py'}")
+    try:
+        settings = json.loads(AGY_GLOBAL_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        settings = {}
+    deny = set(((settings.get("permissions") or {}).get("deny") or []) if isinstance(settings, dict) else [])
+    for label, path in (("インストール先", prefix), ("設定ディレクトリ", config_dir)):
+        forms = {str(path), str(path.resolve()), os.path.realpath(path)}
+        if not any(f"write_file({f})" in deny for f in forms):
+            problems.append(f"{label}への書き込みを禁じる deny が settings.json にありません: write_file({path})")
+    return problems
+
+
+def _require_safety_mechanisms(project_id: str) -> None:
+    problems = _safety_mechanism_problems(project_id)
+    if problems:
+        raise SafetyMechanismMissing(
+            f"{SAFETY_MISSING_PREFIX}（project={project_id}）:\n- " + "\n- ".join(problems)
+            + "\n`tools/setup_agy_project.py` を実行して、足りないものを配置してください。")
+
+
 _SCRIPT_INTERPRETER_BASENAMES = {
     "python", "python3", "python3.10", "python3.11", "python3.12", "python3.13",
     "python3.14", "bash", "sh", "zsh", "node", "ruby", "perl",
@@ -1562,6 +1627,7 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     # denied one carries the exact command line / file path / etc. Parse
     # that stream ourselves and fold the detail into the final result dict
     # under "_tool_errors" for the caller to report.
+    _require_safety_mechanisms(project_id)
     cmd = [
         AGY_BIN, "-p", text,
         "--project", project_id,
@@ -1899,6 +1965,8 @@ def _agy_failure_text(err: str) -> str:
     """Slack text for a failed agy invocation. A model-quota 429 is common
     enough (and fixable from Slack) to deserve its own explanation instead
     of the generic "check the logs"."""
+    if SAFETY_MISSING_PREFIX in err:
+        return f":no_entry: {err}"
     if "timed out after" in err:
         minutes = AGY_TIMEOUT_SEC // 60
         return (f":x: agy が {minutes} 分で打ち切られました。途中で止まっていた処理（認証待ちなど）が無いか確認してください。"
@@ -2256,6 +2324,11 @@ def build_app() -> App:
     self_user_id = app.client.auth_test()["user_id"]
     mention_re = re.compile(rf"<@{re.escape(self_user_id)}>\s*")
     log.info("bridge bot user id=%s (mention required to start a new conversation)", self_user_id)
+
+    for channel_id, channel_cfg in channel_map.items():   # tell the operator at startup, not on the first message
+        for problem in _safety_mechanism_problems(channel_cfg["project"]):
+            log.error("safety mechanism missing for channel=%s: %s (agy will not run for this channel)",
+                      channel_id, problem)
 
     def _check_all_config_drift() -> None:
         for channel_id, channel_cfg in channel_map.items():
@@ -2778,6 +2851,9 @@ def build_app() -> App:
         def _ephemeral_agy(cmd_text: str) -> str:
             try:
                 res = run_agy(cmd_text, project_id, None, model=model, effort=effort)
+            except SafetyMechanismMissing as e:
+                log.error("%s", e)
+                return f":no_entry: {e}"
             except Exception:
                 log.exception("agy slash command failed: %r", cmd_text)
                 return ":x: agy の実行に失敗しました。bridge のログを確認してください。"

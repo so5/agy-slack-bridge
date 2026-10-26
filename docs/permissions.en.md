@@ -77,3 +77,16 @@ MCP tools are allowed by per-server tool name. This is finer-grained than a `run
 ## 8. When adding a new project
 
 Immediately after you add a new project (= a new Slack channel) to `config.yaml`, that project's `permissionGrants.allow` is empty. No permissions from any other existing project are inherited. It is normal for the permission buttons to appear frequently the first few times; if you make each one permanent with `/agy-permissions add`, a permission list dedicated to that project will grow.
+
+## 9. When a safety mechanism is missing
+
+Before every `agy` call, the bridge checks that the following safety mechanisms are in place. **If any one is missing, it does not run `agy`**, replies to Slack with what is missing, and also logs it at startup.
+
+| What is checked | Example of what is missing |
+|---|---|
+| The project has `.agents/rules/agent-safety-rules.md`, starting with `trigger: always_on` (without it agy ignores the file) | Deleted file, broken link, missing frontmatter |
+| The `script-integrity` hook is registered in `~/.gemini/config/hooks.json` and its script exists in the install directory | Removed registration, damaged install directory |
+| The hook's state directory (`integrity/<key>/` in the config directory) exists | Deleted config directory, project not set up |
+| `permissions.deny` in `settings.json` contains `write_file(...)` for the install directory and the config directory | Removed deny rules |
+
+Only **presence** is checked. It does not stop you from deliberately loosening the allowed folders or the contents of the safety rules. Missing items can be put back with `tools/setup_agy_project.py` (item `2`). For agy's built-in project without a workspace, the project-side checks (rules, state directory) are skipped.
