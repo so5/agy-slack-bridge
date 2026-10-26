@@ -579,7 +579,7 @@ def test_main_menu_lists_projects_and_quits_on_enter(env, capsys):
     session, ask = menu_session(env, {})
     setup.main_menu(session)                      # Enter = the default, q
     out = capsys.readouterr().out
-    assert "新しいプロジェクトを作る" in out and "終了" in out and "トークン" in out
+    assert "新しいプロジェクトを作る" in out and "終了" in out and "Slack app の設定" in out
     assert "再起動" in out
 
 
@@ -828,13 +828,13 @@ def test_list_shows_unset_for_a_registered_but_unconfigured_project(env, capsys)
 def test_list_shows_in_progress_with_what_is_missing(env, capsys):
     run(env)                                  # rules + hook, but no channel
     out = _status(env, capsys)
-    assert "[途中]" in out and "未設定（必須）: Slack チャンネル" in out and "ルールとフック" not in out.split("未設定（必須）:")[1].splitlines()[0]
+    assert "[利用不可]" in out and "未設定（必須）: Slack チャンネル" in out and "ルールとフック" not in out.split("未設定（必須）:")[1].splitlines()[0]
 
 
 def test_configured_project_lists_every_unset_optional_item(env, capsys):
     run(env, Scripted({"チャンネル ID": "C0TEST123"}))
     out = _status(env, capsys)
-    assert "[設定済み]" in out and "Slack: C0TEST123" in out
+    assert "[利用可能]" in out and "Slack: C0TEST123" in out
     optional = [l for l in out.splitlines() if "未設定（任意）" in l][0]
     for item in ("Drive CLI", "表示名", "アイコン", "モデル", "effort", "監視ファイル", "権限ボタンの統計"):
         assert item in optional
@@ -845,14 +845,14 @@ def test_optional_items_disappear_from_the_list_once_set(env, capsys):
                        "モデル": "m", "effort": "high", "監視するファイル": "AGENTS.md", "権限ボタンの統計": "n",
                        "Drive CLI": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "cat /k"}))
     out = _status(env, capsys)
-    assert "[設定済み]" in out and "未設定（任意）" not in out
+    assert "[利用可能]" in out and "未設定（任意）" not in out
 
 
 def test_broken_safety_mechanism_makes_a_configured_project_incomplete(env, capsys):
     run(env, Scripted({"チャンネル ID": "C0TEST123"}))
     (env.target / ".agents/rules/agent-safety-rules.md").unlink()
     out = _status(env, capsys)
-    assert "[途中]" in out and "未設定（必須）: ルールとフック" in out
+    assert "[利用不可]" in out and "未設定（必須）: ルールとフック" in out
 
 
 def test_list_warns_when_the_drive_profile_is_missing(env, capsys):

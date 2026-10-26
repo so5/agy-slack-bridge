@@ -1055,14 +1055,14 @@ class Session:
 
     def project_status(self, pr: dict) -> dict:
         """一覧に出す状態。必須 = 安全機構（ルール・フック・deny）と Slack チャンネル。
-        label: 設定済み / 途中 / 未設定。設定済みのときは、未設定の任意項目を全部挙げる。"""
+        label: 利用可能 / 利用不可 / 未設定。利用可能のときは、未設定の任意項目を全部挙げる。"""
         folder = pr["folder"]
         state = Path(script_integrity.state_dir(str(self.config_dir), str(folder))) if folder else None
         problems = safety_stack.check(self.prefix, self.config_dir, folder, state,
                                       agy_settings.GLOBAL_HOOKS_PATH, agy_settings.GLOBAL_SETTINGS_PATH)
         entries = self.channel_entries(pr["id"])
         missing = (["ルールとフック"] if problems else []) + ([] if entries else ["Slack チャンネル"])
-        label = "設定済み" if not missing else ("未設定" if len(missing) == 2 else "途中")
+        label = "利用可能" if not missing else ("未設定" if len(missing) == 2 else "利用不可")
         optional, warnings = [], []
         if not missing:
             if current_gdrive_profile(pr["json"], self.prefix) is None:
@@ -1174,7 +1174,7 @@ def main_menu(session: Session) -> None:
         missing_tokens = session.missing_tokens()
         tok = f"未設定（必須）: {', '.join(missing_tokens)}" if missing_tokens else "設定済み"
         options += [("n", "新しいプロジェクトを作る"),
-                    ("t", f"Slack のトークンを設定する（全体で共通）  [{tok}]"), ("q", "終了")]
+                    ("t", f"Slack app の設定（全体で共通）  [{tok}]"), ("q", "終了")]
         key = choose(ask, "agy-slack-bridge セットアップ — 設定するプロジェクトを選んでください",
                      options, "q")
         try:
