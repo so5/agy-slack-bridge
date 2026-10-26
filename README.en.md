@@ -18,7 +18,7 @@ Anyone who can post in a bridged channel can have agy run commands, edit files, 
 of the user running agy. Make the channel **private, with only the person who runs agy and the bridge, plus the
 bot**. Inviting anyone else amounts to handing them that user account.
 
-Mechanisms that restrict what agy can do are also provided. See "Keeping the agent inside its lane" in [docs/usage.en.md](docs/usage.en.md) and [docs/permissions.en.md](docs/permissions.en.md). The bridge does not run `agy` for a project whose safety mechanisms are missing (deleted files, not set up, etc.) ([details](docs/permissions.en.md#9-when-a-safety-mechanism-is-missing)).
+Mechanisms that restrict what agy can do are also provided. See "Keeping the agent inside its lane" in [docs/usage.en.md](docs/usage.en.md) and [docs/permissions.en.md](docs/permissions.en.md). When safety mechanisms are missing, the bridge repairs them automatically (and tells you), and does not run `agy` if something cannot be repaired ([details](docs/permissions.en.md#9-when-a-safety-mechanism-is-missing)).
 
 ## Setup walkthrough
 

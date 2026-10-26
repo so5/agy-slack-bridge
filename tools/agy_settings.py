@@ -20,8 +20,13 @@ def load_json(path: Path) -> dict:
 
 
 def save_json(path: Path, data: dict) -> None:
+    """アトミックに書く(agy が読んでいる最中に、書きかけを見せない)。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if path.exists():
+        tmp.chmod(path.stat().st_mode & 0o777)
+    tmp.replace(path)
 
 
 def ensure_list_entries(container: dict, key: str, entries: list[str]) -> list[str]:
@@ -46,33 +51,40 @@ def machine_wide_deny_rules(prefix: Path, config_dir: Path, home: Path) -> list[
     ]
 
 
-def install_global_hook(prefix: Path, config_dir: Path) -> None:
-    """インストール先のフックを、グローバルの hooks.json に登録する(他のフックは残す)。"""
+def install_global_hook(prefix: Path, config_dir: Path, path: "Path | None" = None) -> bool:
+    """インストール先のフックを、グローバルの hooks.json に登録する(他のフックは残す)。
+    書いたら True。path 省略時は GLOBAL_HOOKS_PATH。"""
+    path = path or GLOBAL_HOOKS_PATH
     template = json.loads((prefix / "tools" / "hooks.json").read_text(encoding="utf-8"))
     entry = template[HOOK_NAME]
     hook = prefix / "tools" / "hooks" / "script_integrity.py"
     for group in entry.get("PreToolUse", []):
         for h in group.get("hooks", []):
             h["command"] = f"python3 {hook} --config-dir {config_dir}"
-    data = load_json(GLOBAL_HOOKS_PATH)
+    data = load_json(path)
     if data.get(HOOK_NAME) == entry:
-        print(f"  [OK] {GLOBAL_HOOKS_PATH} は対応済み")
-        return
+        print(f"  [OK] {path} は対応済み")
+        return False
     data[HOOK_NAME] = entry
-    save_json(GLOBAL_HOOKS_PATH, data)
-    print(f"  [書込] {GLOBAL_HOOKS_PATH} にフック {HOOK_NAME} を登録（{hook}）")
+    save_json(path, data)
+    print(f"  [書込] {path} にフック {HOOK_NAME} を登録（{hook}）")
+    return True
 
 
-def update_settings(deny_rules: list[str], trusted_workspaces: "list[str] | None" = None) -> None:
-    data = load_json(GLOBAL_SETTINGS_PATH)
+def update_settings(deny_rules: list[str], trusted_workspaces: "list[str] | None" = None,
+                    path: "Path | None" = None) -> list[str]:
+    """deny / trustedWorkspaces に無いものだけ足す。足したものを返す。path 省略時は GLOBAL_SETTINGS_PATH。"""
+    path = path or GLOBAL_SETTINGS_PATH
+    data = load_json(path)
     permissions = data.setdefault("permissions", {})
     added_deny = ensure_list_entries(permissions, "deny", deny_rules)
     added_ws = ensure_list_entries(data, "trustedWorkspaces", trusted_workspaces) if trusted_workspaces else []
     if added_deny or added_ws:
-        save_json(GLOBAL_SETTINGS_PATH, data)
+        save_json(path, data)
     for e in added_deny:
         print(f"  [追加] settings.json permissions.deny: {e}")
     for e in added_ws:
         print(f"  [追加] settings.json trustedWorkspaces: {e}")
     if not added_deny and not added_ws:
         print("  [OK] settings.json は対応済み")
+    return added_deny + added_ws

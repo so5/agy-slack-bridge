@@ -80,7 +80,7 @@ Immediately after you add a new project (= a new Slack channel) to `config.yaml`
 
 ## 9. When a safety mechanism is missing
 
-Before every `agy` call, the bridge checks that the following safety mechanisms are in place. **If any one is missing, it does not run `agy`**, replies to Slack with what is missing, and also logs it at startup.
+Before every `agy` call (and at startup), the bridge checks that the following safety mechanisms are in place. Whatever is missing is **put back automatically, with the same content setup would create** ("auto-repair"). If something that cannot be put back remains, the bridge **does not run `agy`** and replies to Slack with what is missing.
 
 | What is checked | Example of what is missing |
 |---|---|
@@ -89,4 +89,17 @@ Before every `agy` call, the bridge checks that the following safety mechanisms 
 | The hook's state directory (`integrity/<key>/` in the config directory) exists | Deleted config directory, project not set up |
 | `permissions.deny` in `settings.json` contains `write_file(...)` for the install directory and the config directory | Removed deny rules |
 
-Only **presence** is checked. It does not stop you from deliberately loosening the allowed folders or the contents of the safety rules. Missing items can be put back with `tools/setup_agy_project.py` (item `2`). For agy's built-in project without a workspace, the project-side checks (rules, state directory) are skipped.
+Only **presence** is checked. It does not stop you from deliberately loosening the allowed folders or the contents of the safety rules. For agy's built-in project without a workspace, the project-side checks (rules, state directory) are skipped.
+
+**What auto-repair covers**
+
+| Missing | Auto-repair |
+|---|---|
+| The safety rules file / a broken link | Re-creates the link to `agent-safety-rules.md` in the install directory |
+| The hook's state directory | Re-creates it |
+| The hook registration | Registers it again in `hooks.json` (other hooks are kept) |
+| `deny` | Adds to `permissions.deny` in `settings.json` (other entries are kept; no `allow` is ever written) |
+| A **real** safety rules file without `trigger: always_on` | **Not touched** (your file is never overwritten; `agy` is not run, and it is reported) |
+| The hook script is missing (damaged install directory) | Cannot be repaired. Run `install.py` again |
+
+When something is repaired, the bridge logs a warning and posts a notice to the channel: "Missing safety mechanisms were repaired automatically. Someone may have deleted them." Something disappearing is itself a sign of trouble, so it is never repaired silently.

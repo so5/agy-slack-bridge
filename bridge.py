@@ -44,6 +44,9 @@ import yaml
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+import safety_stack  # noqa: E402  (tools/ sits next to bridge.py in the install directory)
+
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(message)s",
@@ -1212,59 +1215,64 @@ class SafetyMechanismMissing(RuntimeError):
     """The safety mechanisms (rules, hook, deny rules) are absent for a project."""
 
 
-def _safety_mechanism_problems(project_id: str) -> list:
-    """What is missing of the safety mechanisms agy must never run without:
-    the project's agent-safety rules (present, with `trigger: always_on` -
-    without it agy ignores the file), the global script-integrity hook (and
-    its script), the hook's state directory for this project, and the deny
-    rules that keep the agent out of the bridge's install and config dirs.
-    Only *presence* is checked: a policy the user deliberately loosened is
-    theirs to make, but a mechanism that was deleted or never installed is
-    not something the bridge will run without. An empty list = fine. A
-    project without a workspace (agy's built-in chat-only project) has no
-    project-side mechanisms; the machine-wide ones still apply."""
-    problems = []
+_safety_repair_notices: list = []
+_safety_repair_lock = threading.Lock()
+
+
+def _safety_paths(project_id: str):
     prefix = Path(__file__).resolve().parent
     config_dir = CONFIG_PATH.resolve().parent
     root = _project_root(project_id)
-    if root is not None:
-        rules = root / SAFETY_RULES_RELPATH
-        try:
-            text = rules.read_text(encoding="utf-8")
-        except OSError:
-            problems.append(f"安全規則がありません: {rules}")
-        else:
-            head = text.split("\n---", 1)[0] if text.startswith("---") else ""
-            if not re.search(r"^trigger:\s*always_on\s*$", head, re.MULTILINE):
-                problems.append(f"安全規則の先頭に `trigger: always_on` がありません: {rules}")
-        if not _integrity_state_dir(root).is_dir():
-            problems.append(f"フックの状態ディレクトリがありません: {_integrity_state_dir(root)}")
-    try:
-        hooks = json.loads(AGY_GLOBAL_HOOKS_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        hooks = {}
-    if not (isinstance(hooks, dict) and hooks.get(SAFETY_HOOK_NAME)):
-        problems.append(f"フック {SAFETY_HOOK_NAME} が登録されていません: {AGY_GLOBAL_HOOKS_PATH}")
-    if not (prefix / "tools" / "hooks" / "script_integrity.py").is_file():
-        problems.append(f"フックのスクリプトがありません: {prefix / 'tools' / 'hooks' / 'script_integrity.py'}")
-    try:
-        settings = json.loads(AGY_GLOBAL_SETTINGS_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        settings = {}
-    deny = set(((settings.get("permissions") or {}).get("deny") or []) if isinstance(settings, dict) else [])
-    for label, path in (("インストール先", prefix), ("設定ディレクトリ", config_dir)):
-        forms = {str(path), str(path.resolve()), os.path.realpath(path)}
-        if not any(f"write_file({f})" in deny for f in forms):
-            problems.append(f"{label}への書き込みを禁じる deny が settings.json にありません: write_file({path})")
+    state_dir = _integrity_state_dir(root) if root is not None else None
+    return prefix, config_dir, root, state_dir
+
+
+def _safety_mechanism_problems(project_id: str) -> list:
+    """What is missing of the safety mechanisms agy must never run without
+    (see tools/safety_stack.py): the project's agent-safety rules, the global
+    script-integrity hook and its script, the hook's state directory for this
+    project, and the deny rules that keep the agent out of the bridge's
+    install and config dirs. Only *presence* is checked: a policy the user
+    deliberately loosened is theirs to make, but a mechanism that was deleted
+    or never installed is not something the bridge will run without. An empty
+    list = fine. A project without a workspace (agy's built-in chat-only
+    project) has no project-side mechanisms; the machine-wide ones still apply."""
+    prefix, config_dir, root, state_dir = _safety_paths(project_id)
+    return safety_stack.check(prefix, config_dir, root, state_dir,
+                              AGY_GLOBAL_HOOKS_PATH, AGY_GLOBAL_SETTINGS_PATH)
+
+
+def _ensure_safety_mechanisms(project_id: str) -> list:
+    """Checks; puts back what setup would have put there (only what is missing,
+    never a user's own file); returns the problems that remain. What was
+    repaired is logged and queued for a notice in the channel - something
+    deleted them, and that is worth knowing."""
+    problems = _safety_mechanism_problems(project_id)
+    if any(p.fixable for p in problems):
+        prefix, config_dir, root, state_dir = _safety_paths(project_id)
+        done = safety_stack.repair(prefix, config_dir, root, state_dir,
+                                   AGY_GLOBAL_HOOKS_PATH, AGY_GLOBAL_SETTINGS_PATH, problems)
+        for line in done:
+            log.warning("safety mechanism repaired (project=%s): %s", project_id, line)
+        with _safety_repair_lock:
+            _safety_repair_notices.extend(done)
+        problems = _safety_mechanism_problems(project_id)
     return problems
 
 
+def _take_safety_repair_notices() -> list:
+    with _safety_repair_lock:
+        notes = list(_safety_repair_notices)
+        _safety_repair_notices.clear()
+    return notes
+
+
 def _require_safety_mechanisms(project_id: str) -> None:
-    problems = _safety_mechanism_problems(project_id)
+    problems = _ensure_safety_mechanisms(project_id)
     if problems:
         raise SafetyMechanismMissing(
-            f"{SAFETY_MISSING_PREFIX}（project={project_id}）:\n- " + "\n- ".join(problems)
-            + "\n`tools/setup_agy_project.py` を実行して、足りないものを配置してください。")
+            f"{SAFETY_MISSING_PREFIX}（project={project_id}）:\n- " + "\n- ".join(p.message for p in problems)
+            + "\n自動では直せませんでした。`tools/setup_agy_project.py` を実行して、足りないものを配置してください。")
 
 
 _SCRIPT_INTERPRETER_BASENAMES = {
@@ -1961,6 +1969,17 @@ def _low_quota_warning(model: Optional[str], project_id: str) -> Optional[str]:
 _QUOTA_RESET_RE = re.compile(r"Resets in (\w+)")
 
 
+def _post_safety_repair_notices(client, channel_id: str, thread_key: str, persona_kwargs: dict) -> None:
+    notes = _take_safety_repair_notices()
+    if notes:
+        client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_key,
+            text=(":wrench: 欠けていた安全機構を自動で修復しました。誰かが削除した可能性があります。"
+                  "心当たりが無ければ確認してください:\n- " + "\n- ".join(notes)),
+            **persona_kwargs,
+        )
+
+
 def _agy_failure_text(err: str) -> str:
     """Slack text for a failed agy invocation. A model-quota 429 is common
     enough (and fixable from Slack) to deserve its own explanation instead
@@ -2005,12 +2024,14 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         )
     except Exception as exc:
         log.exception("agy invocation failed")
+        _post_safety_repair_notices(client, channel_id, thread_key, persona_kwargs)
         client.chat_postMessage(
             channel=channel_id, thread_ts=thread_key,
             text=_agy_failure_text(str(exc)),
             **persona_kwargs,
         )
         return
+    _post_safety_repair_notices(client, channel_id, thread_key, persona_kwargs)
 
     log.info("agy result=%r", {k: v for k, v in result.items() if k not in ("_tool_events", "_stderr")})
     if result.get("denied_actions") and not result.get("_tool_errors"):
@@ -2326,9 +2347,10 @@ def build_app() -> App:
     log.info("bridge bot user id=%s (mention required to start a new conversation)", self_user_id)
 
     for channel_id, channel_cfg in channel_map.items():   # tell the operator at startup, not on the first message
-        for problem in _safety_mechanism_problems(channel_cfg["project"]):
+        for problem in _ensure_safety_mechanisms(channel_cfg["project"]):
             log.error("safety mechanism missing for channel=%s: %s (agy will not run for this channel)",
-                      channel_id, problem)
+                      channel_id, problem.message)
+    _take_safety_repair_notices()   # already logged above; don't repeat them in the first reply
 
     def _check_all_config_drift() -> None:
         for channel_id, channel_cfg in channel_map.items():

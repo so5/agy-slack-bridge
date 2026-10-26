@@ -18,7 +18,7 @@ Slack から agy のエージェントと話せるようにするブリッジで
 agy にさせることができます。チャンネルは、**agy とブリッジを実行している本人とボットだけの非公開チャンネル**にしてください。
 第三者を招待することは、そのユーザーアカウントを渡すのと同じ意味を持ちます。
 
-agy の行動を制限する仕組みも用意しています。詳しくは [docs/usage.md](docs/usage.md) の「Keeping the agent inside its lane」と [docs/permissions.md](docs/permissions.md) を参照してください。ブリッジは、これらの安全機構が欠けている（ファイルの削除、未セットアップなど）プロジェクトでは `agy` を実行しません（[詳細](docs/permissions.md#9-安全機構が欠けているとき)）。
+agy の行動を制限する仕組みも用意しています。詳しくは [docs/usage.md](docs/usage.md) の「Keeping the agent inside its lane」と [docs/permissions.md](docs/permissions.md) を参照してください。ブリッジは、これらの安全機構が欠けていると自動で修復し（通知します）、修復できないときは `agy` を実行しません（[詳細](docs/permissions.md#9-安全機構が欠けているとき)）。
 
 ## セットアップ手順
 
