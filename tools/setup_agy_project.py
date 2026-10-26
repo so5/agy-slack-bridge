@@ -90,7 +90,7 @@ GDRIVE_READONLY_SUBCOMMANDS = ["list", "search", "meta", "read", "download"]
 # (gdrive_cli.py 側の PROFILE_NAME_RE と同じ)。
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CHANNEL_ID_RE = re.compile(r"^[CG][A-Z0-9]{5,}$")
-_EMOJI_RE = re.compile(r"^:[a-z0-9_+\-]+:$")
+_EMOJI_RE = re.compile(r"^:?[a-z0-9_+\-]+:?$")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 # プロジェクトのルールは .agents/rules/*.md に置く(AGENTS.md は、エージェントが自由に
@@ -626,7 +626,7 @@ def _validate_channel_id(v):
 
 
 def _validate_emoji(v):
-    return None if _EMOJI_RE.match(v) else "`:name:` の形で入力してください"
+    return None if _EMOJI_RE.match(v) else "絵文字の名前（例 robot_face または :robot_face:）を入力してください"
 
 
 def _validate_url(v):
@@ -674,7 +674,9 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
             return
     entry["project"] = project_id
     _set_or_pop(entry, "display_name", ask.text("表示名", default=entry.get("display_name")))
-    emoji = ask.text("アイコン絵文字（:name:）", default=entry.get("icon_emoji"), validate=_validate_emoji)
+    emoji = ask.text("アイコン絵文字", default=entry.get("icon_emoji"), validate=_validate_emoji)
+    if emoji:
+        emoji = f":{emoji.strip(':')}:"
     _set_or_pop(entry, "icon_emoji", emoji)
     if emoji:
         entry.pop("icon_url", None)

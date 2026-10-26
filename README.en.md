@@ -168,7 +168,7 @@ Prompts when you answered **y** to "change the advanced settings":
 | `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | **Y** |
 | `チャンネル ID` (channel ID) | The `C…` / `G…` from step 1 |
 | `表示名` (display name) | Optional. The name on the bot's replies (needs `chat:write.customize`) |
-| `アイコン絵文字（:name:）` (icon emoji) | Optional, e.g. `:robot_face:`. Type `:` and a few letters in a Slack message box to see candidate names (custom emoji work the same way). If given, the image URL is not asked |
+| `アイコン絵文字` (icon emoji) | Optional, e.g. `robot_face` (the surrounding `:` are optional). Type `:` and a few letters in a Slack message box to see candidate names (custom emoji work the same way). If given, the image URL is not asked |
 | `アイコン画像 URL` (icon image URL) | Only when the emoji is empty. A URL starting with `https://` |
 | `モデル` (model) | Optional (agy's default). A name from `agy models` |
 | `effort` | Optional. How deeply the model reasons |
