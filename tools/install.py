@@ -51,6 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agy_settings  # noqa: E402
+import safety_stack  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PREFIX = Path("~/.local/share/agy-slack-bridge").expanduser()
@@ -185,6 +186,10 @@ def create_config(prefix: Path, config_dir: Path) -> None:
         shutil.copyfile(prefix / sample, dest)
         os.chmod(dest, mode)
         print(f"  [作成] {dest}")
+    saved = safety_stack.backup_safety_files(prefix, config_dir)
+    if saved:
+        print(f"  [控え] 安全機構の原本を {config_dir / safety_stack.BACKUP_DIRNAME} に保存"
+              "（インストール先から消えたら、ブリッジがここから戻します）")
 
 
 def apply_settings(prefix: Path, config_dir: Path) -> None:

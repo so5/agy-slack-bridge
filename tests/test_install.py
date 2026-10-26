@@ -152,3 +152,10 @@ def test_unit_without_agy_on_path_warns_and_omits_the_line(dirs, monkeypatch, ca
     run(dirs)
     assert "AGY_BIN" not in (prefix / "systemd/agy-slack-bridge.service").read_text()
     assert "agy が PATH に見つかりません" in capsys.readouterr().out
+
+
+def test_install_saves_a_private_backup_of_the_safety_files(tmp_path):
+    prefix, cfg = tmp_path / "prefix", tmp_path / "cfg"
+    install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv", "--no-setup", "--no-settings"])
+    for rel in ("tools/hooks/script_integrity.py", "tools/hooks.json", "tools/agent-safety-rules.md"):
+        assert (cfg / "safety-backup" / rel).read_bytes() == (prefix / rel).read_bytes()

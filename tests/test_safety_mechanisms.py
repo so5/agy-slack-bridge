@@ -114,13 +114,34 @@ def test_dangling_link_is_replaced(stack):
     assert f.resolve() == (stack.prefix / "tools/agent-safety-rules.md").resolve()
 
 
-def test_a_users_own_rules_file_is_never_overwritten(stack):
+def test_users_rules_get_only_the_trigger_line_fixed_and_the_rest_is_kept(stack):
     f = stack.root / ".agents/rules/agent-safety-rules.md"
     f.write_text("my own rules, no frontmatter\n")
-    left = bridge._ensure_safety_mechanisms("pid")
-    assert [p.code for p in left] == ["rules_frontmatter"]
-    assert f.read_text() == "my own rules, no frontmatter\n" and not f.is_symlink()
-    assert bridge._take_safety_repair_notices() == []
+    assert bridge._ensure_safety_mechanisms("pid") == []
+    assert f.read_text() == "---\ntrigger: always_on\n---\nmy own rules, no frontmatter\n" and not f.is_symlink()
+    assert any("always_on" in n for n in bridge._take_safety_repair_notices())
+
+
+@pytest.mark.parametrize("before,after", [
+    ("---\ntrigger: manual\n---\nbody\n", "---\ntrigger: always_on\n---\nbody\n"),
+    ("---\ndescription: x\n---\nbody\n", "---\ntrigger: always_on\ndescription: x\n---\nbody\n"),
+    ("---\ntrigger: always_on\n---\nbody\n", "---\ntrigger: always_on\n---\nbody\n"),
+    ("---\n---\nbody\n", "---\ntrigger: always_on\n---\nbody\n"),
+    ("--- not frontmatter\nbody\n", "---\ntrigger: always_on\n---\n--- not frontmatter\nbody\n"),
+])
+def test_with_always_on(before, after):
+    import safety_stack
+    assert safety_stack.with_always_on(before) == after
+
+
+def test_a_symlink_to_somewhere_else_is_not_edited(stack):
+    f = stack.root / ".agents/rules/agent-safety-rules.md"
+    other = stack.root / "elsewhere.md"
+    other.write_text("no frontmatter\n")
+    f.unlink()
+    f.symlink_to(other)
+    assert [p.code for p in bridge._ensure_safety_mechanisms("pid")] == ["rules_frontmatter"]
+    assert other.read_text() == "no frontmatter\n"
 
 
 def test_state_dir_hook_and_deny_rules_are_restored_keeping_everything_else(stack):
@@ -140,7 +161,11 @@ def test_state_dir_hook_and_deny_rules_are_restored_keeping_everything_else(stac
 def test_unfixable_problems_block_agy_and_never_start_it(stack, monkeypatch):
     import subprocess
     monkeypatch.setattr(bridge, "_require_safety_mechanisms", _real_require)
-    (stack.root / ".agents/rules/agent-safety-rules.md").write_text("no frontmatter\n")
+    other = stack.root / "elsewhere.md"
+    other.write_text("no frontmatter\n")
+    link = stack.root / ".agents/rules/agent-safety-rules.md"
+    link.unlink()
+    link.symlink_to(other)                                        # not ours to edit -> cannot be repaired
     spawned = []
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a))
     with pytest.raises(bridge.SafetyMechanismMissing) as ei:
@@ -180,3 +205,57 @@ def test_repair_notice_is_posted_to_the_channel(stack):
 
 
 _real_require = bridge._require_safety_mechanisms
+
+
+# --- files install.py created come back from the backup in the config dir -----------------
+
+@pytest.fixture
+def fake_install(tmp_path):
+    """A tmp copy of the install dir's safety files, backed up the way install.py does."""
+    import shutil
+    import safety_stack
+    src = Path(bridge.__file__).resolve().parent
+    prefix, cfg = tmp_path / "prefix", tmp_path / "cfg"
+    for rel in safety_stack.SAFETY_FILES:
+        (prefix / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src / rel, prefix / rel)
+    cfg.mkdir(mode=0o700)
+    assert sorted(safety_stack.backup_safety_files(prefix, cfg)) == sorted(safety_stack.SAFETY_FILES)
+    return prefix, cfg
+
+
+def _check(prefix, cfg, tmp_path):
+    import safety_stack
+    hooks, settings = tmp_path / "h.json", tmp_path / "s.json"
+    hooks.write_text(json.dumps({"script-integrity": {"PreToolUse": []}}))
+    settings.write_text(json.dumps({"permissions": {"deny": [f"write_file({prefix})", f"write_file({cfg})"]}}))
+    return safety_stack, (prefix, cfg, None, None, hooks, settings)
+
+
+def test_missing_hook_script_is_restored_from_the_backup(fake_install, tmp_path):
+    prefix, cfg = fake_install
+    sc, args = _check(prefix, cfg, tmp_path)
+    original = (prefix / "tools/hooks/script_integrity.py").read_bytes()
+    (prefix / "tools/hooks/script_integrity.py").unlink()
+    problems = sc.check(*args)
+    assert [(p.code, p.fixable) for p in problems] == [("hook_script", True)]
+    done = sc.repair(*args, problems)
+    assert (prefix / "tools/hooks/script_integrity.py").read_bytes() == original
+    assert oct((prefix / "tools/hooks/script_integrity.py").stat().st_mode & 0o777) == "0o444"
+    assert any("控えから" in d for d in done) and sc.check(*args) == []
+
+
+def test_without_a_backup_a_missing_hook_script_cannot_be_repaired(fake_install, tmp_path):
+    import shutil
+    prefix, cfg = fake_install
+    shutil.rmtree(cfg / "safety-backup")
+    sc, args = _check(prefix, cfg, tmp_path)
+    (prefix / "tools/hooks/script_integrity.py").unlink()
+    assert [(p.code, p.fixable) for p in sc.check(*args)] == [("hook_script", False)]
+
+
+def test_install_makes_the_backup_private(fake_install):
+    prefix, cfg = fake_install
+    f = cfg / "safety-backup/tools/hooks/script_integrity.py"
+    assert f.is_file() and oct(f.stat().st_mode & 0o777) == "0o600"
+    assert oct(f.parent.stat().st_mode & 0o777) == "0o700"

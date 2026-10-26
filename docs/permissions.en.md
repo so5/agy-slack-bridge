@@ -99,7 +99,7 @@ Only **presence** is checked. It does not stop you from deliberately loosening t
 | The hook's state directory | Re-creates it |
 | The hook registration | Registers it again in `hooks.json` (other hooks are kept) |
 | `deny` | Adds to `permissions.deny` in `settings.json` (other entries are kept; no `allow` is ever written) |
-| A **real** safety rules file without `trigger: always_on` | **Not touched** (your file is never overwritten; `agy` is not run, and it is reported) |
-| The hook script is missing (damaged install directory) | Cannot be repaired. Run `install.py` again |
+| The safety rules file lacks `trigger: always_on` (agy ignores it otherwise) | Only the `trigger: always_on` line is fixed (added to the top if there is no frontmatter, or the `trigger` line is rewritten if it has another value; nothing else changes). A symlink pointing elsewhere is not edited: `agy` is not run and it is reported |
+| `script_integrity.py`, `hooks.json` or `agent-safety-rules.md` in the install directory is gone | Restored from the original that `install.py` saved in `safety-backup/` in the config directory (the agent cannot read or write the config directory). Without a backup (an old install) it cannot be repaired: run `install.py` again |
 
 When something is repaired, the bridge logs a warning and posts a notice to the channel: "Missing safety mechanisms were repaired automatically. Someone may have deleted them." Something disappearing is itself a sign of trouble, so it is never repaired silently.
