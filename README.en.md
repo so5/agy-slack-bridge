@@ -81,6 +81,7 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 | `4` Set up the Slack channel mapping | 3-3 |
 | `5` Show the current state | |
 | `b` Back to the project list | |
+| `q` Quit | |
 
 To set up another project, go back with `b` and choose again. Prompts that ask for a path complete it with Tab.
 

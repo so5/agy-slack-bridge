@@ -625,3 +625,11 @@ def test_path_completion_expands_tilde_and_marks_directories(tmp_path, monkeypat
     (tmp_path / "alps.txt").write_text("")
     monkeypatch.setenv("HOME", str(tmp_path))
     assert setup.complete_path("~/al") == [str(tmp_path / "alpha") + "/", str(tmp_path / "alps.txt")]
+
+
+def test_quit_from_project_menu_ends_the_whole_setup(env, capsys):
+    run(env)
+    # "q" is the last scripted answer; if it only returned to the list, the list would ask again and fail
+    session, ask = menu_session(env, {"選択": ["1", "q"]})
+    setup.main_menu(session)
+    assert "終了" in capsys.readouterr().out

@@ -898,19 +898,23 @@ def choose(ask: Prompter, title: str, options: "list[tuple[str, str]]", default:
                     validate=lambda v: None if v in keys else "表示されている番号かキーを入力してください")
 
 
-def project_menu(session: Session) -> None:
+def project_menu(session: Session) -> bool:
+    """プロジェクトのメニュー。True を返したときは、セットアップ全体を終了する。"""
     ask = session.ask
     options = [("1", "順に全部設定する（初めて・更新）"),
                ("2", "ルールとフックを配置・更新する"),
                ("3", "Google Drive CLI を設定する"),
                ("4", "Slack チャンネルとの対応づけを設定する"),
                ("5", "現在の状態を表示する"),
-               ("b", "プロジェクトの一覧に戻る")]
+               ("b", "プロジェクトの一覧に戻る"),
+               ("q", "終了")]
     while True:
         key = choose(ask, f"プロジェクト: {session.project_name or '未登録'}  {session.target_dir or ''}", options, "b")
         try:
             if key == "b":
-                return
+                return False
+            if key == "q":
+                return True
             if key == "1":
                 session.setup_files()
                 if session.project_json is not None:
@@ -951,11 +955,16 @@ def main_menu(session: Session) -> None:
                 raw = ask.text("新しいプロジェクトのディレクトリのパス", paths=True)
                 if raw:
                     session.open_project(Path(raw).expanduser().resolve())
-                    project_menu(session)
+                    if project_menu(session):
+                        key = "q"
             else:
                 pr = projects[int(key) - 1]
                 session.open_project(pr["folder"].resolve() if pr["folder"] else None, pr)
-                project_menu(session)
+                if project_menu(session):
+                    key = "q"
+            if key == "q":
+                print("設定を変えた場合は、ブリッジを再起動してください。")
+                return
         except SystemExit as e:
             if e.code not in (None, 0):
                 print(e.code)
