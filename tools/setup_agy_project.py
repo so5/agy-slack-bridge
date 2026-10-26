@@ -90,7 +90,7 @@ GDRIVE_READONLY_SUBCOMMANDS = ["list", "search", "meta", "read", "download"]
 # (gdrive_cli.py 側の PROFILE_NAME_RE と同じ)。
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CHANNEL_ID_RE = re.compile(r"^[CG][A-Z0-9]{5,}$")
-_EMOJI_RE = re.compile(r"^:?[\w+\-]+:?$")   # \w は日本語などのカスタム絵文字名も含む
+_EMOJI_RE = re.compile(r"^:?[^\s:]+:?$")   # 名前の文字種は絞らない（Slack 側が日本語・結合記号つきの名前なども許すため）。空白と途中の : だけ弾く
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 # プロジェクトのルールは .agents/rules/*.md に置く(AGENTS.md は、エージェントが自由に
@@ -626,7 +626,7 @@ def _validate_channel_id(v):
 
 
 def _validate_emoji(v):
-    return None if _EMOJI_RE.match(v) else "絵文字の名前（例 robot_face または :robot_face:）を入力してください"
+    return None if _EMOJI_RE.match(v) else "絵文字の名前（例 robot_face または :robot_face:）を入力してください（空白は使えません）"
 
 
 def _validate_url(v):

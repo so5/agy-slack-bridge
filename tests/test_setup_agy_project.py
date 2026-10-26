@@ -255,7 +255,7 @@ def test_channel_mapping_written_with_project_id_and_all_fields(env):
 
 def test_channel_prompts_reject_bad_values_then_accept(env):
     ask = Scripted({"チャンネル ID": ["nope", "C0TEST123"], "effort": ["extreme", "low"],
-                    "アイコン絵文字": ["bad name!", "abacus"], "監視するファイル": ["/etc/passwd", "../x", "ok.md"]})
+                    "アイコン絵文字": ["bad name", "abacus"], "監視するファイル": ["/etc/passwd", "../x", "ok.md"]})
     run(env, ask)
     e = channels(env)["C0TEST123"]
     assert (e["effort"], e["icon_emoji"], e["watched_config_files"]) == ("low", ":abacus:", ["ok.md"])
@@ -638,3 +638,10 @@ def test_quit_from_project_menu_ends_the_whole_setup(env, capsys):
 def test_icon_emoji_colons_are_optional(env):
     run(env, Scripted({"チャンネル ID": "C0TEST123", "アイコン絵文字": "試験管"}))
     assert channels(env)["C0TEST123"]["icon_emoji"] == ":試験管:"
+
+
+def test_icon_emoji_accepts_any_script_and_rejects_only_spaces_and_inner_colons(env):
+    assert setup._validate_emoji("สวัสดี") is None          # combining marks
+    assert setup._validate_emoji(":試験管:") is None
+    assert setup._validate_emoji("a b") is not None
+    assert setup._validate_emoji("a:b") is not None
