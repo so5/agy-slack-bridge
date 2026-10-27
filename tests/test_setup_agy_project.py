@@ -357,18 +357,19 @@ def test_menu_rejects_unknown_numbers_and_accepts_a_path_or_zero(env, tmp_path):
     assert (tmp_path / "other/.git").is_dir()
 
 
-def test_optional_shared_files_become_rules_and_warn_without_frontmatter(env, capsys):
+def test_optional_shared_files_become_rules_and_warn_without_frontmatter(env, capsys, monkeypatch):
     shared = env.cfg / "shared"
     shared.mkdir()
     (shared / "local-tools.md").write_text("---\ntrigger: always_on\n---\ntools\n")
-    (shared / "gdrive-cli.md").write_text("no frontmatter here\n")
+    (shared / "other.md").write_text("no frontmatter here\n")
+    monkeypatch.setattr(setup, "OPTIONAL_SHARED_FILES", ["local-tools.md", "other.md"])
     run(env)
     rules = env.target / ".agents/rules"
     assert not (rules / "local-tools.md").is_symlink()         # a copy: the agent cannot read into the config dir
     assert (rules / "local-tools.md").read_bytes() == (shared / "local-tools.md").read_bytes()
-    assert (rules / "gdrive-cli.md").read_text() == "no frontmatter here\n"
+    assert (rules / "other.md").read_text() == "no frontmatter here\n"
     out = capsys.readouterr().out
-    assert f"{shared / 'gdrive-cli.md'} に frontmatter" in out
+    assert f"{shared / 'other.md'} に frontmatter" in out
     assert f"{shared / 'local-tools.md'} に frontmatter" not in out
     assert not (env.target / "AGENTS.md").exists()
 
@@ -1017,3 +1018,22 @@ def test_shared_copy_replaces_an_old_link_and_asks_before_overwriting_edits(env)
     assert (rules / "local-tools.md").read_text() == "edited by the agent\n"
     run(env, Scripted({"上書きしますか": "y"}))
     assert (rules / "local-tools.md").read_text() == "v2\n"
+
+
+def test_drive_setup_writes_usage_rules_with_the_exact_allowed_commands_and_detach_removes_them(env):
+    _drive_project(env)
+    rules = env.target / ".agents/rules/gdrive-cli.md"
+    text = rules.read_text()
+    py, script = f"{env.prefix.resolve()}/.venv/bin/python", f"{env.prefix.resolve()}/tools/gdrive_cli.py"
+    cmd = f"{py} -I {script} --profile {pname(env)}"
+    assert text.startswith("---\ntrigger: always_on\n---\n") and f"`{cmd} list <フォルダID>`" in text
+    assert f"`{cmd} upload " in text and "実行のたびにユーザーの承認が要る" in text
+    _drive_menu(env, {"選択": ["1", "7", "1", "b", "b", "q"], "有効にするコマンド": "list,read"})
+    text = rules.read_text()
+    assert f"{cmd} list" in text and f"{cmd} read" in text and "search" not in text and "upload" not in text
+    rules.write_text("my own notes\n")                      # not ours: ask before replacing (default N)
+    _drive_menu(env, {"選択": ["1", "7", "1", "b", "b", "q"], "有効にするコマンド": "list"})
+    assert rules.read_text() == "my own notes\n"
+    rules.write_text(text)                                    # ours again (carries the marker)
+    _drive_menu(env, {"選択": ["1", "7", "4", "q"], "削除しますか": "n"})
+    assert not rules.exists()

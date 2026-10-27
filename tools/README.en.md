@@ -92,6 +92,7 @@ keep as is, `-`: clear the value). It performs the following in order.
 6. The Slack tokens in `env`, if not yet set.
 7. (Optional, after the required setup) Ask whether to use the Drive CLI (only for "set up everything"); if so, use the profile name derived from the agy project ID (never colliding; if other projects have profiles, choose between a new profile and sharing that project's settings and permissions) and interactively create and configure the profile
    (`<config directory>/gdrive/NAME.json`, [`gdrive-profile.en.md`](gdrive-profile.en.md)).
+   It also writes the agent-facing usage file `.agents/rules/gdrive-cli.md` (the same absolute-path commands as the allow list, only the commands the profile enables; regenerated when the profile is switched or the policy changes, removed when the Drive settings are detached; if a file the script did not create already exists, you are asked whether to replace it (default N)).
    - If it does not exist, ask for the authentication type (`service_account` (recommended: just share the Drive folders with its email address) / `oauth`) and
      the command that retrieves the credentials (and the scopes, if needed) and create it.
      The credentials and scopes of an existing profile are not touched.
@@ -122,7 +123,6 @@ project's `.agents/rules/` (not linked: the config directory is denied to the ag
 included in this repository.
 
 - `local-tools.md` — a list of the tools available on this machine
-- `gdrive-cli.md` — how to use the Drive CLI, written for agents
 
 Rule files in `.agents/rules/` need frontmatter at the top (`---` / `trigger: always_on` /
 `---`). Without it, the file is silently ignored with no error (confirmed on a real agy).
