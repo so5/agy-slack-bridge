@@ -957,3 +957,35 @@ def test_channel_option_groups_are_separate_menu_items(env):
     e = channels(env)["C0TEST123"]
     assert (e["model"], e["effort"]) == ("m1", "high") and "display_name" not in e
     assert not any("表示名" in p or "監視する" in p for p in ask.asked)
+
+
+def test_interrupt_message_names_the_operation_in_progress_and_what_finished(env, capsys):
+    _drive_project(env)
+    before = profile_path(env).read_text()
+
+    class Quit(Scripted):
+        def _in(self, prompt):
+            if "許可フォルダ" in prompt:
+                raise KeyboardInterrupt                 # after the commands question, before the folders one
+            return super()._in(prompt)
+
+        def _read(self, fn, prompt):                    # skip the "quit?" dialog: this is the second Ctrl-C
+            return fn(prompt)
+    ask = Quit({"選択": ["1", "7", "1"], "有効にするコマンド": "list"})
+    session, _ = menu_session(env, {})
+    session.ask = ask
+    setup.main_menu(session)
+    out = capsys.readouterr().out
+    assert "「Drive の方針」は途中のため、反映されていません" in out
+    assert profile_path(env).read_text() == before      # nothing of the interrupted operation is written
+    assert setup.interrupt_message().count("保存した設定はありません") == 1   # state was cleared by the print
+
+
+def test_interrupt_message_lists_finished_operations():
+    setup._OPS["stack"].clear()
+    setup._OPS["done"][:] = ["ルールとフックの配置"]
+    with pytest.raises(setup.QuitSetup):
+        with setup.operation("Slack トークンの設定"):
+            raise setup.QuitSetup
+    msg = setup.interrupt_message()
+    assert "「Slack トークンの設定」は途中のため" in msg and "この実行で完了した操作: ルールとフックの配置" in msg

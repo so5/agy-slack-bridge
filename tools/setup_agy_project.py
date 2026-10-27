@@ -62,6 +62,8 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
 設定ファイルを変えたあとは、ブリッジの再起動が必要な場合があります。
 """
 import argparse
+import contextlib
+import functools
 import getpass
 import glob
 import json
@@ -864,6 +866,52 @@ def configure_tokens(ask: Prompter, env_path: Path) -> None:
         print(f"  [更新] {env_path}")
 
 
+# --- 中断時のメッセージ -------------------------------------------------------------
+
+_OPS: dict = {"stack": [], "done": []}
+
+
+@contextlib.contextmanager
+def operation(name: str, atomic: bool = True):
+    """進行中の操作を覚える。Ctrl-C / q で中断されたとき、どの操作の途中かをメッセージに出す。
+    atomic=True: 最後に1回だけ書く操作（途中で止まれば何も反映されない）。
+    atomic=False: 途中まで書くことがある操作（再実行で補える）。"""
+    _OPS["stack"].append((name, atomic))
+    try:
+        yield
+    except (KeyboardInterrupt, EOFError, QuitSetup):
+        raise                                  # 中断。スタックはメッセージのために残す
+    except BaseException:
+        _OPS["stack"].pop()
+        raise
+    _OPS["stack"].pop()
+    _OPS["done"].append(name)
+
+
+def operation_method(name: str, atomic: bool = True):
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*a, **kw):
+            with operation(name, atomic):
+                return fn(*a, **kw)
+        return wrapper
+    return deco
+
+
+def interrupt_message() -> str:
+    """中断メッセージ。どの操作の途中だったか、この実行で何が完了したかを含む。使うと状態を消す。"""
+    stack, done = _OPS["stack"], _OPS["done"]
+    lines = ["", "中断しました。"]
+    if stack:
+        name, atomic = stack[-1]
+        lines.append(f"「{name}」は途中のため、反映されていません。" if atomic else
+                     f"「{name}」は途中です。ここまでの変更は残っていますが、再実行すれば補われます。")
+    lines.append(("この実行で完了した操作: " + "、".join(done)) if done else "この実行で保存した設定はありません。")
+    stack.clear()
+    done.clear()
+    return "\n".join(lines)
+
+
 # --- main -----------------------------------------------------------------------
 
 class Session:
@@ -916,6 +964,7 @@ class Session:
             self.project_name = project.get("name") or (target_dir.name if target_dir else self.project_id)
             print(f"  [OK] {self.project_name}（{self.project_id}）")
 
+    @operation_method("ルールとフックの配置", atomic=False)
     def setup_files(self) -> None:
         """ルール・フック・agy の設定(deny / trustedWorkspaces)をプロジェクトに配置・更新する。"""
         target_dir, prefix, config_dir = self.target_dir, self.prefix, self.config_dir
@@ -952,6 +1001,7 @@ class Session:
         return True
 
     # --- Drive CLI ---
+    @operation_method("Google Drive CLI の設定")
     def drive(self, gate: bool = False) -> None:
         if not self.ready():
             return
@@ -968,6 +1018,7 @@ class Session:
             return
         self.configure_profile(current or self.pick_profile())
 
+    @operation_method("Drive の方針")
     def configure_profile(self, profile: str, gate: bool = True) -> None:
         """プロファイルの作成・方針の設定と、このプロジェクトへの許可の登録。"""
         ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
@@ -1007,6 +1058,7 @@ class Session:
                 self.detach_drive(current)
                 return
 
+    @operation_method("Drive の認証情報の入れ直し")
     def reset_credentials(self, profile: str, others: "list[str]") -> None:
         ask, config_dir = self.ask, self.config_dir
         path = config_dir / "gdrive" / f"{profile}.json"
@@ -1039,6 +1091,7 @@ class Session:
             sa.unlink()
             print(f"  [削除] {sa}（使わなくなった鍵）")
 
+    @operation_method("Drive のプロファイルの切り替え", atomic=False)
     def switch_profile(self, current: str) -> None:
         ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
         own = default_profile_name(self.project_id)
@@ -1067,6 +1120,7 @@ class Session:
         self.configure_profile(new)
         self.offer_delete_if_unused(current)
 
+    @operation_method("Drive 設定の取り外し", atomic=False)
     def detach_drive(self, current: str) -> None:
         remove_project_gdrive_allow(self.project_json, self.prefix, current)
         print("  [OK] このプロジェクトでは Drive CLI を使えなくなりました。")
@@ -1103,8 +1157,11 @@ class Session:
         if not self.ready():
             return
         print("-- Slack チャンネル --" if not isinstance(options, str) else "-- チャンネルの任意設定 --")
-        configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name, options)
+        names = {"appearance": "チャンネルの見た目", "model": "チャンネルのモデル", "watch": "変更の監視と統計"}
+        with operation(names.get(options, "Slack チャンネルの設定")):
+            configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name, options)
 
+    @operation_method("Slack トークンの設定")
     def tokens(self) -> None:
         print("-- Slack トークン --")
         configure_tokens(self.ask, self.config_dir / "env")
@@ -1321,7 +1378,7 @@ def main_menu(session: Session) -> None:
             if e.code not in (None, 0):
                 print(e.code)
         except (KeyboardInterrupt, EOFError, QuitSetup):
-            print("\n中断しました。それまでに書き込んだ設定は残っています。")
+            print(interrupt_message())
             return
 
 
@@ -1347,6 +1404,8 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
     if type(ask) is Prompter:                   # 対話の実行だけ(テストの差し替えでは agy を呼ばない)
         prefetch_agy_models(config_dir)
     session = Session(ask, prefix, config_dir)
+    _OPS["stack"].clear()
+    _OPS["done"].clear()
     try:
         if args.all or type(ask) is not Prompter:   # 自動実行(テストの Prompter の差し替えを含む)は一本道
             session.run_all(args.target)
@@ -1358,7 +1417,7 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
             print("終了: メニューと y/n の質問では q、どの質問でも Ctrl-C（確認が出ます）")
             main_menu(session)
     except (KeyboardInterrupt, EOFError, QuitSetup):
-        print("\n中断しました。それまでに書き込んだ設定は残っています。")
+        print(interrupt_message())
 
 
 if __name__ == "__main__":
