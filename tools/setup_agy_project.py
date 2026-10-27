@@ -43,7 +43,7 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
      以前のセットアップが置いたプロジェクトごとの .agents/hooks.json のフックは外す
      (グローバルのフックと二重に動くため)。
   4. 対象の .agents/rules/ に、安全規則(インストール先のファイルへのシンボリックリンク。
-     frontmatter 付き)と、あれば <設定ディレクトリ>/shared/ の local-tools.md / gdrive-cli.md
+     frontmatter 付き)と、あれば <設定ディレクトリ>/shared/ の local-tools.md / gdrive-cli.md(コピー)
      へのリンクを置く。AGENTS.md は触らない(エージェントが編集してよい)。以前のセットアップが
      作った .agents/ 直下のリンクと AGENTS.md の読み込み行は取り除く。
      .gitignore に scratch/ の除外を追記(scratch について何も書かれていない場合のみ)。
@@ -105,7 +105,7 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 RULES_DIR = Path(".agents") / "rules"
 SAFETY_RULES = "agent-safety-rules.md"
 # 運用者がマシンごとに用意する任意のファイル(<設定ディレクトリ>/shared/ に置く)。
-# あれば .agents/rules/ にリンクする。frontmatter を付けておくこと。
+# あれば .agents/rules/ にコピーする(リンクにしない理由は place_shared_copy)。frontmatter を付けておくこと。
 OPTIONAL_SHARED_FILES = ["local-tools.md", "gdrive-cli.md"]
 # 以前のセットアップが作ったもの(.agents/<名前> のリンクと、AGENTS.md の読み込み行)。
 LEGACY_INCLUDE_LABELS = {
@@ -238,6 +238,34 @@ def absolute_symlink(target_dir: Path, dest_rel_path: str, source: Path) -> None
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.symlink_to(source)
     print(f"  [作成] {dest_rel_path} -> {source}")
+
+
+def place_shared_copy(ask: "Prompter", target_dir: Path, dest_rel_path: str, source: Path, owned: Path) -> None:
+    """運用者が用意したファイル(<設定ディレクトリ>/shared/)を、プロジェクトに**コピー**する。
+    リンクにしない理由: 設定ディレクトリは、エージェントの read_file を deny している(トークン・状態 DB・
+    プロファイルがある)。deny は allow より優先で、一部だけ除外もできないので、リンク先がそこにあると、
+    エージェント自身が読もうとしたときに拒否される(agy がルールとして読み込む分には読める)。
+    コピーなら、プロジェクトの中のファイルなので読める。更新は、元を直したあとの再実行で反映する。"""
+    dest = target_dir / dest_rel_path
+    data = source.read_bytes()
+    if dest.is_symlink():
+        real = dest.resolve()
+        if owned.resolve() not in (real, *real.parents):
+            sys.exit(f"エラー: {dest} は既に別のリンク先を指しています（{os.readlink(dest)}）。"
+                     "意図した切り替えなら、そのリンクを手動で削除してから再実行してください。")
+        dest.unlink()
+        print(f"  [置換] {dest_rel_path}: 設定ディレクトリへのリンクをやめ、コピーにします（リンク先はエージェントが読めないため）")
+    elif dest.exists():
+        if dest.read_bytes() == data:
+            print(f"  [OK] {dest_rel_path} は元のファイルと同じ")
+            return
+        if not ask.yes_no(f"{dest_rel_path} は元のファイル（{source}）と違います（エージェントが編集した可能性があります）。"
+                          "元のファイルで上書きしますか?", default=False):
+            print(f"  [スキップ] {dest_rel_path} は変更しません")
+            return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    print(f"  [コピー] {dest_rel_path}（元: {source}）")
 
 
 def remove_project_hook(target_dir: Path) -> None:
@@ -980,7 +1008,7 @@ class Session:
         for name in OPTIONAL_SHARED_FILES:
             src = config_dir / "shared" / name
             if src.exists():
-                absolute_symlink(target_dir, f"{RULES_DIR / name}", src)
+                place_shared_copy(self.ask, target_dir, f"{RULES_DIR / name}", src, config_dir / "shared")
                 warn_if_no_frontmatter(src)
         remove_project_hook(target_dir)
         register_with_hook(target_dir, config_dir)

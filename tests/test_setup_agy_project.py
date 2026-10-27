@@ -364,8 +364,9 @@ def test_optional_shared_files_become_rules_and_warn_without_frontmatter(env, ca
     (shared / "gdrive-cli.md").write_text("no frontmatter here\n")
     run(env)
     rules = env.target / ".agents/rules"
-    assert (rules / "local-tools.md").resolve() == (shared / "local-tools.md").resolve()
-    assert (rules / "gdrive-cli.md").is_symlink()
+    assert not (rules / "local-tools.md").is_symlink()         # a copy: the agent cannot read into the config dir
+    assert (rules / "local-tools.md").read_bytes() == (shared / "local-tools.md").read_bytes()
+    assert (rules / "gdrive-cli.md").read_text() == "no frontmatter here\n"
     out = capsys.readouterr().out
     assert f"{shared / 'gdrive-cli.md'} に frontmatter" in out
     assert f"{shared / 'local-tools.md'} に frontmatter" not in out
@@ -998,3 +999,21 @@ def test_interrupt_message_for_a_partial_operation_says_it_can_be_completed():
         with setup.operation("ルールとフックの配置", atomic=False, redo="プロジェクトのメニューの 2)"):
             raise setup.QuitSetup
     assert "ここまでの変更は保存されています。プロジェクトのメニューの 2)をもう一度実行してください。保存済みの内容は、そのまま使われます。" in setup.interrupt_message()
+
+
+def test_shared_copy_replaces_an_old_link_and_asks_before_overwriting_edits(env):
+    shared = env.cfg / "shared"
+    shared.mkdir()
+    (shared / "local-tools.md").write_text("v1\n")
+    rules = env.target / ".agents/rules"
+    run(env)                                                    # copy v1
+    (rules / "local-tools.md").unlink()
+    (rules / "local-tools.md").symlink_to(shared / "local-tools.md")   # what older setups made
+    run(env)
+    assert not (rules / "local-tools.md").is_symlink() and (rules / "local-tools.md").read_text() == "v1\n"
+    (rules / "local-tools.md").write_text("edited by the agent\n")
+    (shared / "local-tools.md").write_text("v2\n")
+    run(env)                                                    # default N: keep the edited file
+    assert (rules / "local-tools.md").read_text() == "edited by the agent\n"
+    run(env, Scripted({"上書きしますか": "y"}))
+    assert (rules / "local-tools.md").read_text() == "v2\n"

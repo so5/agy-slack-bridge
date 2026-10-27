@@ -117,8 +117,8 @@ After changing settings, a bridge restart may be needed.
 
 ### Machine-specific files (optional)
 
-If the following files exist in `<config directory>/shared/`, they are linked into the
-project's `.agents/rules/`. They are specific to each machine and operator, so they are not
+If the following files exist in `<config directory>/shared/`, they are **copied** into the
+project's `.agents/rules/` (not linked: the config directory is denied to the agent's `read_file`, and `deny` beats `allow` with no way to exempt a sub-path, so the agent itself could not read a link target there. After editing the original, re-run to update; if the copy differs, you are asked whether to overwrite it). They are specific to each machine and operator, so they are not
 included in this repository.
 
 - `local-tools.md` — a list of the tools available on this machine
