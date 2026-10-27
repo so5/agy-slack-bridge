@@ -65,6 +65,7 @@ def env(tmp_path, monkeypatch):
             "projectResources": {"resources": [{"folderUri": f"file://{target_dir}"}]}}))
 
     monkeypatch.setattr(setup, "register_agy_project", fake_register)
+    monkeypatch.setattr(setup, "fetch_agy_models", lambda: [("m1", "Model 1"), ("gemini-x", "Gemini X")])
     return type("Env", (), dict(tmp=tmp_path, gemini=gemini, prefix=prefix, cfg=cfg,
                                 target=target, registered=registered))
 
@@ -244,7 +245,7 @@ def test_warns_when_profile_missing(env, capsys):
 def test_channel_mapping_written_with_project_id_and_all_fields(env):
     run(env, Scripted({
         "任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Helper", "アイコン絵文字": ":abacus:",
-        "モデル": "gemini-x", "effort": "high", "監視するファイル": ".agents/local-tools.md, a/b.md",
+        "モデル": "2", "effort": "high", "監視するファイル": ".agents/local-tools.md, a/b.md",
         "権限ボタンの統計": "y"}))
     pid = project_json(env).stem
     assert channels(env) == {"C0TEST123": {
@@ -265,7 +266,7 @@ def test_channel_prompts_reject_bad_values_then_accept(env):
 
 
 def test_rerun_shows_current_values_and_dash_clears(env):
-    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Helper", "モデル": "m1"}))
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Helper", "モデル": "1"}))
     ask = Scripted({"任意の項目": "y", "Slack チャンネルを対応づけ": "y", "モデル": "-", "表示名": "Renamed"})
     run(env, ask)
     e = channels(env)["C0TEST123"]
@@ -851,7 +852,7 @@ def test_configured_project_lists_every_unset_optional_item(env, capsys):
 
 def test_optional_items_disappear_from_the_list_once_set(env, capsys):
     run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Bot", "アイコン絵文字": "robot_face",
-                       "モデル": "m", "effort": "high", "監視するファイル": "AGENTS.md", "権限ボタンの統計": "n",
+                       "モデル": "1", "effort": "high", "監視するファイル": "AGENTS.md", "権限ボタンの統計": "n",
                        "Drive CLI": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "cat /k"}))
     out = _status(env, capsys)
     assert "[利用可能]" in out and "未設定（任意）" not in out
@@ -876,3 +877,16 @@ def test_main_menu_shows_whether_the_tokens_are_set(env, capsys):
     assert "未設定（必須）: SLACK_BOT_TOKEN, SLACK_APP_TOKEN" in out
     (env.cfg / "env").write_text("SLACK_BOT_TOKEN=xoxb-real\nSLACK_APP_TOKEN=xapp-real\n")
     assert "[設定済み]" in _status(env, capsys)
+
+
+def test_model_menu_lists_agy_models_and_falls_back_to_typing(env, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(setup, "fetch_agy_models", lambda: calls.append(1) or [("a", "A"), ("b", "B")])
+    assert setup.ask_model(Scripted({"モデル": "2"}), None) == "b"
+    assert setup.ask_model(Scripted(), "b") == "b"                   # Enter keeps the current model
+    assert setup.ask_model(Scripted(), "zzz") == "zzz"               # unknown current value is kept
+    assert setup.ask_model(Scripted({"モデル": "-"}), "b") is None
+    assert len(calls) == 4                                           # fetched every time
+    monkeypatch.setattr(setup, "fetch_agy_models", lambda: [])
+    assert setup.ask_model(Scripted({"モデル ID": "typed"}), None) == "typed"
+    assert "取得できませんでした" in capsys.readouterr().out

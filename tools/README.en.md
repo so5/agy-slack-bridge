@@ -87,7 +87,7 @@ keep as is, `-`: clear the value). It performs the following in order.
    the `AGENTS.md` include lines created by earlier setups. Append `scratch/` to `.gitignore`
    (only if nothing about scratch is written there).
 5. Slack channel mapping (`channels` in `config.yaml`; only the channel ID is required, then it asks whether to set the optional items): display name, icon,
-   model, effort, config files to watch, and permission button statistics. Optional items can be skipped. Only the relevant entry is rewritten; other comments and items are preserved
+   model (chosen from the `agy models` list, fetched every time), effort, config files to watch, and permission button statistics. Optional items can be skipped. Only the relevant entry is rewritten; other comments and items are preserved
    (the original file is kept as `config.yaml.bak`).
 6. The Slack tokens in `env`, if not yet set.
 7. (Optional, after the required setup) Ask whether to use the Drive CLI (only for "set up everything"); if so, use the profile name derived from the agy project ID (never colliding; if other projects have profiles, choose between a new profile and sharing that project's settings and permissions) and interactively create and configure the profile

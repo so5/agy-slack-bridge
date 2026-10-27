@@ -718,6 +718,40 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
     _write_channel(config_path, text, channel_id, entry)
 
 
+def fetch_agy_models() -> "list[tuple[str, str]]":
+    """`agy models` の出力（id<TAB>表示名）。毎回 agy に問い合わせる。取得できなければ空。"""
+    try:
+        proc = subprocess.run([os.environ.get("AGY_BIN", "agy"), "models"],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    models = []
+    for line in proc.stdout.splitlines():
+        model_id, _, label = line.strip().partition("\t")
+        if model_id:
+            models.append((model_id, label.strip() or model_id))
+    return models
+
+
+def ask_model(ask: Prompter, current: "str | None") -> "str | None":
+    """agy のモデル一覧から選ばせる。None は「指定しない」。一覧を取れないときは ID を直接入力。"""
+    print("  agy のモデル一覧を取得しています...")
+    models = fetch_agy_models()
+    if not models:
+        print("  [警告] モデル一覧を取得できませんでした。ID を直接入力してください")
+        return ask.text("モデル ID", default=current)
+    options = [(str(i), f"{mid}  {label}") for i, (mid, label) in enumerate(models, 1)]
+    ids = [mid for mid, _ in models]
+    if current and current not in ids:
+        options.append(("c", f"現在の設定のまま（{current}）"))
+    options.append(("-", "指定しない（agy の既定）"))
+    default = str(ids.index(current) + 1) if current in ids else ("c" if current else "-")
+    key = choose(ask, "モデル", options, default, prompt="モデル")
+    if key in (None, "-"):                      # Prompter は「-」を None（消去）として返す
+        return None
+    return current if key == "c" else ids[int(key) - 1]
+
+
 def _ask_channel_options(ask: Prompter, entry: dict) -> None:
     _set_or_pop(entry, "display_name", ask.text("表示名", default=entry.get("display_name")))
     emoji = ask.text("アイコン絵文字", default=entry.get("icon_emoji"), validate=_validate_emoji)
@@ -729,8 +763,7 @@ def _ask_channel_options(ask: Prompter, entry: dict) -> None:
     else:
         _set_or_pop(entry, "icon_url", ask.text("アイコン画像 URL", default=entry.get("icon_url"),
                                                 validate=_validate_url))
-    _set_or_pop(entry, "model", ask.text("モデル",
-                                         default=entry.get("model")))
+    _set_or_pop(entry, "model", ask_model(ask, entry.get("model")))
     _set_or_pop(entry, "effort", ask.text(f"effort（{' / '.join(EFFORTS)}）", default=entry.get("effort"),
                                           validate=_validate_effort))
     watched = ask.text("監視するファイル（相対パス、カンマ区切り）",
@@ -1123,13 +1156,14 @@ class Session:
 
 # --- メニュー ------------------------------------------------------------------------
 
-def choose(ask: Prompter, title: str, options: "list[tuple[str, str]]", default: str) -> str:
+def choose(ask: Prompter, title: str, options: "list[tuple[str, str]]", default: str,
+           prompt: str = "選択") -> str:
     """番号・キーを選ぶメニュー。Enter で default。"""
     print(f"\n{title}")
     for key, label in options:
         print(f"    {key}) {label}")
     keys = [k for k, _ in options]
-    return ask.text("選択", default=default,
+    return ask.text(prompt, default=default,
                     validate=lambda v: None if v in keys else "表示されている番号かキーを入力してください")
 
 
