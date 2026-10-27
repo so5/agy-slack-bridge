@@ -10,17 +10,18 @@ Slack ブリッジ経由のエージェントが Drive を読み書きするた�
 「プロファイル」(JSON、ブリッジの設定ディレクトリ配下 = エージェントに読ませない場所)に
 あり、`--profile <名前>` で選ぶ。書き方は tools/gdrive-profile.md を参照。
 
-実行方法（許可リストのエントリと一致させること。-I は必須。--profile は必ず先頭）:
+実行方法（<prefix> = インストール先。絶対パスで書くので、cd は不要。プロジェクトのディレクトリで実行する。
+許可リストのエントリと一致させること。-I は必須。--profile は必ず先頭）:
   読み取り系（恒久許可・承認不要）:
-    .venv/bin/python -I gdrive_cli.py --profile <name> list <folder_id>
-    .venv/bin/python -I gdrive_cli.py --profile <name> search <name_substring> [--in <folder_id>]
-    .venv/bin/python -I gdrive_cli.py --profile <name> meta <file_id>
-    .venv/bin/python -I gdrive_cli.py --profile <name> read <file_id>       # テキスト化して標準出力
-    .venv/bin/python -I gdrive_cli.py --profile <name> download <file_id>   # <プロジェクト>/scratch/gdrive/ に保存し、絶対パスを出力する
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> list <folder_id>
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> search <name_substring> [--in <folder_id>]
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> meta <file_id>
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> read <file_id>       # テキスト化して標準出力
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> download <file_id>   # <プロジェクト>/scratch/gdrive/ に保存し、絶対パスを出力する
   書き込み系（毎回ユーザーの承認が要る。許可リストには入れない）:
-    .venv/bin/python -I gdrive_cli.py --profile <name> mkdir <parent_id> <name>
-    .venv/bin/python -I gdrive_cli.py --profile <name> upload <local_file> <folder_id> [--name <name>]
-    .venv/bin/python -I gdrive_cli.py --profile <name> update <file_id> <local_file>
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> mkdir <parent_id> <name>
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> upload <local_file> <folder_id> [--name <name>]
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> update <file_id> <local_file>
 
   `--profile <名前>` は固定の許可リストエントリの一部になる。名前の先は設定ファイルの中
   なので、裏の保管先を変えても、承認済みのコマンド文字列は変わらない。
