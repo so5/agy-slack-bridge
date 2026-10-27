@@ -976,7 +976,7 @@ def test_interrupt_message_names_the_operation_in_progress_and_what_finished(env
     session.ask = ask
     setup.main_menu(session)
     out = capsys.readouterr().out
-    assert "「Drive の方針」は途中のため、反映されていません" in out
+    assert "「Drive の方針」は保存されていません。再実行するときは、プロジェクトのメニューの 7) → 1)を最初からやり直してください" in out
     assert profile_path(env).read_text() == before      # nothing of the interrupted operation is written
     assert setup.interrupt_message().count("保存した設定はありません") == 1   # state was cleared by the print
 
@@ -988,4 +988,13 @@ def test_interrupt_message_lists_finished_operations():
         with setup.operation("Slack トークンの設定"):
             raise setup.QuitSetup
     msg = setup.interrupt_message()
-    assert "「Slack トークンの設定」は途中のため" in msg and "この実行で完了した操作: ルールとフックの配置" in msg
+    assert "「Slack トークンの設定」は保存されていません" in msg and "この実行で完了した操作: ルールとフックの配置" in msg
+
+
+def test_interrupt_message_for_a_partial_operation_says_it_can_be_completed():
+    setup._OPS["stack"].clear()
+    setup._OPS["done"].clear()
+    with pytest.raises(setup.QuitSetup):
+        with setup.operation("ルールとフックの配置", atomic=False, redo="プロジェクトのメニューの 2)"):
+            raise setup.QuitSetup
+    assert "ここまでの変更は保存されています。プロジェクトのメニューの 2)をもう一度実行してください。保存済みの内容は、そのまま使われます。" in setup.interrupt_message()

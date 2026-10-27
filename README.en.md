@@ -88,7 +88,7 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 
 Items `2`–`7` show their current state on the right (`[設定済み]` = set / `[未設定]` = not set).
 
-**Quitting and cancelling**: `q` quits from a menu at any level, and from a y/n question. **Ctrl-C** (or Ctrl-D) at any question asks `セットアップを終了しますか? [y/N]` (`y` quits; Enter or `n` returns to the same question). It then shows which operation was in progress and which ones finished in this run. Settings are saved once, when an operation (Drive policy, channel appearance, Slack tokens, …) ends: finished operations are saved, the one in progress is not applied. Placing the rules and hook, and switching or detaching a Drive profile, make several changes in turn, so some may remain (re-running completes them).
+**Quitting and cancelling**: `q` quits from a menu at any level, and from a y/n question. **Ctrl-C** (or Ctrl-D) at any question asks `セットアップを終了しますか? [y/N]` (`y` quits; Enter or `n` returns to the same question). It then shows which operation was in progress, which menu item to redo it from, and which operations finished in this run. Settings are saved once, when an operation (Drive policy, channel appearance, Slack tokens, …) ends: finished operations are saved, the one in progress is not applied. Placing the rules and hook, and switching or detaching a Drive profile, make several changes in turn, so some may remain saved (run the same item again; the saved values appear as defaults and Enter keeps them).
 
 **Statuses in the list**
 
