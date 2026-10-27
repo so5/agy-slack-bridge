@@ -159,3 +159,27 @@ def test_install_saves_a_private_backup_of_the_safety_files(tmp_path):
     install.main(["--prefix", str(prefix), "--config-dir", str(cfg), "--no-venv", "--no-setup", "--no-settings"])
     for rel in ("tools/hooks/script_integrity.py", "tools/hooks.json", "tools/agent-safety-rules.md"):
         assert (cfg / "safety-backup" / rel).read_bytes() == (prefix / rel).read_bytes()
+
+
+def test_offer_setup_survives_ctrl_c_and_the_child_keeps_the_default_handler(tmp_path):
+    import signal
+    import subprocess
+    import sys
+
+    seen = {}
+
+    def runner(cmd):
+        # the parent swallows SIGINT while the setup runs, but must not hand an ignored SIGINT to the child
+        seen["parent"] = signal.getsignal(signal.SIGINT)
+        seen["child"] = subprocess.run(
+            [sys.executable, "-c", "import signal;print(signal.getsignal(signal.SIGINT) is signal.default_int_handler)"],
+            capture_output=True, text=True).stdout.strip()
+
+    before = signal.getsignal(signal.SIGINT)
+    install.offer_setup(tmp_path / "p", tmp_path / "c", input_fn=lambda _: "", runner=runner)
+    assert seen["child"] == "True" and seen["parent"] not in (signal.SIG_DFL, signal.SIG_IGN, before)
+    assert signal.getsignal(signal.SIGINT) is before
+
+    def interrupted(_):
+        raise KeyboardInterrupt
+    install.offer_setup(tmp_path / "p", tmp_path / "c", input_fn=interrupted, runner=runner)   # no traceback

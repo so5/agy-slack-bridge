@@ -45,6 +45,7 @@ settings.json には、インストール先と設定ディレクトリを agy �
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -208,9 +209,20 @@ def offer_setup(prefix: Path, config_dir: Path, input_fn=input, runner=subproces
     cmd = setup_command(prefix, config_dir)
     print("\n続けて agy プロジェクトを設定します(チャンネルとの対応づけ、権限など)。")
     while True:
-        raw = input_fn("続けてセットアップを実行しますか? [Y/n]: ").strip().lower()
+        try:
+            raw = input_fn("続けてセットアップを実行しますか? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\n中断しました。後で設定する場合は、端末で次のコマンドを実行してください:\n  " + " ".join(cmd))
+            return
         if raw in ("", "y", "yes"):
-            runner(cmd)
+            # Ctrl-C は端末が前面のプロセス全員に送る。親がここで落ちると、実行中のセットアップも
+            # 道連れに止まり、終了の確認ダイアログも出せない。親は受けて何もしない(子は exec で
+            # 既定の動作に戻る。SIG_IGN だと子にも引き継がれてしまうので、関数を指定する)。
+            old = signal.signal(signal.SIGINT, lambda *_: None)
+            try:
+                runner(cmd)
+            finally:
+                signal.signal(signal.SIGINT, old)
             return
         if raw in ("n", "no"):
             print("後で設定する場合は、端末で次のコマンドを実行してください:\n  " + " ".join(cmd))
