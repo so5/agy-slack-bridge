@@ -922,12 +922,32 @@ def test_q_quits_from_any_menu_level_and_from_yes_no_prompts(env, capsys):
         setup.choose(Scripted({"選択": "q"}), "t", [("1", "a")], "1")
 
 
-def test_ctrl_c_ends_the_setup_cleanly(env, capsys):
-    def boom(prompt):
-        raise KeyboardInterrupt
-    ask = setup.Prompter(input_fn=boom, secret_fn=boom, out=lambda *_: None)
+def _interrupting_prompter(replies):
+    """input() が replies を順に返す。KeyboardInterrupt / EOFError の項目は、その例外を投げる。"""
+    seq = iter(replies)
+
+    def fn(prompt):
+        r = next(seq)
+        if isinstance(r, type) and issubclass(r, BaseException):
+            raise r
+        return r
+    return setup.Prompter(input_fn=fn, secret_fn=fn, out=lambda *_: None)
+
+
+def test_ctrl_c_asks_whether_to_quit_and_n_returns_to_the_question():
+    ask = _interrupting_prompter([KeyboardInterrupt, "n", "value"])
+    assert ask.text("x") == "value"
+    ask = _interrupting_prompter([EOFError, "", "yes"])               # Enter on the dialog = no
+    assert ask.yes_no("go?") is True
+
+
+def test_ctrl_c_then_y_quits_without_a_traceback(env, capsys):
+    ask = _interrupting_prompter([KeyboardInterrupt, "y"])
     setup.main([str(env.target), "--prefix", str(env.prefix), "--bridge-config-dir", str(env.cfg)], ask=ask)
-    assert "中断しました" in capsys.readouterr().out
+    out = capsys.readouterr()
+    assert "中断しました" in out.out and "Traceback" not in out.err
+    with pytest.raises(setup.QuitSetup):                              # a second Ctrl-C on the dialog quits too
+        _interrupting_prompter([KeyboardInterrupt, KeyboardInterrupt]).text("x")
 
 
 def test_channel_option_groups_are_separate_menu_items(env):

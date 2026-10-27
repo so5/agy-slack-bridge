@@ -88,7 +88,7 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 
 Items `2`–`7` show their current state on the right (`[設定済み]` = set / `[未設定]` = not set).
 
-**Quitting and cancelling**: `q` quits from a menu at any level, and from a y/n question. **Ctrl-C** (or Ctrl-D) interrupts at any question. What was already written stays; the answer to the question in progress is not applied.
+**Quitting and cancelling**: `q` quits from a menu at any level, and from a y/n question. **Ctrl-C** (or Ctrl-D) at any question asks `セットアップを終了しますか? [y/N]` (`y` quits; Enter or `n` returns to the same question). What was already written stays; the answer to the question in progress is not applied.
 
 **Statuses in the list**
 

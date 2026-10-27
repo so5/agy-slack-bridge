@@ -171,11 +171,26 @@ class Prompter:
     def __init__(self, input_fn=input, secret_fn=getpass.getpass, out=print):
         self._input, self._secret, self.out = input_fn, secret_fn, out
 
+    def _read(self, fn, prompt):
+        """入力を読む。Ctrl-C / Ctrl-D は、終了するかを聞く（n なら同じ質問に戻る）。
+        確認の最中にもう一度押したら、そのまま終了する。"""
+        while True:
+            try:
+                return fn(prompt)
+            except (KeyboardInterrupt, EOFError):
+                print()
+                try:
+                    answer = self._input("  セットアップを終了しますか? [y/N]: ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    raise QuitSetup from None
+                if answer in ("y", "yes", "q"):
+                    raise QuitSetup
+
     def text(self, label, default=None, validate=None, paths=False):
         hint = f" [{default}]" if default not in (None, "") else "（空欄でスキップ）"
         while True:
             with path_completion(paths):
-                raw = self._input(f"  {label}{hint}: ").strip()
+                raw = self._read(self._input, f"  {label}{hint}: ").strip()
             if raw == "":
                 return default if default != "" else None
             if raw == "-":
@@ -187,7 +202,7 @@ class Prompter:
 
     def yes_no(self, label, default=True):
         while True:
-            raw = self._input(f"  {label} [{'Y/n' if default else 'y/N'}]: ").strip().lower()
+            raw = self._read(self._input, f"  {label} [{'Y/n' if default else 'y/N'}]: ").strip().lower()
             if raw == "":
                 return default
             if raw in ("y", "yes"):
@@ -198,7 +213,7 @@ class Prompter:
                 raise QuitSetup
 
     def secret(self, label):
-        return self._secret(f"  {label}（空欄でスキップ）: ").strip()
+        return self._read(self._secret, f"  {label}（空欄でスキップ）: ").strip()
 
 
 # --- 共通の小物 ------------------------------------------------------------------
@@ -1336,11 +1351,11 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
         if args.all or type(ask) is not Prompter:   # 自動実行(テストの Prompter の差し替えを含む)は一本道
             session.run_all(args.target)
         elif args.target:
-            print("終了: メニューと y/n の質問では q、どの質問でも Ctrl-C")
+            print("終了: メニューと y/n の質問では q、どの質問でも Ctrl-C（確認が出ます）")
             session.open_project(Path(args.target).expanduser().resolve())
             project_menu(session)
         else:
-            print("終了: メニューと y/n の質問では q、どの質問でも Ctrl-C")
+            print("終了: メニューと y/n の質問では q、どの質問でも Ctrl-C（確認が出ます）")
             main_menu(session)
     except (KeyboardInterrupt, EOFError, QuitSetup):
         print("\n中断しました。それまでに書き込んだ設定は残っています。")
