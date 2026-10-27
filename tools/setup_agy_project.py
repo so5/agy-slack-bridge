@@ -611,10 +611,12 @@ def ask_policy(ask: Prompter, old: dict) -> dict:
     return new
 
 
-def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "set[str] | None":
+def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str,
+                             gate: bool = True) -> "set[str] | None":
     """プロファイル(<設定ディレクトリ>/gdrive/NAME.json)の方針を対話で設定して書く。
     有効な読み取り系を含むコマンドの集合を返す。プロファイルを扱えなかったとき
-    (作らない・壊れている等)は None。"""
+    (作らない・壊れている等)は None。gate=False(更新メニューの「方針を変更する」)では、
+    既存のプロファイルについて「変更しますか?」を聞かずに、方針の質問へ進む。"""
     path = config_dir / "gdrive" / f"{profile}.json"
     try:
         data = gdrive_policy.read_profile(path)
@@ -638,8 +640,9 @@ def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str) -> "
     for line in gdrive_policy.describe(old):
         print(f"      {line}")
     new = old
-    if ask.yes_no("詳細設定（スコープ・方針）を変更しますか?" if created else "詳細設定（方針）を変更しますか?",
-                  default=False):
+    if (not gate and not created) or ask.yes_no(
+            "詳細設定（スコープ・方針）を変更しますか?" if created else "詳細設定（方針）を変更しますか?",
+            default=False):
         if created:
             scopes = ask_scopes(ask)
             if scopes:
@@ -930,14 +933,14 @@ class Session:
             return
         self.configure_profile(current or self.pick_profile())
 
-    def configure_profile(self, profile: str) -> None:
+    def configure_profile(self, profile: str, gate: bool = True) -> None:
         """プロファイルの作成・方針の設定と、このプロジェクトへの許可の登録。"""
         ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
         print(f"  プロファイル: {profile}（{config_dir / 'gdrive' / (profile + '.json')}）")
         others = profile_users(prefix, profile, self.project_id)
         if others:
             print(f"  [注意] このプロファイルは {', '.join(others)} と共有です。方針を変えると、どちらにも反映されます。")
-        enabled = configure_gdrive_profile(ask, config_dir, profile)
+        enabled = configure_gdrive_profile(ask, config_dir, profile, gate)
         update_project_gdrive_allow(self.project_json, prefix, profile, enabled)
         warn_if_profile_missing(config_dir, profile)
         warn_if_gdrive_packages_missing(prefix)
@@ -960,7 +963,7 @@ class Session:
             if key == "b":
                 return
             if key == "1":
-                self.configure_profile(current)
+                self.configure_profile(current, gate=False)
             elif key == "2":
                 self.reset_credentials(current, others)
             elif key == "3":

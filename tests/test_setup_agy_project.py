@@ -740,7 +740,7 @@ def _second_project(env, tmp_path):
 
 def test_drive_menu_changes_the_policy_of_an_existing_profile(env):
     _drive_project(env)
-    _drive_menu(env, {"選択": ["1", "5", "1", "b", "b", "q"], "詳細設定": "y", "有効にするコマンド": "list,read"})
+    _drive_menu(env, {"選択": ["1", "5", "1", "b", "b", "q"], "有効にするコマンド": "list,read"})
     assert json.loads(profile_path(env).read_text())["commands"] == ["list", "read"]
     assert subs_in(allow(env)) == ["list", "read"]
 
