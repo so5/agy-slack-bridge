@@ -155,5 +155,6 @@ systemctl --user restart agy-slack-bridge.service
 | 同じ指示が一度だけ拒否される（スクリプトの差分つき） | スクリプトが前回から変わったときの保護。内容を確認して、同じ指示をもう一度送る |
 | 設定を変えたのに反映されない | ブリッジを再起動する |
 | 安全規則が効いていない | `.agents/rules/agent-safety-rules.md` のリンクがあるか（`setup_agy_project.py` を再実行）。ルールファイルには frontmatter（`trigger: always_on`）が必要で、無いとエラーなしで無視される |
+| `gdrive_cli.py` が「カレントディレクトリがインストール先の中」と言う | プロジェクトのディレクトリ(agy が開いているもの)で実行する必要があります。`download` は `<プロジェクト>/scratch/gdrive/` に保存し、絶対パスを出力します |
 | `setup_agy_project.py` が「インストールされていません」 | 先に `tools/install.py` を実行する |
 | `setup_agy_project.py` が「対話形式のコマンドです」 | 端末（TTY）から実行する |
