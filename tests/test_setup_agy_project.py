@@ -7,6 +7,7 @@ import uuid
 import pytest
 import yaml
 
+import agy_models
 import agy_settings
 import install
 import script_integrity
@@ -65,7 +66,7 @@ def env(tmp_path, monkeypatch):
             "projectResources": {"resources": [{"folderUri": f"file://{target_dir}"}]}}))
 
     monkeypatch.setattr(setup, "register_agy_project", fake_register)
-    monkeypatch.setattr(setup, "fetch_agy_models", lambda: [("m1", "Model 1"), ("gemini-x", "Gemini X")])
+    monkeypatch.setattr(setup, "fetch_agy_models", lambda *_: [("m1", "Model 1"), ("gemini-x", "Gemini X")])
     return type("Env", (), dict(tmp=tmp_path, gemini=gemini, prefix=prefix, cfg=cfg,
                                 target=target, registered=registered))
 
@@ -880,13 +881,31 @@ def test_main_menu_shows_whether_the_tokens_are_set(env, capsys):
 
 
 def test_model_menu_lists_agy_models_and_falls_back_to_typing(env, monkeypatch, capsys):
-    calls = []
-    monkeypatch.setattr(setup, "fetch_agy_models", lambda: calls.append(1) or [("a", "A"), ("b", "B")])
-    assert setup.ask_model(Scripted({"モデル": "2"}), None) == "b"
-    assert setup.ask_model(Scripted(), "b") == "b"                   # Enter keeps the current model
-    assert setup.ask_model(Scripted(), "zzz") == "zzz"               # unknown current value is kept
-    assert setup.ask_model(Scripted({"モデル": "-"}), "b") is None
-    assert len(calls) == 4                                           # fetched every time
-    monkeypatch.setattr(setup, "fetch_agy_models", lambda: [])
-    assert setup.ask_model(Scripted({"モデル ID": "typed"}), None) == "typed"
+    monkeypatch.setattr(setup, "fetch_agy_models", lambda *_: [("a", "A"), ("b", "B")])
+    cfg = env.cfg
+    assert setup.ask_model(Scripted({"モデル": "2"}), None, cfg) == "b"
+    assert setup.ask_model(Scripted(), "b", cfg) == "b"                   # Enter keeps the current model
+    assert setup.ask_model(Scripted(), "zzz", cfg) == "zzz"               # unknown current value is kept
+    assert setup.ask_model(Scripted({"モデル": "-"}), "b", cfg) is None
+    monkeypatch.setattr(setup, "fetch_agy_models", lambda *_: [])
+    assert setup.ask_model(Scripted({"モデル ID": "typed"}), None, cfg) == "typed"
     assert "取得できませんでした" in capsys.readouterr().out
+
+
+def test_models_cache_is_shared_and_only_refetched_when_stale(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(agy_models, "run_agy_models", lambda agy: calls.append(agy) or [("a", "A")])
+    assert agy_models.get_models(tmp_path, "agy", 60) == [("a", "A")]       # fetched, saved
+    assert setup.fetch_agy_models(tmp_path) == [("a", "A")]                  # the setup script reuses it
+    assert len(calls) == 1
+    ts, _ = agy_models.load_cache(tmp_path)
+    (tmp_path / agy_models.CACHE_NAME).write_text(json.dumps({"ts": ts - 99999, "models": [["old", "Old"]]}))
+    monkeypatch.setattr(agy_models, "run_agy_models", lambda agy: [])        # agy fails: stale list is returned
+    assert agy_models.get_models(tmp_path, "agy", 60) == [("old", "Old")]
+
+
+def test_prefetch_warms_the_cache_in_the_background(tmp_path, monkeypatch):
+    monkeypatch.setattr(agy_models, "run_agy_models", lambda agy: [("a", "A")])
+    setup.prefetch_agy_models(tmp_path)
+    setup._models_prefetch.join()
+    assert agy_models.load_cache(tmp_path)[1] == [("a", "A")]

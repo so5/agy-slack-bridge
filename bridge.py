@@ -45,6 +45,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+import agy_models  # noqa: E402
 import safety_stack  # noqa: E402  (tools/ sits next to bridge.py in the install directory)
 
 logging.basicConfig(
@@ -1482,34 +1483,21 @@ def _extract_uploadable_files(response_text: str, project_id: str, conversation_
 # /agy-model's validation and listing - that call shells out and can be slow,
 # and the model catalog doesn't change within the lifetime of one bridge run.
 AGY_MODELS_CACHE_TTL_SEC = 300
-_agy_models_cache: dict = {"ts": 0.0, "models": []}
+# The `agy models` list is cached in <config dir>/models-cache.json, shared with
+# setup_agy_project.py (tools/agy_models.py): whichever fetches first saves it.
+AGY_MODELS_FILE_TTL_SEC = 3600
 
 
 def _fetch_agy_models() -> list[tuple[str, str]]:
-    """Runs `agy models` and parses its tab-separated "id<TAB>label" stdout
-    lines. Best-effort: on any failure, returns the last good cached list
-    (possibly empty) rather than raising, since this only feeds a UX nicety
-    (listing/validating choices in /agy-model), not the actual --model flag
+    """The `agy models` list as (id, label). Best-effort: on any failure returns the
+    last cached list (possibly empty) rather than raising, since this only feeds a UX
+    nicety (listing/validating choices in /agy-model), not the actual --model flag
     passed to run_agy."""
-    now = time.time()
-    if _agy_models_cache["models"] and now - _agy_models_cache["ts"] < AGY_MODELS_CACHE_TTL_SEC:
-        return _agy_models_cache["models"]
     try:
-        proc = subprocess.run([AGY_BIN, "models"], capture_output=True, text=True, timeout=30)
-        models = []
-        for line in proc.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            model_id, _, label = line.partition("\t")
-            models.append((model_id, label.strip() or model_id))
-        if models:
-            _agy_models_cache["ts"] = now
-            _agy_models_cache["models"] = models
-        return models
+        return agy_models.get_models(CONFIG_PATH.resolve().parent, AGY_BIN, AGY_MODELS_FILE_TTL_SEC)
     except Exception:
         log.warning("failed to fetch agy models", exc_info=True)
-        return _agy_models_cache["models"]
+        return []
 
 
 def _effective_model_effort(store: "ThreadStore", channel_id: str, channel_cfg: dict) -> tuple:

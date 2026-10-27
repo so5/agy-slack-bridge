@@ -71,11 +71,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "hooks"))
+import agy_models  # noqa: E402
 import agy_settings  # noqa: E402
 import bridge_config  # noqa: E402
 import gdrive_cli  # noqa: E402
@@ -714,29 +716,32 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
             return
     entry["project"] = project_id
     if ask.yes_no("任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか?", default=False):
-        _ask_channel_options(ask, entry)
+        _ask_channel_options(ask, entry, config_path.parent)
     _write_channel(config_path, text, channel_id, entry)
 
 
-def fetch_agy_models() -> "list[tuple[str, str]]":
-    """`agy models` の出力（id<TAB>表示名）。毎回 agy に問い合わせる。取得できなければ空。"""
-    try:
-        proc = subprocess.run([os.environ.get("AGY_BIN", "agy"), "models"],
-                              capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    models = []
-    for line in proc.stdout.splitlines():
-        model_id, _, label = line.strip().partition("\t")
-        if model_id:
-            models.append((model_id, label.strip() or model_id))
-    return models
+MODELS_TTL_SEC = 3600
+_models_prefetch: "threading.Thread | None" = None
 
 
-def ask_model(ask: Prompter, current: "str | None") -> "str | None":
+def prefetch_agy_models(config_dir: Path) -> None:
+    """起動時に裏で `agy models` を呼び、共有キャッシュ(bridge の /agy-model と同じ)を温める。"""
+    global _models_prefetch
+    _models_prefetch = threading.Thread(target=fetch_agy_models, args=(config_dir,), daemon=True)
+    _models_prefetch.start()
+
+
+def fetch_agy_models(config_dir: Path) -> "list[tuple[str, str]]":
+    """モデルの一覧(id, 表示名)。共有キャッシュが新しければ agy を呼ばない。取得できなければ空。"""
+    return agy_models.get_models(config_dir, os.environ.get("AGY_BIN", "agy"), MODELS_TTL_SEC)
+
+
+def ask_model(ask: Prompter, current: "str | None", config_dir: Path) -> "str | None":
     """agy のモデル一覧から選ばせる。None は「指定しない」。一覧を取れないときは ID を直接入力。"""
-    print("  agy のモデル一覧を取得しています...")
-    models = fetch_agy_models()
+    if _models_prefetch is not None and _models_prefetch.is_alive():
+        print("  agy のモデル一覧を取得しています...")
+        _models_prefetch.join()
+    models = fetch_agy_models(config_dir)
     if not models:
         print("  [警告] モデル一覧を取得できませんでした。ID を直接入力してください")
         return ask.text("モデル ID", default=current)
@@ -752,7 +757,7 @@ def ask_model(ask: Prompter, current: "str | None") -> "str | None":
     return current if key == "c" else ids[int(key) - 1]
 
 
-def _ask_channel_options(ask: Prompter, entry: dict) -> None:
+def _ask_channel_options(ask: Prompter, entry: dict, config_dir: Path) -> None:
     _set_or_pop(entry, "display_name", ask.text("表示名", default=entry.get("display_name")))
     emoji = ask.text("アイコン絵文字", default=entry.get("icon_emoji"), validate=_validate_emoji)
     if emoji:
@@ -763,7 +768,7 @@ def _ask_channel_options(ask: Prompter, entry: dict) -> None:
     else:
         _set_or_pop(entry, "icon_url", ask.text("アイコン画像 URL", default=entry.get("icon_url"),
                                                 validate=_validate_url))
-    _set_or_pop(entry, "model", ask_model(ask, entry.get("model")))
+    _set_or_pop(entry, "model", ask_model(ask, entry.get("model"), config_dir))
     _set_or_pop(entry, "effort", ask.text(f"effort（{' / '.join(EFFORTS)}）", default=entry.get("effort"),
                                           validate=_validate_effort))
     watched = ask.text("監視するファイル（相対パス、カンマ区切り）",
@@ -1274,6 +1279,8 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
     if not (prefix / "bridge.py").exists() or not (prefix / "tools" / "hooks.json").exists():
         sys.exit(f"エラー: {prefix} にインストールされていません。先に tools/install.py を実行してください。")
 
+    if type(ask) is Prompter:                   # 対話の実行だけ(テストの差し替えでは agy を呼ばない)
+        prefetch_agy_models(config_dir)
     session = Session(ask, prefix, config_dir)
     if args.all or type(ask) is not Prompter:   # 自動実行(テストの Prompter の差し替えを含む)は一本道
         session.run_all(args.target)
