@@ -16,7 +16,7 @@ Slack ブリッジ経由のエージェントが Drive を読み書きするた�
     .venv/bin/python -I gdrive_cli.py --profile <name> search <name_substring> [--in <folder_id>]
     .venv/bin/python -I gdrive_cli.py --profile <name> meta <file_id>
     .venv/bin/python -I gdrive_cli.py --profile <name> read <file_id>       # テキスト化して標準出力
-    .venv/bin/python -I gdrive_cli.py --profile <name> download <file_id>   # scratch/gdrive/ に保存
+    .venv/bin/python -I gdrive_cli.py --profile <name> download <file_id>   # <プロジェクト>/scratch/gdrive/ に保存し、絶対パスを出力する
   書き込み系（毎回ユーザーの承認が要る。許可リストには入れない）:
     .venv/bin/python -I gdrive_cli.py --profile <name> mkdir <parent_id> <name>
     .venv/bin/python -I gdrive_cli.py --profile <name> upload <local_file> <folder_id> [--name <name>]
@@ -411,7 +411,21 @@ def safe_name(name):
     return re.sub(r"[^\w.\-()　-鿿]+", "_", name).strip("._") or "file"
 
 
+INSTALL_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def project_dir():
+    """カレントディレクトリ = プロジェクトのルート。インストール先の中で実行されたときは拒否する
+    （そこへ scratch/ を作ってしまい、エージェントも読めない。プロジェクトのディレクトリで実行させる）。"""
+    cwd = os.path.realpath(os.getcwd())
+    if os.path.commonpath([cwd, INSTALL_ROOT]) == INSTALL_ROOT:
+        sys.exit(f"error: the current directory ({cwd}) is inside the bridge install directory; "
+                 "run this command from the project directory (the one agy opened)")
+    return cwd
+
+
 def cmd_download(service, profile, args):
+    root = project_dir()
     file_id = check_id(args[0])
     ensure_in_allowed(service, profile, file_id)
     meta = service.files().get(fileId=file_id, fields="name, mimeType", supportsAllDrives=True).execute()
@@ -431,11 +445,12 @@ def cmd_download(service, profile, args):
         sys.exit(f"error: {mime} cannot be downloaded")
     else:
         data = download_bytes(service.files().get_media(fileId=file_id, supportsAllDrives=True))
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    path = os.path.join(DOWNLOAD_DIR, name)
+    out_dir = os.path.join(root, DOWNLOAD_DIR)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, name)
     with open(path, "wb") as fh:
         fh.write(data)
-    print(path)
+    print(path)                                # 絶対パス（エージェントが read_file にそのまま使える）
 
 
 # --- 書き込み系（毎回承認が要る）-----------------------------------------------
@@ -443,7 +458,7 @@ def cmd_download(service, profile, args):
 def resolve_upload_source(path, profile):
     """アップロード元を検証する。プロジェクト（カレント）配下の通常ファイルで、
     プロファイルの拒否リストに当たらないもの。"""
-    root = os.path.realpath(os.getcwd())
+    root = project_dir()
     real = os.path.realpath(path)
     if os.path.commonpath([root, real]) != root:
         sys.exit(f"error: {path!r} is outside the project directory")

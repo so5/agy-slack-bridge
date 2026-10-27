@@ -156,5 +156,6 @@ Only the code is replaced; your config (`config.yaml`, `env`, state DB) is untou
 | The same instruction is rejected once (with a script diff) | Protection for a script that changed since its last run. Check the diff, then send the same instruction again |
 | A config change has no effect | Restart the bridge |
 | The safety rules do not seem to apply | Is the `.agents/rules/agent-safety-rules.md` link there (re-run `setup_agy_project.py`)? A rule file needs frontmatter (`trigger: always_on`); without it it is silently ignored |
+| `gdrive_cli.py` says the current directory is inside the install directory | It must run from the project directory (the one agy opened). `download` saves to `<project>/scratch/gdrive/` and prints the absolute path |
 | `setup_agy_project.py` says it is not installed | Run `tools/install.py` first |
 | `setup_agy_project.py` says it is interactive | Run it from a terminal (TTY) |

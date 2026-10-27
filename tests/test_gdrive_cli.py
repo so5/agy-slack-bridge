@@ -338,3 +338,29 @@ def test_http_error_message_keeps_the_sharing_hint_for_other_403_404():
     assert "編集権限" in g.http_error_message(403, b"not json", True)
     assert g.http_error_message(500, b"", False) == "error: Drive API 500"
     assert g._error_reason('{"error": {"status": "PERMISSION_DENIED"}}') == "PERMISSION_DENIED"
+
+
+# --- project directory (cwd) ------------------------------------------------
+
+def test_project_dir_refuses_the_install_directory(monkeypatch):
+    monkeypatch.chdir(os.path.join(g.INSTALL_ROOT, "tools"))
+    with pytest.raises(SystemExit, match="install directory"):
+        g.project_dir()
+    with pytest.raises(SystemExit, match="install directory"):
+        g.resolve_upload_source("x", make_profile())
+
+
+def test_download_writes_under_the_project_and_prints_an_absolute_path(proj, monkeypatch, capsys):
+    monkeypatch.setattr(g, "ensure_in_allowed", lambda *a: None)
+    monkeypatch.setattr(g, "download_bytes", lambda req: b"data")
+
+    class Files:
+        def get(self, **kw):
+            return type("R", (), {"execute": lambda s: {"name": "a b.pdf", "mimeType": "application/pdf"}})()
+        def get_media(self, **kw):
+            return None
+
+    service = type("S", (), {"files": lambda s: Files()})()
+    g.cmd_download(service, make_profile(), [A])
+    out = capsys.readouterr().out.strip()
+    assert out == str(proj / "scratch/gdrive/a_b.pdf") and os.path.isfile(out)
