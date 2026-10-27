@@ -12,6 +12,25 @@ can talk to your agy agents from Slack.
 - Switching models, checking quota and running agy's slash commands also work from Slack.
 - Images, PDFs, CSVs etc. that agy generates are uploaded to the thread; Mermaid diagrams become images.
 
+## How it looks
+
+![Driving agy from Slack](docs/images/overview.en.svg)
+
+```mermaid
+sequenceDiagram
+    actor U as You (Slack)
+    participant B as Bridge (your machine)
+    participant A as agy (project directory)
+    U->>B: @agy tidy up the invoices (in the channel)
+    B->>A: run in that channel's project
+    A-->>B: an action that needs permission is denied
+    B-->>U: permission buttons (once / always)
+    U->>B: press a button (even from a phone)
+    B->>A: allow it and continue
+    A-->>B: results and files
+    B-->>U: reply in the thread, upload files
+```
+
 ## ⚠ Security assumptions
 
 Anyone who can post in a bridged channel can have agy run commands, edit files, and more, with the permissions
