@@ -307,7 +307,7 @@ at runtime, without editing `config.yaml` or restarting the bridge:
 
 - `/agy-model` or `/agy-model list` — shows the channel's current
   model/effort (override or config default) and the full list of choices
-  (from `agy models`, cached for 5 minutes).
+  (from `agy models`, cached for 1 hour, shared with the setup script).
 - `/agy-model set <model id> [low|medium|high|max]` — switches that channel
   to it from the next message onward. Rejected if the model id isn't one
   `agy models` lists. Some model ids already bake in a reasoning tier via a
