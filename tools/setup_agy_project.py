@@ -161,6 +161,10 @@ class path_completion:
             self._rl.set_completer_delims(self._old[1])
 
 
+class QuitSetup(Exception):
+    """メニューの q、yes/no の q、Ctrl-C / Ctrl-D。どの階層からでもセットアップを終える。"""
+
+
 class Prompter:
     """質問は Enter で既定値(現在値)、`-` で値を消す(None を返す)。"""
 
@@ -190,6 +194,8 @@ class Prompter:
                 return True
             if raw in ("n", "no"):
                 return False
+            if raw in ("q", "quit"):
+                raise QuitSetup
 
     def secret(self, label):
         return self._secret(f"  {label}（空欄でスキップ）: ").strip()
@@ -698,13 +704,10 @@ def _set_or_pop(entry: dict, key: str, value) -> None:
         entry[key] = value
 
 
-CHANNEL_OPTION_KEYS = ("display_name", "icon_emoji", "icon_url", "model", "effort", "watched_config_files", "telemetry")
-
-
 def configure_channel(ask: Prompter, config_path: Path, project_id: str, project_name: str,
-                      options: "bool | None" = None) -> None:
-    """options: None = 任意の項目を設定するか聞く / True = 任意の項目だけを設定する（対応づけ済みのチャンネル）/
-    False = 任意の項目は聞かない。"""
+                      options: "str | bool | None" = None) -> None:
+    """options: None = 任意の項目を設定するか聞く（y なら全グループ）/ False = 任意の項目は聞かない /
+    CHANNEL_GROUPS のキー = そのグループだけを、対応づけ済みのチャンネルに設定する。"""
     if not config_path.exists():
         print(f"  [スキップ] {config_path} がありません（先に install.py を実行してください）")
         return
@@ -713,10 +716,10 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
     mine = [cid for cid, e in channels.items() if (e or {}).get("project") == project_id]
     if mine:
         print(f"  このプロジェクトに割り当て済みのチャンネル: {', '.join(mine)}")
-    if options is True and not mine:
+    if isinstance(options, str) and not mine:
         print("  [スキップ] このプロジェクトに対応づけたチャンネルがありません（先に「Slack チャンネルとの対応づけ」を設定してください）")
         return
-    if options is True and len(mine) == 1:
+    if isinstance(options, str) and len(mine) == 1:
         channel_id = mine[0]
     else:
         channel_id = ask.text("チャンネル ID", default=mine[0] if len(mine) == 1 else None,
@@ -730,9 +733,12 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
                           default=False):
             return
     entry["project"] = project_id
-    if options is True or (options is None and ask.yes_no(
-            "任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか?", default=False)):
-        _ask_channel_options(ask, entry, config_path.parent)
+    if isinstance(options, str):
+        CHANNEL_GROUPS[options][0](ask, entry, config_path.parent)
+    elif options is None and ask.yes_no(
+            "任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか?", default=False):
+        for ask_group, _ in CHANNEL_GROUPS.values():
+            ask_group(ask, entry, config_path.parent)
     _write_channel(config_path, text, channel_id, entry)
 
 
@@ -773,7 +779,7 @@ def ask_model(ask: Prompter, current: "str | None", config_dir: Path) -> "str | 
     return current if key == "c" else ids[int(key) - 1]
 
 
-def _ask_channel_options(ask: Prompter, entry: dict, config_dir: Path) -> None:
+def _ask_appearance(ask: Prompter, entry: dict, config_dir: Path) -> None:
     _set_or_pop(entry, "display_name", ask.text("表示名", default=entry.get("display_name")))
     emoji = ask.text("アイコン絵文字", default=entry.get("icon_emoji"), validate=_validate_emoji)
     if emoji:
@@ -784,9 +790,15 @@ def _ask_channel_options(ask: Prompter, entry: dict, config_dir: Path) -> None:
     else:
         _set_or_pop(entry, "icon_url", ask.text("アイコン画像 URL", default=entry.get("icon_url"),
                                                 validate=_validate_url))
+
+
+def _ask_model_effort(ask: Prompter, entry: dict, config_dir: Path) -> None:
     _set_or_pop(entry, "model", ask_model(ask, entry.get("model"), config_dir))
     _set_or_pop(entry, "effort", ask.text(f"effort（{' / '.join(EFFORTS)}）", default=entry.get("effort"),
                                           validate=_validate_effort))
+
+
+def _ask_watch_stats(ask: Prompter, entry: dict, config_dir: Path) -> None:
     watched = ask.text("監視するファイル（相対パス、カンマ区切り）",
                        default=",".join(entry.get("watched_config_files") or []) or None,
                        validate=_validate_rel_paths)
@@ -795,6 +807,14 @@ def _ask_channel_options(ask: Prompter, entry: dict, config_dir: Path) -> None:
     stats = ask.yes_no("権限ボタンの統計を取りますか?", default=bool(telemetry.get("permission_stats")))
     telemetry["permission_stats"] = stats          # N も記録する（一覧で「回答済み」と分かるように）
     _set_or_pop(entry, "telemetry", telemetry or None)
+
+
+# 任意項目のグループ: メニューの項目 4〜6。(質問する関数, 設定済みと見なすキー)
+CHANNEL_GROUPS = {
+    "appearance": (_ask_appearance, ("display_name", "icon_emoji", "icon_url")),
+    "model": (_ask_model_effort, ("model", "effort")),
+    "watch": (_ask_watch_stats, ("watched_config_files", "telemetry")),
+}
 
 
 def _write_channel(config_path: Path, text: str, channel_id: str, entry: dict) -> None:
@@ -1064,10 +1084,10 @@ class Session:
         return names.get(key, new)
 
     # --- Slack ---
-    def channel(self, options: "bool | None" = None) -> None:
+    def channel(self, options: "str | bool | None" = None) -> None:
         if not self.ready():
             return
-        print("-- Slack チャンネル --" if options is not True else "-- チャンネルの表示・動作 --")
+        print("-- Slack チャンネル --" if not isinstance(options, str) else "-- チャンネルの任意設定 --")
         configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name, options)
 
     def tokens(self) -> None:
@@ -1119,9 +1139,10 @@ class Session:
         has_drive = bool(self.project_json is not None
                          and current_gdrive_profile(self.project_json, self.prefix))
         mark = lambda ok: "設定済み" if ok else "未設定"
-        has_options = any(e.get(k) for e in (self.channel_entries(self.project_id) if self.project_id else [])
-                          for k in CHANNEL_OPTION_KEYS)
-        return {"2": mark(ok_files), "3": mark(has_channel), "4": mark(has_options), "5": mark(has_drive)}
+        entries = self.channel_entries(self.project_id) if self.project_id else []
+        group = lambda name: mark(any(e.get(k) for e in entries for k in CHANNEL_GROUPS[name][1]))
+        return {"2": mark(ok_files), "3": mark(has_channel), "4": group("appearance"), "5": group("model"),
+                "6": group("watch"), "7": mark(has_drive)}
 
     def project_status(self, pr: dict) -> dict:
         """一覧に出す状態。必須 = 安全機構（ルール・フック・deny）と Slack チャンネル。
@@ -1182,12 +1203,18 @@ class Session:
 def choose(ask: Prompter, title: str, options: "list[tuple[str, str]]", default: str,
            prompt: str = "選択") -> str:
     """番号・キーを選ぶメニュー。Enter で default。"""
+    has_q = any(k == "q" for k, _ in options)
+    if not has_q:
+        options = options + [("q", "終了")]
     print(f"\n{title}")
     for key, label in options:
         print(f"    {key}) {label}")
     keys = [k for k, _ in options]
-    return ask.text(prompt, default=default,
-                    validate=lambda v: None if v in keys else "表示されている番号かキーを入力してください")
+    key = ask.text(prompt, default=default,
+                   validate=lambda v: None if v in keys else "表示されている番号かキーを入力してください")
+    if key == "q" and not has_q:
+        raise QuitSetup               # この階層の項目ではなく、どの階層でも効く「終了」
+    return key
 
 
 def project_menu(session: Session) -> bool:
@@ -1198,9 +1225,11 @@ def project_menu(session: Session) -> bool:
         options = [("1", "順に全部設定する（初めて・更新）"),
                    ("2", f"ルールとフックを配置・更新する  [{st['2']}]"),
                    ("3", f"Slack チャンネルとの対応づけを設定する  [{st['3']}]"),
-                   ("4", f"チャンネルの表示・動作を設定する（表示名・アイコン・モデル・effort・監視ファイル・統計）  [{st['4']}]"),
-                   ("5", f"Google Drive CLI を設定する  [{st['5']}]"),
-                   ("6", "現在の状態を表示する"),
+                   ("4", f"チャンネルの見た目を設定する（表示名・アイコン）  [{st['4']}]"),
+                   ("5", f"チャンネルのモデルを設定する（モデル・effort）  [{st['5']}]"),
+                   ("6", f"変更の監視と統計を設定する（監視ファイル・権限ボタンの統計）  [{st['6']}]"),
+                   ("7", f"Google Drive CLI を設定する  [{st['7']}]"),
+                   ("8", "現在の状態を表示する"),
                    ("b", "プロジェクトの一覧に戻る"),
                    ("q", "終了")]
         key = choose(ask, f"プロジェクト: {session.project_name or '未登録'}  {session.target_dir or ''}", options, "b")
@@ -1218,11 +1247,11 @@ def project_menu(session: Session) -> bool:
                 session.setup_files()
             elif key == "3":
                 session.channel(options=False)
-            elif key == "4":
-                session.channel(options=True)
-            elif key == "5":
+            elif key in ("4", "5", "6"):
+                session.channel(options=("appearance", "model", "watch")[int(key) - 4])
+            elif key == "7":
                 session.drive()
-            elif key == "6":
+            elif key == "8":
                 session.status()
         except SystemExit as e:           # 段階の中の sys.exit(メッセージ) でメニューを閉じない
             if e.code not in (None, 0):
@@ -1276,8 +1305,8 @@ def main_menu(session: Session) -> None:
         except SystemExit as e:
             if e.code not in (None, 0):
                 print(e.code)
-        except (KeyboardInterrupt, EOFError):
-            print("\n中断しました。")
+        except (KeyboardInterrupt, EOFError, QuitSetup):
+            print("\n中断しました。それまでに書き込んだ設定は残っています。")
             return
 
 
@@ -1303,13 +1332,18 @@ def main(argv: "list[str] | None" = None, ask: "Prompter | None" = None) -> None
     if type(ask) is Prompter:                   # 対話の実行だけ(テストの差し替えでは agy を呼ばない)
         prefetch_agy_models(config_dir)
     session = Session(ask, prefix, config_dir)
-    if args.all or type(ask) is not Prompter:   # 自動実行(テストの Prompter の差し替えを含む)は一本道
-        session.run_all(args.target)
-    elif args.target:
-        session.open_project(Path(args.target).expanduser().resolve())
-        project_menu(session)
-    else:
-        main_menu(session)
+    try:
+        if args.all or type(ask) is not Prompter:   # 自動実行(テストの Prompter の差し替えを含む)は一本道
+            session.run_all(args.target)
+        elif args.target:
+            print("終了: メニューと y/n の質問では q、どの質問でも Ctrl-C")
+            session.open_project(Path(args.target).expanduser().resolve())
+            project_menu(session)
+        else:
+            print("終了: メニューと y/n の質問では q、どの質問でも Ctrl-C")
+            main_menu(session)
+    except (KeyboardInterrupt, EOFError, QuitSetup):
+        print("\n中断しました。それまでに書き込んだ設定は残っています。")
 
 
 if __name__ == "__main__":

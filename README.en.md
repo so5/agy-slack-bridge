@@ -78,13 +78,17 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 | `1` Set up everything | 3-1 → 3-2 → 3-4 in order (first time, or updating). Required items come first; the optional Drive CLI (3-4) comes last |
 | `2` Place / update the rules and hook | Only the placement part of 3-1 |
 | `3` Set up the Slack channel mapping | Only the `チャンネル ID` prompt of 3-2 |
-| `4` Set up the channel display / behaviour | Only the optional items of 3-2 (display name, icon, model, effort, watched files, statistics). Needs item `3` first |
-| `5` Set up the Google Drive CLI | 3-4 |
-| `6` Show the current state | |
+| `4` Set up the channel appearance | The `表示名` / `アイコン絵文字` / `アイコン画像 URL` prompts of 3-2. Needs item `3` first |
+| `5` Set up the channel model | The `モデル` / `effort` prompts of 3-2. Needs item `3` first |
+| `6` Set up change watching and statistics | The `監視するファイル` / `権限ボタンの統計` prompts of 3-2. Needs item `3` first |
+| `7` Set up the Google Drive CLI | 3-4 |
+| `8` Show the current state | |
 | `b` Back to the project list | |
 | `q` Quit | |
 
-Items `2`–`5` show their current state on the right (`[設定済み]` = set / `[未設定]` = not set).
+Items `2`–`7` show their current state on the right (`[設定済み]` = set / `[未設定]` = not set).
+
+**Quitting and cancelling**: `q` quits from a menu at any level, and from a y/n question. **Ctrl-C** (or Ctrl-D) interrupts at any question. What was already written stays; the answer to the question in progress is not applied.
 
 **Statuses in the list**
 
@@ -105,7 +109,7 @@ To set up another project, go back with `b` and choose again. Prompts that ask f
 |---|---|
 | `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | Asked only for item `1` (set up everything). **N** to skip (go on); **Y** to map |
 | `チャンネル ID` (channel ID) | **The only required item.** The `C…` / `G…` from step 1 |
-| `任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか? [y/N]` (also set the optional items?) | Asked only for item `1` (set up everything); item `3` does not ask, item `4` goes straight to the questions below. **N** (default): stop here. No display name etc. is set and the defaults apply (values already set are kept). **y**: go on to the questions below |
+| `任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか? [y/N]` (also set the optional items?) | Asked only for item `1` (set up everything); item `3` does not ask, items `4`–`6` go straight to their group of questions. **N** (default): stop here. No display name etc. is set and the defaults apply (values already set are kept). **y**: go on to the questions below |
 
 Questions when you answer **y** to the optional items:
 
@@ -198,7 +202,7 @@ Prompts when you answered **y** to "change the advanced settings":
 
 **Updating an already configured Drive CLI**
 
-Choosing item `5` in the project menu for a project whose Drive CLI is already configured opens an update menu.
+Choosing item `7` in the project menu for a project whose Drive CLI is already configured opens an update menu.
 
 | Item | What it does |
 |---|---|
