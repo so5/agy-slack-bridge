@@ -49,3 +49,19 @@ def test_startup_fails_fast_with_a_clear_message_when_agy_is_not_runnable(monkey
     assert "AGY_BIN" in str(ei.value) and "absolute path" in str(ei.value)
     monkeypatch.setattr(bridge, "AGY_BIN", sys.executable)
     bridge.check_agy_available()  # an existing executable passes
+
+
+def test_agy_runs_in_the_project_directory(monkeypatch, tmp_path):
+    seen = {}
+
+    def popen(*a, **k):
+        seen.update(k)
+        return FakeChild('{"event":"result","result":{}}', "", 0)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(bridge, "_project_root", lambda pid: tmp_path)
+    bridge.run_agy("hi", "proj", None)
+    assert seen["cwd"] == str(tmp_path)               # not the bridge's own (install) directory
+    monkeypatch.setattr(bridge, "_project_root", lambda pid: None)
+    bridge.run_agy("hi", "proj", None)
+    assert seen["cwd"] is None                        # unknown project: unchanged behaviour

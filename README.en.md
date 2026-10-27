@@ -77,13 +77,14 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 |---|---|
 | `1` Set up everything | 3-1 → 3-2 → 3-4 in order (first time, or updating). Required items come first; the optional Drive CLI (3-4) comes last |
 | `2` Place / update the rules and hook | Only the placement part of 3-1 |
-| `3` Set up the Slack channel mapping | 3-2 |
-| `4` Set up the Google Drive CLI | 3-4 |
-| `5` Show the current state | |
+| `3` Set up the Slack channel mapping | Only the `チャンネル ID` prompt of 3-2 |
+| `4` Set up the channel display / behaviour | Only the optional items of 3-2 (display name, icon, model, effort, watched files, statistics). Needs item `3` first |
+| `5` Set up the Google Drive CLI | 3-4 |
+| `6` Show the current state | |
 | `b` Back to the project list | |
 | `q` Quit | |
 
-Items `2`–`4` show their current state on the right (`[設定済み]` = set / `[未設定]` = not set).
+Items `2`–`5` show their current state on the right (`[設定済み]` = set / `[未設定]` = not set).
 
 **Statuses in the list**
 
@@ -104,7 +105,7 @@ To set up another project, go back with `b` and choose again. Prompts that ask f
 |---|---|
 | `Slack チャンネルを対応づけますか? [Y/n]` (map a Slack channel?) | Asked only for item `1` (set up everything). **N** to skip (go on); **Y** to map |
 | `チャンネル ID` (channel ID) | **The only required item.** The `C…` / `G…` from step 1 |
-| `任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか? [y/N]` (also set the optional items?) | **N** (default): stop here. No display name etc. is set and the defaults apply (values already set are kept). **y**: go on to the questions below |
+| `任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか? [y/N]` (also set the optional items?) | Asked only for item `1` (set up everything); item `3` does not ask, item `4` goes straight to the questions below. **N** (default): stop here. No display name etc. is set and the defaults apply (values already set are kept). **y**: go on to the questions below |
 
 Questions when you answer **y** to the optional items:
 
@@ -197,7 +198,7 @@ Prompts when you answered **y** to "change the advanced settings":
 
 **Updating an already configured Drive CLI**
 
-Choosing item `4` in the project menu for a project whose Drive CLI is already configured opens an update menu.
+Choosing item `5` in the project menu for a project whose Drive CLI is already configured opens an update menu.
 
 | Item | What it does |
 |---|---|

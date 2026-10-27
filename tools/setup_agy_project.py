@@ -695,7 +695,13 @@ def _set_or_pop(entry: dict, key: str, value) -> None:
         entry[key] = value
 
 
-def configure_channel(ask: Prompter, config_path: Path, project_id: str, project_name: str) -> None:
+CHANNEL_OPTION_KEYS = ("display_name", "icon_emoji", "icon_url", "model", "effort", "watched_config_files", "telemetry")
+
+
+def configure_channel(ask: Prompter, config_path: Path, project_id: str, project_name: str,
+                      options: "bool | None" = None) -> None:
+    """options: None = 任意の項目を設定するか聞く / True = 任意の項目だけを設定する（対応づけ済みのチャンネル）/
+    False = 任意の項目は聞かない。"""
     if not config_path.exists():
         print(f"  [スキップ] {config_path} がありません（先に install.py を実行してください）")
         return
@@ -704,8 +710,14 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
     mine = [cid for cid, e in channels.items() if (e or {}).get("project") == project_id]
     if mine:
         print(f"  このプロジェクトに割り当て済みのチャンネル: {', '.join(mine)}")
-    channel_id = ask.text("チャンネル ID", default=mine[0] if len(mine) == 1 else None,
-                          validate=_validate_channel_id)
+    if options is True and not mine:
+        print("  [スキップ] このプロジェクトに対応づけたチャンネルがありません（先に「Slack チャンネルとの対応づけ」を設定してください）")
+        return
+    if options is True and len(mine) == 1:
+        channel_id = mine[0]
+    else:
+        channel_id = ask.text("チャンネル ID", default=mine[0] if len(mine) == 1 else None,
+                              validate=_validate_channel_id)
     if not channel_id:
         print("  [スキップ] チャンネル ID が未入力")
         return
@@ -715,7 +727,8 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
                           default=False):
             return
     entry["project"] = project_id
-    if ask.yes_no("任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか?", default=False):
+    if options is True or (options is None and ask.yes_no(
+            "任意の項目（表示名・アイコン・モデル・effort・監視ファイル・統計）も設定しますか?", default=False)):
         _ask_channel_options(ask, entry, config_path.parent)
     _write_channel(config_path, text, channel_id, entry)
 
@@ -1048,11 +1061,11 @@ class Session:
         return names.get(key, new)
 
     # --- Slack ---
-    def channel(self) -> None:
+    def channel(self, options: "bool | None" = None) -> None:
         if not self.ready():
             return
-        print("-- Slack チャンネル --")
-        configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name)
+        print("-- Slack チャンネル --" if options is not True else "-- チャンネルの表示・動作 --")
+        configure_channel(self.ask, self.config_dir / "config.yaml", self.project_id, self.project_name, options)
 
     def tokens(self) -> None:
         print("-- Slack トークン --")
@@ -1103,7 +1116,9 @@ class Session:
         has_drive = bool(self.project_json is not None
                          and current_gdrive_profile(self.project_json, self.prefix))
         mark = lambda ok: "設定済み" if ok else "未設定"
-        return {"2": mark(ok_files), "3": mark(has_channel), "4": mark(has_drive)}
+        has_options = any(e.get(k) for e in (self.channel_entries(self.project_id) if self.project_id else [])
+                          for k in CHANNEL_OPTION_KEYS)
+        return {"2": mark(ok_files), "3": mark(has_channel), "4": mark(has_options), "5": mark(has_drive)}
 
     def project_status(self, pr: dict) -> dict:
         """一覧に出す状態。必須 = 安全機構（ルール・フック・deny）と Slack チャンネル。
@@ -1180,8 +1195,9 @@ def project_menu(session: Session) -> bool:
         options = [("1", "順に全部設定する（初めて・更新）"),
                    ("2", f"ルールとフックを配置・更新する  [{st['2']}]"),
                    ("3", f"Slack チャンネルとの対応づけを設定する  [{st['3']}]"),
-                   ("4", f"Google Drive CLI を設定する  [{st['4']}]"),
-                   ("5", "現在の状態を表示する"),
+                   ("4", f"チャンネルの表示・動作を設定する（表示名・アイコン・モデル・effort・監視ファイル・統計）  [{st['4']}]"),
+                   ("5", f"Google Drive CLI を設定する  [{st['5']}]"),
+                   ("6", "現在の状態を表示する"),
                    ("b", "プロジェクトの一覧に戻る"),
                    ("q", "終了")]
         key = choose(ask, f"プロジェクト: {session.project_name or '未登録'}  {session.target_dir or ''}", options, "b")
@@ -1198,10 +1214,12 @@ def project_menu(session: Session) -> bool:
             elif key == "2":
                 session.setup_files()
             elif key == "3":
-                session.channel()
+                session.channel(options=False)
             elif key == "4":
-                session.drive()
+                session.channel(options=True)
             elif key == "5":
+                session.drive()
+            elif key == "6":
                 session.status()
         except SystemExit as e:           # 段階の中の sys.exit(メッセージ) でメニューを閉じない
             if e.code not in (None, 0):

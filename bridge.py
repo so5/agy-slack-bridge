@@ -1638,7 +1638,12 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     if effort:
         cmd += ["--effort", effort]
     log.info("running agy for project=%s conversation=%s", project_id, conversation_id or "(new)")
-    child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # agy's shell tool starts in the process's working directory. Without this it is the
+    # bridge's own (the install dir under systemd), so relative paths, `scratch/` and
+    # tools like gdrive_cli.py would act on the install dir instead of the project.
+    root = _project_root(project_id)
+    child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             cwd=str(root) if root is not None and root.is_dir() else None)
     try:
         out, err = child.communicate(timeout=AGY_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
