@@ -1053,6 +1053,20 @@ class Session:
             return []
         return [dict(e or {}) for e in channels.values() if (e or {}).get("project") == project_id]
 
+    def item_states(self) -> "dict[str, str]":
+        """プロジェクトのメニューに出す、項目ごとの状態（設定済み / 未設定）。"""
+        folder = self.target_dir
+        ok_files = False
+        if folder:
+            state = Path(script_integrity.state_dir(str(self.config_dir), str(folder)))
+            ok_files = not safety_stack.check(self.prefix, self.config_dir, folder, state,
+                                              agy_settings.GLOBAL_HOOKS_PATH, agy_settings.GLOBAL_SETTINGS_PATH)
+        has_channel = bool(self.project_id and self.channel_entries(self.project_id))
+        has_drive = bool(self.project_json is not None
+                         and current_gdrive_profile(self.project_json, self.prefix))
+        mark = lambda ok: "設定済み" if ok else "未設定"
+        return {"2": mark(ok_files), "3": mark(has_channel), "4": mark(has_drive)}
+
     def project_status(self, pr: dict) -> dict:
         """一覧に出す状態。必須 = 安全機構（ルール・フック・deny）と Slack チャンネル。
         label: 利用可能 / 利用不可 / 未設定。利用可能のときは、未設定の任意項目を全部挙げる。"""
@@ -1122,14 +1136,15 @@ def choose(ask: Prompter, title: str, options: "list[tuple[str, str]]", default:
 def project_menu(session: Session) -> bool:
     """プロジェクトのメニュー。True を返したときは、セットアップ全体を終了する。"""
     ask = session.ask
-    options = [("1", "順に全部設定する（初めて・更新）"),
-               ("2", "ルールとフックを配置・更新する"),
-               ("3", "Slack チャンネルとの対応づけを設定する"),
-               ("4", "Google Drive CLI を設定する"),
-               ("5", "現在の状態を表示する"),
-               ("b", "プロジェクトの一覧に戻る"),
-               ("q", "終了")]
     while True:
+        st = session.item_states()
+        options = [("1", "順に全部設定する（初めて・更新）"),
+                   ("2", f"ルールとフックを配置・更新する  [{st['2']}]"),
+                   ("3", f"Slack チャンネルとの対応づけを設定する  [{st['3']}]"),
+                   ("4", f"Google Drive CLI を設定する  [{st['4']}]"),
+                   ("5", "現在の状態を表示する"),
+                   ("b", "プロジェクトの一覧に戻る"),
+                   ("q", "終了")]
         key = choose(ask, f"プロジェクト: {session.project_name or '未登録'}  {session.target_dir or ''}", options, "b")
         try:
             if key == "b":

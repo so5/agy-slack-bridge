@@ -83,6 +83,8 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 | `b` Back to the project list | |
 | `q` Quit | |
 
+Items `2`–`4` show their current state on the right (`[設定済み]` = set / `[未設定]` = not set).
+
 **Statuses in the list**
 
 | Shown | Meaning |

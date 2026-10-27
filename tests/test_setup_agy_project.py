@@ -601,6 +601,15 @@ def test_selecting_an_existing_project_by_number(env, capsys):
     assert "1) proj" in out and "プロジェクト: proj" in out and "Slack チャンネル: 未設定" in out
 
 
+def test_project_menu_shows_state_per_item(env, capsys):
+    run(env)
+    session, ask = menu_session(env, {"選択": ["1", "b", "q"]})
+    setup.main_menu(session)
+    out = capsys.readouterr().out
+    assert "配置・更新する  [設定済み]" in out
+    assert "設定する  [未設定]" in out          # Slack channel and Drive CLI are not set
+
+
 def test_menu_rejects_unknown_choices_and_survives_errors(env, capsys):
     session, ask = menu_session(env, {"選択": ["zzz", "n", "q"],
                                       "新しいプロジェクトのディレクトリ": str(env.prefix),
