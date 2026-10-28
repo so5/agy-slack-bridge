@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" width="1200" height="620" font-family="'Noto Sans CJK JP','Hiragino Sans','Yu Gothic','Meiryo','Segoe UI',sans-serif" role="img" aria-label="スクリプトは、実行の直前にここまで確認される">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#1b2740"/></linearGradient>
+<linearGradient id="agy" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b5bdb"/><stop offset="1" stop-color="#27389b"/></linearGradient>
+<linearGradient id="chk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#0a4f4a"/></linearGradient>
+<linearGradient id="ok" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16a34a"/><stop offset="1" stop-color="#166534"/></linearGradient>
+<linearGradient id="ng" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b45309"/><stop offset="1" stop-color="#78350f"/></linearGradient>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#94a3b8"/></marker>
+<filter id="sh" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".35"/></filter>
+</defs>
+<rect width="1200" height="620" rx="28" fill="url(#bg)"/>
+<text x="60" y="70" font-size="34" fill="#fff" font-weight="700">スクリプトは、実行の直前にここまで確認される</text>
+<text x="60" y="106" font-size="18" fill="#94a3b8">フックが、実行のたびに自動で確認する。どれか 1 つでも外れたら実行しない。</text>
+<rect x="60" y="215" width="180" height="130" rx="16" fill="url(#agy)" filter="url(#sh)"/>
+<text x="78" y="252" font-size="22" fill="#fff" font-weight="700">agy</text>
+<text x="78" y="278" font-size="16" fill="#fff">スクリプトを実行</text>
+<text x="78" y="308" font-size="12" fill="#cbd5e1">対象を特定</text>
+<text x="78" y="326" font-size="12" fill="#cbd5e1">（grep の引数などは除く）</text>
+<text x="290" y="158" font-size="16" fill="#fbbf24" font-weight="700">恒久許可のスクリプト</text>
+<text x="290" y="318" font-size="16" fill="#fbbf24" font-weight="700">それ以外（使い捨てなど）</text>
+<path d="M242 270 H266 V215 H286" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M266 270 V375 H286" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<rect x="290" y="170" width="165" height="90" rx="14" fill="url(#chk)" filter="url(#sh)"/>
+<text x="304" y="206" font-size="17" fill="#fff" font-weight="700">① 承認の記録</text>
+<text x="304" y="234" font-size="12" fill="#fca5a5">なければ拒否</text>
+<rect x="483" y="170" width="165" height="90" rx="14" fill="url(#chk)" filter="url(#sh)"/>
+<text x="497" y="206" font-size="17" fill="#fff" font-weight="700">② 内容のハッシュ</text>
+<text x="497" y="234" font-size="12" fill="#fca5a5">承認時と違えば拒否</text>
+<rect x="676" y="170" width="165" height="90" rx="14" fill="url(#chk)" filter="url(#sh)"/>
+<text x="690" y="206" font-size="17" fill="#fff" font-weight="700">③ git の管理下</text>
+<text x="690" y="234" font-size="12" fill="#fca5a5">未追跡なら拒否</text>
+<rect x="869" y="170" width="165" height="90" rx="14" fill="url(#chk)" filter="url(#sh)"/>
+<text x="883" y="206" font-size="17" fill="#fff" font-weight="700">④ コミット済み</text>
+<text x="883" y="234" font-size="12" fill="#fca5a5">差分があれば拒否</text>
+<path d="M457 215 H481" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M650 215 H674" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M843 215 H867" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M1036 215 H1060" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<rect x="1068" y="170" width="72" height="90" rx="14" fill="url(#ok)" filter="url(#sh)"/><text x="1104" y="224" font-size="22" fill="#fff" font-weight="700" text-anchor="middle">実行</text>
+<rect x="290" y="330" width="180" height="90" rx="14" fill="url(#chk)" filter="url(#sh)"/>
+<text x="304" y="366" font-size="17" fill="#fff" font-weight="700">① 前回と同じ内容?</text>
+<text x="304" y="394" font-size="12" fill="#86efac">初回は記録して通す</text>
+<path d="M472 375 H500" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<rect x="504" y="330" width="300" height="90" rx="14" fill="url(#ng)" filter="url(#sh)"/>
+<text x="520" y="366" font-size="17" fill="#fff" font-weight="700">違えば、一度だけ拒否</text>
+<text x="520" y="394" font-size="13" fill="#fde68a">差分を表示。もう一度送れば通る</text>
+<path d="M806 375 H1064" stroke="#94a3b8" stroke-width="3" fill="none" stroke-dasharray="7 6" marker-end="url(#ar)"/>
+<rect x="1068" y="330" width="72" height="90" rx="14" fill="url(#ok)" filter="url(#sh)"/><text x="1104" y="384" font-size="22" fill="#fff" font-weight="700" text-anchor="middle">実行</text>
+<rect x="60" y="470" width="530" height="90" rx="16" fill="#ffffff" fill-opacity=".08" stroke="#475569"/>
+<text x="84" y="505" font-size="17" fill="#fff" font-weight="700">承認の記録と台帳</text>
+<text x="84" y="534" font-size="14" fill="#cbd5e1">設定ディレクトリに置く。agy は読み書きできない</text>
+<rect x="610" y="470" width="530" height="90" rx="16" fill="#ffffff" fill-opacity=".08" stroke="#475569"/>
+<text x="634" y="505" font-size="17" fill="#fff" font-weight="700">直したら</text>
+<text x="634" y="534" font-size="14" fill="#cbd5e1">編集 → コミット → /agy-permissions add（再承認）</text>
+</svg>

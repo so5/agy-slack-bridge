@@ -51,6 +51,8 @@ Several projects may use the same script (such as `gdrive_cli.py`), but that is 
 
 ## 5. Permanently allowed scripts (seal)
 
+![How scripts are checked](images/script-check.en.svg)
+
 The ledger `<config directory>/integrity/<project key>/permanent.json` has the format `{ "<absolute path of script>": "<sha256>" }`. It is a separate file for each project, and it is placed not inside the project but in the config directory, which the agent cannot read or write (the key is a hash of the real path of the project root).
 
 - **seal**: Writes the hash of the content at the time of approval. The bridge writes it automatically on `/agy-permissions add`. Sending the same `add` again rewrites the hash with the current content (re-seal).

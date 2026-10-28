@@ -51,6 +51,8 @@ Slack からの操作方法は [usage.md](usage.md) の「Managing permissions f
 
 ## 5. 恒久許可のスクリプト（seal）
 
+![スクリプトの確認の流れ](images/script-check.svg)
+
 台帳 `<設定ディレクトリ>/integrity/<プロジェクトのキー>/permanent.json` は、`{ "<スクリプトの絶対パス>": "<sha256>" }` の形式。プロジェクトごとに別のファイルで、プロジェクトの中ではなく、エージェントが読み書きできない設定ディレクトリに置かれる（キーは、プロジェクトのルートの実パスのハッシュ）。
 
 - **seal**: 承認した時点の内容のハッシュを書く。bridge は `/agy-permissions add` の時に自動で書く。同じ `add` をもう一度送ると、ハッシュは今の内容で書き直される（再 seal）。
