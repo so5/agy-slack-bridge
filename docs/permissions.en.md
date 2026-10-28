@@ -2,6 +2,8 @@
 
 For how to operate permissions from Slack, see "Managing permissions from Slack" in [usage.en.md](usage.en.md).
 
+![How a command gets to run](images/permissions-flow.en.svg)
+
 ## 1. Permission layers
 
 | Layer | Location | Contents | Scope |

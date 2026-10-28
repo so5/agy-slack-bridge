@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 580" width="1200" height="580" font-family="'Noto Sans CJK JP','Hiragino Sans','Yu Gothic','Meiryo','Segoe UI',sans-serif" role="img" aria-label="コマンドは、許可されたものだけ動く">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#1b2740"/></linearGradient>
+<linearGradient id="agy" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b5bdb"/><stop offset="1" stop-color="#27389b"/></linearGradient>
+<linearGradient id="chk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#0a4f4a"/></linearGradient>
+<linearGradient id="ok" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16a34a"/><stop offset="1" stop-color="#166534"/></linearGradient>
+<linearGradient id="slack" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b2a63"/><stop offset="1" stop-color="#3a1a40"/></linearGradient>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#94a3b8"/></marker>
+<filter id="sh" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".35"/></filter>
+</defs>
+<rect width="1200" height="580" rx="28" fill="url(#bg)"/>
+<text x="60" y="70" font-size="34" fill="#fff" font-weight="700">コマンドは、許可されたものだけ動く</text>
+<text x="60" y="106" font-size="18" fill="#94a3b8">許可はプロジェクト（＝チャンネル）ごと。deny が最優先。</text>
+<rect x="60" y="140" width="180" height="96" rx="16" fill="url(#agy)" filter="url(#sh)"/>
+<text x="76" y="180" font-size="20" fill="#fff" font-weight="700">agy</text>
+<text x="76" y="210" font-size="14" fill="#cbd5e1">コマンドを実行したい</text>
+<rect x="292" y="140" width="180" height="96" rx="16" fill="url(#chk)" filter="url(#sh)"/>
+<text x="308" y="180" font-size="20" fill="#fff" font-weight="700">① deny にある?</text>
+<text x="308" y="210" font-size="14" fill="#fca5a5">あれば拒否</text>
+<rect x="524" y="140" width="180" height="96" rx="16" fill="url(#chk)" filter="url(#sh)"/>
+<text x="540" y="180" font-size="20" fill="#fff" font-weight="700">② allow にある?</text>
+<text x="540" y="210" font-size="14" fill="#fca5a5">なければ拒否</text>
+<rect x="756" y="140" width="180" height="96" rx="16" fill="url(#chk)" filter="url(#sh)"/>
+<text x="772" y="180" font-size="20" fill="#fff" font-weight="700">③ スクリプト検査</text>
+<text x="772" y="210" font-size="14" fill="#fca5a5">内容が変われば拒否</text>
+<rect x="988" y="140" width="152" height="96" rx="16" fill="url(#ok)" filter="url(#sh)"/>
+<text x="1064" y="197" font-size="24" fill="#fff" font-weight="700" text-anchor="middle">実行</text>
+<path d="M242 188 H288" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M474 188 H520" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M706 188 H752" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M938 188 H984" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M614 238 V296" stroke="#fbbf24" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<text x="626" y="274" font-size="14" fill="#fbbf24">ない</text>
+<rect x="400" y="300" width="420" height="150" rx="20" fill="url(#slack)" filter="url(#sh)"/>
+<text x="424" y="336" font-size="20" fill="#fff" font-weight="700">拒否されたら Slack にボタン</text>
+<rect x="424" y="356" width="160" height="36" rx="10" fill="#22c55e"/><text x="504" y="380" font-size="16" fill="#052e16" font-weight="700" text-anchor="middle">今回だけ</text>
+<rect x="612" y="356" width="184" height="36" rx="10" fill="#e2e8f0"/><text x="704" y="380" font-size="16" fill="#0f172a" font-weight="700" text-anchor="middle">常に許可</text>
+<text x="424" y="416" font-size="13" fill="#cbd5e1">会話が終われば外れる</text>
+<text x="612" y="416" font-size="13" fill="#cbd5e1">ずっと有効（内容を封印）</text>
+<rect x="860" y="310" width="280" height="130" rx="20" fill="url(#chk)" filter="url(#sh)"/>
+<text x="880" y="352" font-size="16" fill="#cbd5e1">書き込み先</text>
+<text x="880" y="384" font-size="18" fill="#fff" font-weight="700">このプロジェクトの許可だけ</text>
+<path d="M822 375 H856" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<path d="M398 375 H150 V240" stroke="#94a3b8" stroke-width="3" fill="none" stroke-dasharray="7 6" marker-end="url(#ar)"/>
+<text x="164" y="366" font-size="14" fill="#94a3b8">再実行</text>
+<text x="60" y="540" font-size="16" fill="#94a3b8">他のチャンネルには引き継がれない。deny はボタンでは変えられない。</text>
+</svg>

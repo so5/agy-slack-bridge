@@ -2,6 +2,8 @@
 
 Slack からの操作方法は [usage.md](usage.md) の「Managing permissions from Slack」を参照。
 
+![コマンドが実行されるまでの流れ](images/permissions-flow.svg)
+
 ## 1. 許可の層
 
 | 層 | 場所 | 中身 | 範囲 |
