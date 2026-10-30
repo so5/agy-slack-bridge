@@ -258,15 +258,6 @@ def test_channel_mapping_written_with_project_id_and_all_fields(env):
     assert "# Example entries" in (env.cfg / "config.yaml").read_text()  # comments survive
 
 
-def test_script_summary_option_only_recorded_when_turned_off(env):
-    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123"}))
-    assert "script_summary" not in channels(env)["C0TEST123"]
-    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "要約と内容": "n"}))
-    assert channels(env)["C0TEST123"]["script_summary"] is False
-    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "要約と内容": "y"}))
-    assert "script_summary" not in channels(env)["C0TEST123"]
-
-
 def test_channel_prompts_reject_bad_values_then_accept(env):
     ask = Scripted({"任意の項目": "y", "チャンネル ID": ["nope", "C0TEST123"], "effort": ["extreme", "low"],
                     "アイコン絵文字": ["bad name", "abacus"], "監視するファイル": ["/etc/passwd", "../x", "ok.md"]})

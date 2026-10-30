@@ -1800,16 +1800,6 @@ def _is_plain_command(command: str) -> bool:
     return not _SHELL_SYNTAX.search(command or "")
 
 
-def _script_summary_enabled(channel_id: str) -> bool:
-    """Per-channel option `script_summary` (default on): whether a script that doesn't
-    look like what was asked for gets a "show summary" button (stage 3 of
-    tools/script_review.py, run only when clicked). Stages 1 and 2 always run."""
-    try:
-        return bool((load_channel_map().get(channel_id) or {}).get("script_summary", True))
-    except (Exception, SystemExit):
-        return True
-
-
 SCRIPT_SHOWN_CHARS = 2500
 # Said wherever a script is about to be allowed: the hook only stops a changed script once, and a
 # repeat of the same command (by the agent, unasked) is fine - the person's OK covers the conversation.
@@ -1846,11 +1836,11 @@ def _summary_text(path: str, root: str, command: str) -> str:
 
 
 def _review_scripts(permission_errors: list[dict], project_id: str, user_request: str,
-                    summary: bool, permissions: "ProjectPermissionsFile") -> tuple[list[str], list[dict], list[str]]:
+                    permissions: "ProjectPermissionsFile") -> tuple[list[str], list[dict], list[str]]:
     """Before the grant buttons go out, reviews every script the denied commands would
     run (tools/script_review.py: harm check, then intent check) and returns (short notes
     to show above the buttons, errors to grant automatically, entries that get a "show
-    summary" button - only scripts that don't look like the request, and only if `summary`).
+    summary" button - only scripts that don't look like the request).
     A command whose script passed stage 1 completely (nothing harmful, whole script
     checked) is returned in the second list: the caller grants it for this
     conversation only, without a button. Every other command keeps its button and the
@@ -1895,10 +1885,9 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
             lines = "".join(f"\n  • {r}" for r in res["reasons"] or res["operations"])
             note = f":warning: `{name}` は、依頼と合わない処理を含む可能性があります。{cut}{lines}"
             note += "\n（AI の判定です。内容を確認して、許可するか決めてください）"
-            if summary:
-                note += "\n「要約を見る」を押すと、要約とスクリプトの内容を表示します（20 秒ほどかかります）。"
-                if grantable["entry"] not in offer:
-                    offer.append(grantable["entry"])
+            note += "\n「要約を見る」を押すと、要約とスクリプトの内容を表示します（20 秒ほどかかります）。"
+            if grantable["entry"] not in offer:
+                offer.append(grantable["entry"])
             notes.append(note)
     return [f"{n}\n{SCRIPT_GRANT_NOTE}" for n in notes], auto, offer
 
@@ -2344,7 +2333,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
     if permission_errors and not buttons_throttled:
         review_notes, auto_errors, summary_entries = _review_scripts(
             permission_errors, project_id, remember_text if remember_text is not None else text,
-            _script_summary_enabled(channel_id), permissions)
+            permissions)
     auto_entries: list[str] = []
     if auto_errors:
         for e in auto_errors:

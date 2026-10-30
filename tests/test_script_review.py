@@ -156,22 +156,20 @@ def _res(outcome, **kw):
 def test_notes_per_outcome(project, monkeypatch):
     err = [_err("python3 scratch/a.py")]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
-    notes, auto, _ = bridge._review_scripts(err, "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts(err, "p", "r", PERMS)
     assert notes == [] and auto == err          # normal result: nothing added, granted without a button
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless", truncated=True))
-    notes, auto, _ = bridge._review_scripts(err, "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts(err, "p", "r", PERMS)
     assert "先頭のみ" in notes[0] and auto == []
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["ファイル書き込み"]))
-    notes, auto, _ = bridge._review_scripts(err, "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts(err, "p", "r", PERMS)
     intended = notes[0]
     assert auto == []
     assert "次の操作を行なうスクリプトを実行しようとしています" in intended and "\n  • ファイル書き込み" in intended
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("needs_review", reasons=["依頼にない送信"]))
-    notes, auto, offer = bridge._review_scripts(err, "p", "r", True, PERMS)
+    notes, auto, offer = bridge._review_scripts(err, "p", "r", PERMS)
     assert "依頼にない送信" in notes[0] and "要約を見る" in notes[0] and "```" not in notes[0]   # script not shown unasked
     assert offer == ["command(python3 scratch/a.py)"]
-    notes, auto, offer = bridge._review_scripts(err, "p", "r", False, PERMS)
-    assert "依頼にない送信" in notes[0] and "要約を見る" not in notes[0] and offer == []
 
 
 def test_summary_button_only_on_offered_entries():
@@ -195,10 +193,10 @@ def test_failure_note_and_non_scripts(project, monkeypatch):
     def boom(*a, **k):
         raise bridge.script_review.ReviewError("timeout")
     monkeypatch.setattr(bridge.script_review, "review", boom)
-    notes, auto, _ = bridge._review_scripts([_err("python3 scratch/a.py"), _err("git status")], "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts([_err("python3 scratch/a.py"), _err("git status")], "p", "r", PERMS)
     assert len(notes) == 1 and "自動チェックできませんでした" in notes[0] and auto == []
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
-    assert bridge._review_scripts([_err("git status")], "p", "r", True, PERMS) == ([], [], [])
+    assert bridge._review_scripts([_err("git status")], "p", "r", PERMS) == ([], [], [])
 
 
 def test_conversation_files_are_removed_after_each_call(monkeypatch, script, state_dir):
@@ -291,7 +289,6 @@ def _agy_result(errors, response="x"):
 
 def _drive(monkeypatch, project, outcome, results, **kw):
     monkeypatch.setattr(bridge, "_run_with_status", lambda *a, **k: results.pop(0) if len(results) > 1 else results[0])
-    monkeypatch.setattr(bridge, "_script_summary_enabled", lambda c: True)
     monkeypatch.setattr(bridge, "_file_rules", lambda *a: {"deny": [], "allow": []})
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(outcome, **kw))
     bridge._denial_log.clear()
@@ -349,9 +346,9 @@ def test_same_command_denied_again_after_auto_grant_stops_the_loop(project, monk
 def test_script_notes_say_the_grant_lasts_for_the_conversation(project, monkeypatch):
     err = [_err("python3 scratch/a.py")]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("needs_review", reasons=["r"]))
-    assert bridge.SCRIPT_GRANT_NOTE in bridge._review_scripts(err, "p", "r", True, PERMS)[0][0]
+    assert bridge.SCRIPT_GRANT_NOTE in bridge._review_scripts(err, "p", "r", PERMS)[0][0]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["x"]))
-    assert bridge.SCRIPT_GRANT_NOTE in bridge._review_scripts(err, "p", "r", True, PERMS)[0][0]
+    assert bridge.SCRIPT_GRANT_NOTE in bridge._review_scripts(err, "p", "r", PERMS)[0][0]
 
 
 CHANGED = ("a.py の中身が、前回この同じコマンドを実行した時から変わっています。\n変更内容:\n--- a.py\n+print(2)\n"
@@ -432,6 +429,6 @@ def test_summary_returned_as_a_json_string_is_unwrapped():
                                  "python3 scratch/a.py $(id)", "python3 scratch/a.py && ls", "python3 scratch/a.py `id`"])
 def test_commands_with_shell_syntax_are_never_granted_automatically(project, monkeypatch, cmd):
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
-    notes, auto, _ = bridge._review_scripts([_err(cmd)], "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts([_err(cmd)], "p", "r", PERMS)
     assert auto == [] and "自動では許可しません" in notes[0]
     assert bridge._is_plain_command("python3 scratch/a.py --out out.csv")

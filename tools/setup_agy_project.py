@@ -915,18 +915,13 @@ def _ask_watch_stats(ask: Prompter, entry: dict, config_dir: Path) -> None:
     stats = ask.yes_no("権限ボタンの統計を取りますか?", default=bool(telemetry.get("permission_stats")))
     telemetry["permission_stats"] = stats          # N も記録する（一覧で「回答済み」と分かるように）
     _set_or_pop(entry, "telemetry", telemetry or None)
-    # 既定は表示する。N のときだけ `script_summary: false` を記録する（キーが無い＝表示）
-    if ask.yes_no("依頼と合わなそうなスクリプトに、要約と内容を見るボタンを付けますか?", default=entry.get("script_summary", True)):
-        entry.pop("script_summary", None)
-    else:
-        entry["script_summary"] = False
 
 
 # 任意項目のグループ: メニューの項目 4〜6。(質問する関数, 設定済みと見なすキー)
 CHANNEL_GROUPS = {
     "appearance": (_ask_appearance, ("display_name", "icon_emoji", "icon_url")),
     "model": (_ask_model_effort, ("model", "effort")),
-    "watch": (_ask_watch_stats, ("watched_config_files", "telemetry", "script_summary")),
+    "watch": (_ask_watch_stats, ("watched_config_files", "telemetry")),
 }
 
 
