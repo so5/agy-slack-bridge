@@ -254,7 +254,9 @@ class FakeStore:
 
     def put(self, *a): pass
     def put_retry(self, *a): self.retries.append(a)
-    def clear_temp_grants(self, *a): return []
+    def clear_temp_grants(self, cid, pid, keep=()):
+        self.cleared_keep = set(keep)
+        return []
     def add_temp_grant(self, cid, entry): self.temp.append((cid, entry))
     def log_permission(self, ch, cid, event, entries, user=None): self.logged.append((event, entries))
 
@@ -374,3 +376,21 @@ def test_changed_script_already_allowed_is_not_reported_as_stuck(project, monkey
     client, store, perms = _drive(monkeypatch, project, "harmless", results)
     assert any("done" in p for p in client.posts)
     assert not any("すでに許可リスト" in p for p in client.posts)
+
+
+def test_auto_granted_script_survives_the_clean_turn(project, monkeypatch):
+    bridge._KEPT_SCRIPT_GRANTS.clear()
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
+           "message": "user denied permission to run"}
+    results = [_agy_result([err]), _agy_result([], response="done")]
+    client, store, perms = _drive(monkeypatch, project, "harmless", results)
+    assert "command(python3 scratch/a.py)" in store.cleared_keep      # not released at the clean turn
+
+
+def test_clear_temp_grants_keeps_the_kept_entries(tmp_path):
+    store = bridge.ThreadStore(tmp_path / "s.db")
+    store.put("C", "t", "c1", "a")
+    store.add_temp_grant("c1", "command(x)")
+    store.add_temp_grant("c1", "command(ls)")
+    assert store.clear_temp_grants("c1", "a", keep={"command(x)"}) == ["command(ls)"]
+    assert store.clear_temp_grants("c1", "a") == ["command(x)"]

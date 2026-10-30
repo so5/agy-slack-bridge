@@ -821,23 +821,25 @@ class ThreadStore:
             )
             self._conn.commit()
 
-    def clear_temp_grants(self, conversation_id: str, project_id: str) -> list[str]:
+    def clear_temp_grants(self, conversation_id: str, project_id: str, keep=()) -> list[str]:
         """Releases every temp grant recorded for this conversation, and
         returns the subset now safe to actually remove from that project's
         own permissionGrants.allow - i.e. no *other* conversation **in the
         same project** still holds the same entry. Scoped to project_id
         (passed by the caller, who already knows it) rather than
         machine-wide, since each project now has its own grant file - a
-        same-named entry held by some other project is irrelevant here."""
+        same-named entry held by some other project is irrelevant here.
+        Entries in `keep` stay recorded (released later by the age sweep)."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT DISTINCT entry FROM temp_grants WHERE conversation_id=?",
                 (conversation_id,),
             ).fetchall()
-            entries = [r[0] for r in rows]
+            entries = [r[0] for r in rows if r[0] not in keep]
             if not entries:
                 return []
-            self._conn.execute("DELETE FROM temp_grants WHERE conversation_id=?", (conversation_id,))
+            self._conn.executemany("DELETE FROM temp_grants WHERE conversation_id=? AND entry=?",
+                                   [(conversation_id, e) for e in entries])
             self._conn.commit()
             to_revoke = []
             for entry in entries:
@@ -1765,6 +1767,19 @@ def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": c}} for c in chunks]
 
 
+# Entries that run a script and were allowed in a conversation (automatically, or by a click) stay
+# allowed until the age sweep (AGY_TEMP_GRANT_MAX_AGE_SEC) instead of at the first clean turn, so
+# running the same script again in that conversation is not asked again. Lost on restart, which
+# only means they are released at the next clean turn, as before.
+_KEPT_SCRIPT_GRANTS: dict = {}
+
+
+def _keep_if_script(project_id: str, conversation_id: str, entry: str) -> None:
+    root = _project_root(project_id)
+    if root is not None and _resolve_permanent_script_path(entry, root):
+        _KEPT_SCRIPT_GRANTS.setdefault(conversation_id, set()).add(entry)
+
+
 def _script_summary_enabled(channel_id: str) -> bool:
     """Per-channel option `script_summary` (default on): whether a script that doesn't
     look like what was asked for gets its summary and full text shown in Slack
@@ -1778,7 +1793,7 @@ def _script_summary_enabled(channel_id: str) -> bool:
 SCRIPT_SHOWN_CHARS = 2500
 # Said wherever a script is about to be allowed: the hook only stops a changed script once, and a
 # repeat of the same command (by the agent, unasked) is fine - the person's OK covers the conversation.
-SCRIPT_GRANT_NOTE = "（許可は、この会話の間有効です。同じコマンドの再実行も許可されます）"
+SCRIPT_GRANT_NOTE = "（許可は、この会話の間（最大 1 時間）有効です。同じコマンドの再実行も許可されます）"
 _FILE_RULE_PREFIXES = ("read_file(", "write_file(")
 
 
@@ -2177,7 +2192,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         # down the moment a *different* one gets granted. Safe across
         # conversations: clear_temp_grants only returns entries no other
         # conversation still needs.
-        for entry in store.clear_temp_grants(conversation_id, project_id):
+        for entry in store.clear_temp_grants(conversation_id, project_id,
+                                             keep=_KEPT_SCRIPT_GRANTS.get(conversation_id, ())):
             log.info("auto-releasing temp grant (clean turn, conversation=%s, project=%s): %r",
                       conversation_id, project_id, entry)
             permissions.remove_entry(project_id, entry)
@@ -2282,6 +2298,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                 auto_entries.append(g["entry"])
                 if permissions.add_entry(project_id, g["entry"]):
                     store.add_temp_grant(conversation_id, g["entry"])
+                _keep_if_script(project_id, conversation_id, g["entry"])
         store.log_permission(channel_id, conversation_id, "granted_auto", auto_entries)
         permission_errors = [e for e in permission_errors if e not in auto_errors]
         review_notes.insert(0, ":zap: 実害の出る操作が見つからなかったため、この会話の間だけ自動で許可しました:\n"
@@ -2653,6 +2670,7 @@ def build_app() -> App:
                 # different entry later in the same conversation doesn't
                 # undo it.
                 store.add_temp_grant(conversation_id, entry)
+                _keep_if_script(ctx["project_id"], conversation_id, entry)
 
         if message_ts:
             client.chat_update(
