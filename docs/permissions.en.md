@@ -79,6 +79,8 @@ When a command that would get a permission button runs a script, the bridge firs
 
 Each stage is a separate agy call, run without `--project`, in an empty temporary directory, in plan mode, so no project permissions apply. The script is passed as data inside a random delimiter, with instructions not to follow anything written in it. The per-conversation files agy leaves after each call (`brain`, `conversations`, `annotations`, `presence` under `~/.gemini/antigravity-cli/`) are deleted after every call.
 
+**Condition for automatic grants**: if the command contains a redirection (`>`), a pipe, `$(...)`, `;` or `&&`, it is not granted automatically even when stage 1 is clean; the button is shown. agy matches allow entries as a prefix, so allowing `command(python3 a.py)` also lets `python3 a.py > /anywhere` through (this keeps what was checked equal to what is granted).
+
 **Limits**: it is an AI verdict. A clever script may fool it, and "not found" is not a guarantee of safety. Scripts over about 60 KB are checked only up to the first 60 KB, and the message says so. If the check fails (e.g. times out), the button is still shown with a note that it was not checked. This is not a per-run check of already-allowed scripts (that is the hook above).
 
 ## 6. MCP tools

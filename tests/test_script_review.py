@@ -411,3 +411,19 @@ def test_entry_the_person_refused_is_refused_again_in_that_conversation(project,
     client, store, perms = _drive(monkeypatch, project, "needs_review", [_agy_result([err])], reasons=["r"])
     assert len(store.retries) == 1
     bridge._USER_DENIED.clear()
+
+
+def test_summary_returned_as_a_json_string_is_unwrapped():
+    assert sr.clean_summary('{"summary": "データを送る"}') == "データを送る"
+    assert sr.clean_summary('{"summary": "{\\"summary\\": \\"二重\\"}"}') == "二重"
+    assert sr.clean_summary("ふつうの文") == "ふつうの文" and sr.clean_summary(None) == ""
+    assert sr.clean_summary("{壊れた") == "{壊れた"
+
+
+@pytest.mark.parametrize("cmd", ["python3 scratch/a.py > /tmp/x", "python3 scratch/a.py | tee x",
+                                 "python3 scratch/a.py $(id)", "python3 scratch/a.py && ls", "python3 scratch/a.py `id`"])
+def test_commands_with_shell_syntax_are_never_granted_automatically(project, monkeypatch, cmd):
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
+    notes, auto = bridge._review_scripts([_err(cmd)], "p", "r", True, PERMS)
+    assert auto == [] and "自動では許可しません" in notes[0]
+    assert bridge._is_plain_command("python3 scratch/a.py --out out.csv")

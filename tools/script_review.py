@@ -200,6 +200,23 @@ def _ask(prompt: str, schema: dict, agy_bin: str) -> dict:
         cleanup_conversation(conversation_id)
 
 
+def clean_summary(value) -> str:
+    """agy sometimes returns the summary as a JSON string of its own ('{"summary": "..."}'):
+    unwrap it, a couple of levels at most."""
+    text = str(value or "").strip()
+    for _ in range(3):
+        if not text.startswith("{"):
+            break
+        try:
+            inner = json.loads(text)
+        except json.JSONDecodeError:
+            break
+        if not isinstance(inner, dict) or "summary" not in inner:
+            break
+        text = str(inner.get("summary") or "").strip()
+    return text
+
+
 def _strings(value) -> list:
     return [str(v) for v in (value or []) if str(v).strip()]
 
@@ -236,5 +253,5 @@ def review(script_path: str, user_request: str, command: str, agy_bin: str,
 
     out["outcome"] = "needs_review"
     if summary:
-        out["summary"] = str(_ask(summary_prompt(text, command, truncated), SUMMARY_SCHEMA, agy_bin).get("summary") or "").strip()
+        out["summary"] = clean_summary(_ask(summary_prompt(text, command, truncated), SUMMARY_SCHEMA, agy_bin).get("summary"))
     return out

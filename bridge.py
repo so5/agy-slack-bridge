@@ -1790,6 +1790,16 @@ def _keep_if_script(project_id: str, conversation_id: str, entry: str) -> None:
         _KEPT_SCRIPT_GRANTS.setdefault(conversation_id, set()).add(entry)
 
 
+_SHELL_SYNTAX = re.compile(r"[<>|&;`$(){}\n]")
+
+
+def _is_plain_command(command: str) -> bool:
+    """No redirection, pipe, substitution or chaining. agy's allow matching is a prefix match, so a
+    granted `command(python3 a.py)` also lets `python3 a.py > /anywhere` through; only a command
+    without shell syntax is granted automatically, so what was reviewed is what was granted."""
+    return not _SHELL_SYNTAX.search(command or "")
+
+
 def _script_summary_enabled(channel_id: str) -> bool:
     """Per-channel option `script_summary` (default on): whether a script that doesn't
     look like what was asked for gets its summary and full text shown in Slack
@@ -1863,6 +1873,9 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         if res["outcome"] == "harmless":
             if cut:      # only part of it was checked: not enough to skip the person
                 notes.append(f":grey_question: `{name}` は長いため、先頭のみ自動チェックしました。")
+            elif not _is_plain_command(grantable["describe"]):
+                notes.append(f":grey_question: `{name}`: コマンドにリダイレクトやパイプなどが含まれるため、"
+                             "自動では許可しません。コマンドを確認してください。")
             else:
                 auto.append(err)
         elif res["outcome"] == "intended":
