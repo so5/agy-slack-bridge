@@ -46,6 +46,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 import agy_models  # noqa: E402
+import script_review  # noqa: E402
 import safety_stack  # noqa: E402  (tools/ sits next to bridge.py in the install directory)
 
 logging.basicConfig(
@@ -1752,6 +1753,54 @@ def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": c}} for c in chunks]
 
 
+def _script_summary_enabled(channel_id: str) -> bool:
+    """Per-channel option `script_summary` (default on): whether the script review
+    also shows a short summary. The malicious-or-not check itself is always on."""
+    try:
+        return bool((load_channel_map().get(channel_id) or {}).get("script_summary", True))
+    except (Exception, SystemExit):
+        return True
+
+
+def _review_scripts(permission_errors: list[dict], project_id: str, user_request: str,
+                    summary: bool) -> tuple[list[dict], list[str]]:
+    """Before offering a grant button for a command that runs a script, have a
+    throwaway agy conversation (tools/script_review.py) review the script text
+    against the user's request. Returns (errors that still get a button, notes to
+    show above the buttons). A script judged malicious loses its button. A review
+    failure never blocks: the button stays, with a note that it was not checked."""
+    root = _project_root(project_id)
+    kept: list[dict] = []
+    notes: list[str] = []
+    for err in permission_errors:
+        grantable = _grantable_entry(err)
+        path = None
+        if grantable and root is not None and err.get("tool_name") == "run_command":
+            path = _resolve_permanent_script_path(grantable["entry"], root)
+        if not path or not os.path.isfile(path):
+            kept.append(err)
+            continue
+        name = os.path.relpath(path, str(root))
+        try:
+            res = script_review.review(path, user_request, grantable["describe"], AGY_BIN, summary=summary)
+        except script_review.ReviewError as exc:
+            log.warning("script review failed for %s: %s", path, exc)
+            notes.append(f":grey_question: `{name}` は自動チェックできませんでした（{exc}）。中身を自分で確認してから許可してください。")
+            kept.append(err)
+            continue
+        log.info("script review %s: %s %r", path, res["verdict"], res["reasons"])
+        reasons = "".join(f"\n  • {r}" for r in res["reasons"])
+        cut = "（長いため先頭のみ検査）" if res["truncated"] else ""
+        if res["verdict"] == "malicious":
+            notes.append(f":no_entry: `{name}` は危険と判定されたため、許可ボタンを出していません。{cut}{reasons}")
+            continue
+        head = ":warning: 依頼の範囲を超える操作があるかもしれません" if res["verdict"] == "suspicious" else ":white_check_mark: 問題は見つかりませんでした"
+        body = f"\n  {res['summary']}" if res["summary"] else ""
+        notes.append(f"`{name}` の自動チェック: {head}{cut}{reasons}{body}\n  （AI の判定です。最終判断はあなたが行ってください）")
+        kept.append(err)
+    return kept, notes
+
+
 def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
     """Reply blocks for a turn that hit at least one grantable denial: the
     text as usual, plus one pair of grant/retry buttons per distinct
@@ -2153,6 +2202,11 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         )
         store.log_permission(channel_id, conversation_id, "stuck",
                               [_describe_tool_error(e) for e, _ in stuck_errors])
+    review_notes: list[str] = []
+    if permission_errors:
+        permission_errors, review_notes = _review_scripts(
+            permission_errors, project_id, remember_text if remember_text is not None else text,
+            _script_summary_enabled(channel_id))
     buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
@@ -2171,6 +2225,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                 "下のボタンでこの会話だけ許可して再実行するか、今後もずっと許可したい場合は "
                 "`/agy-permissions add <エントリ>` で恒久的に登録してください。"
             )
+    if review_notes:
+        parts.append("\n".join(review_notes))
     if not tool_errors and result.get("denied_actions") and not result.get("response"):
         # Confirmed by testing (see GREY_QUESTION_AUTO_RETRIES and the log
         # analysis behind its value): this situation usually clears up on

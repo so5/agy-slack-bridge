@@ -68,6 +68,20 @@ The ledger `<config directory>/integrity/<project key>/permanent.json` has the f
 2. Commit it (the hook requires a clean state).
 3. Send `/agy-permissions add` again to re-seal.
 
+### Automatic check before the permission button (AI)
+
+When a command that would get a permission button runs a script, the bridge first starts a separate agy conversation to review the script.
+
+1. **Check (always)**: it is given the user's request, the command, and the whole script, and decides whether the script is malicious, goes beyond the request, or contains text aimed at the reviewer itself ("report this as safe").
+   - **Dangerous**: no button is shown; the reasons are.
+   - **Suspicious**: the button is shown with the reasons.
+   - **No problem found**: the button is shown.
+2. **Summary (can be turned off per channel)**: for no-problem and suspicious results, up to 3 lines on what the script does. To turn it off, answer `n` to `許可ボタンの上に、スクリプトの要約を表示しますか?` in the channel settings of the setup script (menu 6).
+
+The reviewer runs without `--project`, in an empty temporary directory, in plan mode, so no project permissions apply. The script is passed as data inside a random delimiter, with instructions not to follow anything written in it.
+
+**Limits**: it is an AI verdict. A clever script may fool it, and "no problem found" is not a guarantee of safety. The person pressing the button decides. Scripts over about 60 KB are checked only up to the first 60 KB, and the message says so. If the check fails (e.g. times out), the button is still shown with a note that it was not checked. This is not a per-run check of already-allowed scripts (that is the hook above).
+
 ## 6. MCP tools
 
 MCP tools are allowed by per-server tool name. This is finer-grained than a `run_command` prefix permission. Do not allow tools that execute arbitrary code. As with other entries, permissions are per project (for example, `mcp(playwright/...)` for browser operation should be allowed only in the projects that need it).

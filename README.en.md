@@ -99,7 +99,7 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 | `3` Set up the Slack channel mapping | Only the `チャンネル ID` prompt of 3-2 |
 | `4` Set up the channel appearance | The `表示名` / `アイコン絵文字` / `アイコン画像 URL` prompts of 3-2. Needs item `3` first |
 | `5` Set up the channel model | The `モデル` / `effort` prompts of 3-2. Needs item `3` first |
-| `6` Set up change watching and statistics | The `監視するファイル` / `権限ボタンの統計` prompts of 3-2. Needs item `3` first |
+| `6` Set up change watching and statistics | The `監視するファイル` / `権限ボタンの統計` / script-summary prompts of 3-2. Needs item `3` first |
 | `7` Set up the Google Drive CLI | 3-4 |
 | `8` Show the current state | |
 | `b` Back to the project list | |
@@ -141,6 +141,7 @@ Questions when you answer **y** to the optional items:
 | `effort（low / medium / high / xhigh / max）` | Empty = agy's default. How deeply the model reasons. Leave it empty if the model name above ends in `-high` etc. (they conflict) |
 | `監視するファイル（相対パス、カンマ区切り）` (files to watch) | Default: empty (nothing is watched). Paths relative to the project directory (e.g. `AGENTS.md`). Changes are not blocked: after a change, Slack gets a notice with a diff (checked every 30 minutes by default), and its buttons let you accept the change or restore the file. See "Config drift detection" in [usage.en.md](docs/usage.en.md) |
 | `権限ボタンの統計を取りますか? [y/N]` (collect permission-button stats?) | **y**: record permission-button requests (one-time / permanent) and their results in this machine's state DB (nothing is sent elsewhere). **N**: do not record (default). Can also be switched later with `/agy-stats on\|off` in Slack. See "Usage statistics" in [usage.en.md](docs/usage.en.md) |
+| `許可ボタンの上に、スクリプトの要約を表示しますか? [Y/n]` (show a script summary above the permission button?) | **Y**: show an AI summary of the script above the permission button of a command that runs a script (default). **n**: do not. The malicious-or-not check always runs regardless. See "Automatic check before the permission button" in [permissions.en.md](docs/permissions.en.md) |
 
 The original `config.yaml` is kept as `config.yaml.bak`.
 
