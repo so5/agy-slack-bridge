@@ -1818,7 +1818,8 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         log.info("script review %s: %s ops=%r reasons=%r", path, res["outcome"], res["operations"], res["reasons"])
         cut = "（長いため先頭のみ検査）" if res["truncated"] else ""
         if res["outcome"] == "harmless":
-            notes.append(f":white_check_mark: `{name}`: 実害の出る操作は見つかりませんでした。{cut}")
+            if cut:      # nothing to say, except that the check was only partial
+                notes.append(f":grey_question: `{name}` は長いため、先頭のみ自動チェックしました。")
         elif res["outcome"] == "intended":
             ops = "".join(f"\n  • {o}" for o in res["operations"])
             notes.append(f":white_check_mark: `{name}`: 次の操作を行なうスクリプトを実行しようとしています。{cut}"

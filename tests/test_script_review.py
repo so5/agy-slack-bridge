@@ -157,7 +157,9 @@ def _res(outcome, **kw):
 def test_notes_per_outcome(project, monkeypatch):
     err = [_err("python3 scratch/a.py")]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
-    assert "実害の出る操作は見つかりませんでした" in bridge._review_scripts(err, "p", "r", True, PERMS)[0]
+    assert bridge._review_scripts(err, "p", "r", True, PERMS) == []          # the normal button, nothing added
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless", truncated=True))
+    assert "先頭のみ" in bridge._review_scripts(err, "p", "r", True, PERMS)[0]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["ファイル書き込み"]))
     intended = bridge._review_scripts(err, "p", "r", True, PERMS)[0]
     assert "次の操作を行なうスクリプトを実行しようとしています" in intended and "\n  • ファイル書き込み" in intended
