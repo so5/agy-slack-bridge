@@ -149,6 +149,9 @@ Restart the bridge after changing it.
 - `project`: the agy project ID this channel maps to (1 channel = 1 project).
 - `display_name` / `icon_emoji` (or `icon_url`): post under a different name and avatar per
   channel. Needs the `chat:write.customize` scope (the manifest includes it).
+  Give `icon_emoji` as the **English name**, e.g. `":test_tube:"`. A Japanese name such as
+  `:試験管:` is converted in Slack's message box, but not in the bridge's posts (made through
+  the API), which then show the literal text `:試験管:`.
 - `model` / `effort`: passed straight through as agy's `--model` / `--effort` (`agy models`
   lists the options). Some model names already bake in a reasoning tier via a `-high` /
   `-low` suffix and conflict with `effort` if both are set. Pointing a channel at agy's

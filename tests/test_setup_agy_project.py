@@ -655,15 +655,15 @@ def test_quit_from_project_menu_ends_the_whole_setup(env, capsys):
 
 
 def test_icon_emoji_colons_are_optional(env):
-    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "アイコン絵文字": "試験管"}))
-    assert channels(env)["C0TEST123"]["icon_emoji"] == ":試験管:"
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "アイコン絵文字": "test_tube"}))
+    assert channels(env)["C0TEST123"]["icon_emoji"] == ":test_tube:"
 
 
-def test_icon_emoji_accepts_any_script_and_rejects_only_spaces_and_inner_colons(env):
-    assert setup._validate_emoji("สวัสดี") is None          # combining marks
-    assert setup._validate_emoji(":試験管:") is None
-    assert setup._validate_emoji("a b") is not None
-    assert setup._validate_emoji("a:b") is not None
+def test_icon_emoji_only_accepts_english_names(env):
+    for ok in ("robot_face", ":test_tube:", "+1", "white-check", ":a2:"):
+        assert setup._validate_emoji(ok) is None, ok
+    for bad in ("試験管", ":試験管:", "Robot", "a b", "a:b", "สวัสดี"):    # Slack's API shows these as plain text
+        assert setup._validate_emoji(bad) is not None, bad
 
 
 def test_existing_directory_needs_overwrite_confirmation_and_new_one_does_not(env, tmp_path):

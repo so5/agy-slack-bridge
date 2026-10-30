@@ -9,6 +9,9 @@
 # bot post under a different name/avatar in each channel, instead of always
 # showing up as whatever the Slack app's own bot user is named. Requires the
 # chat:write.customize bot token scope; harmless (just ignored) without it.
+# icon_emoji must be the ENGLISH name, e.g. ":test_tube:". A Japanese name
+# such as ":試験管:" is converted only by the Slack client's message box; a
+# post made through the API is not, and shows the literal text.
 #
 # model/effort are also optional, passed straight through as agy's own
 # `--model`/`--effort` flags for every turn in that channel (see `agy models`

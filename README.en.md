@@ -135,7 +135,7 @@ Questions when you answer **y** to the optional items:
 | Prompt | Answer |
 |---|---|
 | `表示名` (display name) | Optional. The name on the bot's replies (needs `chat:write.customize`) |
-| `アイコン絵文字` (icon emoji) | Optional, e.g. `robot_face` (the surrounding `:` are optional). Type `:` and a few letters in a Slack message box to see candidate names (custom emoji work the same way). If given, the image URL is not asked |
+| `アイコン絵文字` (icon emoji) | Optional, e.g. `test_tube` (the surrounding `:` are optional). **English names only** (lowercase letters, digits, `_` `-` `+`). In a Slack message box, typing a Japanese name such as `:試験管:` is converted by the client, but a post made through the API (as the bridge does) is not converted and shows the literal text `:試験管:`. To find the English name, type `:` and a few letters in the message box, or use an emoji list site (a custom emoji is the name it was registered with). If given, the image URL is not asked |
 | `アイコン画像 URL` (icon image URL) | Only when the emoji is empty. A URL starting with `https://` |
 | `モデル` (model) | A list from `agy models`, fetched in the background when the setup script starts (reused for up to 1 hour; shared with the bridge's `/agy-model`); pick by number. `-` = not specified (agy's default model). If the list cannot be fetched, type the ID. A name with `-high` / `-low` already includes the reasoning depth, so leave `effort` empty |
 | `effort（low / medium / high / xhigh / max）` | Empty = agy's default. How deeply the model reasons. Leave it empty if the model name above ends in `-high` etc. (they conflict) |

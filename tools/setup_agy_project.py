@@ -96,7 +96,9 @@ GDRIVE_READONLY_SUBCOMMANDS = ["list", "search", "meta", "read", "download"]
 # (gdrive_cli.py 側の PROFILE_NAME_RE と同じ)。
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CHANNEL_ID_RE = re.compile(r"^[CG][A-Z0-9]{5,}$")
-_EMOJI_RE = re.compile(r"^:?[^\s:]+:?$")   # 名前の文字種は絞らない（Slack 側が日本語・結合記号つきの名前なども許すため）。空白と途中の : だけ弾く
+# Slack の API（icon_emoji）は英語の名前だけ通す。日本語の名前（:試験管: など）は、メッセージの入力欄では
+# クライアントが変換してくれるが、API では変換されず、文字のまま表示される。
+_EMOJI_RE = re.compile(r"^:?[a-z0-9_+\-]+:?$")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 # プロジェクトのルールは .agents/rules/*.md に置く(AGENTS.md は、エージェントが自由に
@@ -787,7 +789,8 @@ def _validate_channel_id(v):
 
 
 def _validate_emoji(v):
-    return None if _EMOJI_RE.match(v) else "絵文字の名前（例 robot_face または :robot_face:）を入力してください（空白は使えません）"
+    return None if _EMOJI_RE.match(v) else ("絵文字の英語の名前（例 robot_face または :robot_face:）を入力してください。"
+                                            "半角の小文字・数字・_ - + だけです。日本語の名前（:試験管: など）は表示されません")
 
 
 def _validate_url(v):
