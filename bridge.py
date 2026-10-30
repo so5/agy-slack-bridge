@@ -1836,11 +1836,13 @@ def _summary_text(path: str, root: str, command: str) -> str:
 
 
 def _review_scripts(permission_errors: list[dict], project_id: str, user_request: str,
-                    permissions: "ProjectPermissionsFile") -> tuple[list[str], list[dict], list[str]]:
+                    permissions: "ProjectPermissionsFile",
+                    reviewed: "list | None" = None) -> tuple[list[str], list[dict], list[str]]:
     """Before the grant buttons go out, reviews every script the denied commands would
     run (tools/script_review.py: harm check, then intent check) and returns (short notes
     to show above the buttons, errors to grant automatically, entries that get a "show
-    summary" button - only scripts that don't look like the request).
+    summary" button - only scripts that don't look like the request). Every error that got a
+    note (not the auto-granted ones) is appended to `reviewed`: the note speaks for it.
     A command whose script passed stage 1 completely (nothing harmful, whole script
     checked) is returned in the second list: the caller grants it for this
     conversation only, without a button. Every other command keeps its button and the
@@ -1859,6 +1861,7 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         if not path or not os.path.isfile(path):
             continue
         name = os.path.relpath(path, str(root))
+        noted = len(notes)
         try:
             res = script_review.review(path, user_request, grantable["describe"], AGY_BIN,
                                        str(root), file_rules)
@@ -1866,6 +1869,8 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
             log.warning("script review failed for %s: %s", path, exc)
             notes.append(f":grey_question: `{name}` は自動チェックできませんでした（{exc}）。"
                          "中身を自分で確認してから許可してください。")
+            if reviewed is not None:
+                reviewed.append(err)
             continue
         log.info("script review %s: %s ops=%r reasons=%r", path, res["outcome"], res["operations"], res["reasons"])
         cut = "（長いため先頭のみ検査）" if res["truncated"] else ""
@@ -1880,7 +1885,7 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         elif res["outcome"] == "intended":
             ops = "".join(f"\n  • {o}" for o in res["operations"])
             notes.append(f":white_check_mark: `{name}`: 次の操作を行なうスクリプトを実行しようとしています。{cut}"
-                         f"{ops}")
+                         f"{ops}\n内容を確認して、下のボタンで許可するか決めてください。")
         else:
             lines = "".join(f"\n  • {r}" for r in res["reasons"] or res["operations"])
             note = f":warning: `{name}` は、依頼と合わない処理を含む可能性があります。{cut}{lines}"
@@ -1889,6 +1894,11 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
             if grantable["entry"] not in offer:
                 offer.append(grantable["entry"])
             notes.append(note)
+        if len(notes) > noted:
+            if _is_script_changed_error(err):
+                notes[-1] = f"`{name}` の内容が前回から変わっています。\n" + notes[-1]
+            if reviewed is not None:
+                reviewed.append(err)
     return [f"{n}\n{SCRIPT_GRANT_NOTE}" for n in notes], auto, offer
 
 
@@ -2330,10 +2340,11 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
     review_notes: list[str] = []
     auto_errors: list[dict] = []
     summary_entries: list[str] = []
+    reviewed_errors: list[dict] = []
     if permission_errors and not buttons_throttled:
         review_notes, auto_errors, summary_entries = _review_scripts(
             permission_errors, project_id, remember_text if remember_text is not None else text,
-            permissions)
+            permissions, reviewed_errors)
     auto_entries: list[str] = []
     if auto_errors:
         for e in auto_errors:
@@ -2349,7 +2360,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                                + "\n".join(f"  • `{a}`" for a in auto_entries) + f"\n{SCRIPT_GRANT_NOTE}")
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
-        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
+        # A reviewed script's own note says what to decide; the generic warning would only repeat it.
+        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors if e not in reviewed_errors)
         if buttons_throttled:
             parts.append(
                 ":no_entry: 短時間に権限拒否が続いたため、許可ボタンを一時停止しました"
@@ -2357,7 +2369,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                 f"{lines}\n"
                 "本当に必要な操作だけ `/agy-permissions add` で明示的に許可してください。"
             )
-        else:
+        elif lines:
             parts.append(
                 ":warning: 一部のツール実行が権限不足で拒否されました:\n"
                 f"{lines}\n"

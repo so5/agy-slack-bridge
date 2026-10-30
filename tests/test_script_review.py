@@ -317,6 +317,19 @@ def test_script_that_needs_review_still_gets_a_button(project, monkeypatch):
     assert any("余計な送信" in p for p in client.posts)
 
 
+def test_reviewed_script_does_not_also_get_the_generic_permission_warning(project, monkeypatch):
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
+           "message": "user denied permission to run"}
+    other = {"tool_name": "run_command", "parameters": {"CommandLine": "git status"},
+             "message": "user denied permission to run"}
+    client, store, perms = _drive(monkeypatch, project, "intended", [_agy_result([err])], operations=["書き込み"])
+    text = "\n".join(client.posts)
+    assert "権限不足で拒否" not in text and "書き込み" in text and "下のボタン" in text
+    client, store, perms = _drive(monkeypatch, project, "intended", [_agy_result([err, other])], operations=["書き込み"])
+    text = "\n".join(client.posts)
+    assert "権限不足で拒否" in text and "git status" in text and "scratch/a.py`\n" not in text.split("書き込み")[0].split("権限不足で拒否")[1]
+
+
 def test_auto_grants_count_toward_the_denial_throttle(project, monkeypatch):
     def err(i):
         return {"tool_name": "run_command", "parameters": {"CommandLine": f"python3 scratch/a.py {i}"},
