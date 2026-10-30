@@ -159,7 +159,8 @@ def test_notes_per_outcome(project, monkeypatch):
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
     assert "実害の出る操作は見つかりませんでした" in bridge._review_scripts(err, "p", "r", True, PERMS)[0]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["ファイル書き込み"]))
-    assert "依頼に必要な処理だけ" in bridge._review_scripts(err, "p", "r", True, PERMS)[0]
+    intended = bridge._review_scripts(err, "p", "r", True, PERMS)[0]
+    assert "依頼に必要な処理" in intended and "見つかった操作:\n  • ファイル書き込み" in intended
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(
         "needs_review", reasons=["依頼にない送信"], summary="データを送る", script_text="x```y"))
     note = bridge._review_scripts(err, "p", "r", True, PERMS)[0]
