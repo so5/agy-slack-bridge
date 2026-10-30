@@ -7,12 +7,27 @@ import bridge
 import script_review as sr
 
 
-def _stdout(response):
-    return json.dumps({"event": "result", "result": {"response": response}}) + "\n"
+CID = "0a1b2c3d-1111-2222-3333-444455556666"
 
 
-def test_parse_result_embedded_json():
-    assert sr.parse_result(_stdout('結果: {"harmful": false, "operations": []}')) == {"harmful": False, "operations": []}
+def _stdout(response, structured=None, cid=CID):
+    result = {"response": response, "conversation_id": cid}
+    if structured is not None:
+        result["structured_output"] = structured
+    return json.dumps({"event": "result", "result": result}) + "\n"
+
+
+@pytest.fixture(autouse=True)
+def state_dir(tmp_path_factory, monkeypatch):
+    d = tmp_path_factory.mktemp("agy-state")
+    monkeypatch.setattr(sr, "AGY_STATE_DIR", d)
+    return d
+
+
+def test_parse_result_prefers_structured_output_then_embedded_json():
+    data = {"harmful": False, "operations": []}
+    assert sr.parse_result(_stdout("text", structured=data)) == (data, CID)
+    assert sr.parse_result(_stdout('結果: {"harmful": false, "operations": []}')) == (data, CID)
 
 
 @pytest.mark.parametrize("out", ["", _stdout(""), _stdout("no json"), _stdout("{broken")])
@@ -44,7 +59,7 @@ class FakeAgy:
         stage = ("harmful" if "harmful" in schema["properties"] else
                  "matches" if "matches" in schema["properties"] else "summary")
         self.calls.append((stage, cmd, kw))
-        return subprocess.CompletedProcess(cmd, 0, _stdout(json.dumps(self.answers[stage])), "")
+        return subprocess.CompletedProcess(cmd, 0, _stdout("", structured=self.answers[stage]), "")
 
 
 @pytest.fixture
@@ -160,3 +175,29 @@ def test_failure_note_and_non_scripts(project, monkeypatch):
     assert len(notes) == 1 and "自動チェックできませんでした" in notes[0]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
     assert bridge._review_scripts([_err("git status")], "p", "r", True) == []
+
+
+def test_conversation_files_are_removed_after_each_call(monkeypatch, script, state_dir):
+    made = [state_dir / "brain" / CID, state_dir / "conversations" / f"{CID}.db",
+            state_dir / "annotations" / f"{CID}.pbtxt", state_dir / "presence" / f"{CID}.lock"]
+    keep = state_dir / "conversations" / "other.db"
+
+    def fake(cmd, **kw):
+        (made[0]).mkdir(parents=True)
+        (made[0] / "x").write_text("1")
+        for p in made[1:] + [keep]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("1")
+        return subprocess.CompletedProcess(cmd, 0, _stdout("", structured={"harmful": False, "operations": []}), "")
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    sr.review(str(script), "r", "c", "agy", "/p")
+    assert not any(p.exists() for p in made) and keep.exists()
+
+
+def test_cleanup_ignores_unsafe_ids(state_dir):
+    victim = state_dir / "keep"
+    victim.mkdir()
+    for bad in ("../keep", "", None, "a/b", "..", 5):
+        sr.cleanup_conversation(bad)
+    assert victim.exists()

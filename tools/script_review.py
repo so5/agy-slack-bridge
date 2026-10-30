@@ -22,13 +22,18 @@ never a replacement for that decision. Any failure raises ReviewError; callers s
 that as "not checked" and keep the normal button.
 """
 import json
+import re
 import secrets
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 MAX_SCRIPT_BYTES = 60000
 REVIEW_TIMEOUT_SEC = 180
+# Every agy call leaves per-conversation files here that agy never removes.
+AGY_STATE_DIR = Path("~/.gemini/antigravity-cli").expanduser()
+_CONVERSATION_ID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 
 HARM_SCHEMA = {
     "type": "object",
@@ -125,18 +130,42 @@ def _extract_json(text: str) -> dict:
     return data
 
 
-def parse_result(stdout: str) -> dict:
-    response = None
+def parse_result(stdout: str) -> tuple:
+    """(answer dict, conversation id or None) from agy's stream-json output. Prefers the
+    parsed `structured_output` that --json-schema adds; falls back to JSON in `response`."""
+    result = None
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
         if event.get("event") == "result":
-            response = (event.get("result") or {}).get("response")
+            result = event.get("result") or {}
+            if "structured_output" in event and "structured_output" not in result:
+                result = {**result, "structured_output": event["structured_output"]}
+    if result is None:
+        raise ReviewError("審査役の応答がありません")
+    conversation_id = result.get("conversation_id")
+    structured = result.get("structured_output")
+    if isinstance(structured, dict):
+        return structured, conversation_id
+    response = result.get("response")
     if not response:
         raise ReviewError("審査役の応答が空です")
-    return _extract_json(response) if isinstance(response, str) else response
+    return (_extract_json(response) if isinstance(response, str) else response), conversation_id
+
+
+def cleanup_conversation(conversation_id) -> None:
+    """Removes what one throwaway agy conversation left behind (agy keeps it forever)."""
+    if not isinstance(conversation_id, str) or not _CONVERSATION_ID.match(conversation_id):
+        return
+    shutil.rmtree(AGY_STATE_DIR / "brain" / conversation_id, ignore_errors=True)
+    for sub, name in (("conversations", f"{conversation_id}.db"), ("annotations", f"{conversation_id}.pbtxt"),
+                      ("presence", f"{conversation_id}.lock")):
+        try:
+            (AGY_STATE_DIR / sub / name).unlink()
+        except OSError:
+            pass
 
 
 def _ask(prompt: str, schema: dict, agy_bin: str) -> dict:
@@ -149,9 +178,14 @@ def _ask(prompt: str, schema: dict, agy_bin: str) -> dict:
             raise ReviewError(f"審査が {REVIEW_TIMEOUT_SEC} 秒で終わりませんでした")
         except OSError as exc:
             raise ReviewError(f"審査役を起動できません: {exc}")
-    if proc.returncode != 0:
-        raise ReviewError(f"審査役が異常終了しました（終了コード {proc.returncode}）")
-    return parse_result(proc.stdout)
+    conversation_id = None
+    try:
+        if proc.returncode != 0:
+            raise ReviewError(f"審査役が異常終了しました（終了コード {proc.returncode}）")
+        data, conversation_id = parse_result(proc.stdout)
+        return data
+    finally:
+        cleanup_conversation(conversation_id)
 
 
 def _strings(value) -> list:

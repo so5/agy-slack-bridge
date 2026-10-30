@@ -76,7 +76,7 @@ When a command that would get a permission button runs a script, the bridge firs
 2. **Does it match the request? (only if stage 1 found something)**: compares the script with the user's request and decides whether it does only what the request needs. If so, the button.
 3. **Show summary and content (only if stage 2 says no)**: a summary of up to 3 lines and the script's content (first 2,500 characters) are shown in Slack, with the button. Per channel, this can be turned off: in the channel settings of the setup script (menu 6), answer `n` to `依頼と合わなそうなスクリプトの、要約と内容を表示しますか?` and only the reasons are shown (`script_summary: false`).
 
-Each stage is a separate agy call, run without `--project`, in an empty temporary directory, in plan mode, so no project permissions apply. The script is passed as data inside a random delimiter, with instructions not to follow anything written in it.
+Each stage is a separate agy call, run without `--project`, in an empty temporary directory, in plan mode, so no project permissions apply. The script is passed as data inside a random delimiter, with instructions not to follow anything written in it. The per-conversation files agy leaves after each call (`brain`, `conversations`, `annotations`, `presence` under `~/.gemini/antigravity-cli/`) are deleted after every call.
 
 **Limits**: it is an AI verdict. A clever script may fool it, and "not found" is not a guarantee of safety. Scripts over about 60 KB are checked only up to the first 60 KB, and the message says so. If the check fails (e.g. times out), the button is still shown with a note that it was not checked. This is not a per-run check of already-allowed scripts (that is the hook above).
 
