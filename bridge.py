@@ -1765,6 +1765,9 @@ def _script_summary_enabled(channel_id: str) -> bool:
 
 
 SCRIPT_SHOWN_CHARS = 2500
+# Said wherever a script is about to be allowed: the hook only stops a changed script once, and a
+# repeat of the same command (by the agent, unasked) is fine - the person's OK covers the conversation.
+SCRIPT_GRANT_NOTE = "（許可は、この会話の間有効です。同じコマンドの再実行も許可されます）"
 _FILE_RULE_PREFIXES = ("read_file(", "write_file(")
 
 
@@ -1839,7 +1842,7 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
                 note += "\n" + _script_listing(res["script_text"], res["truncated"])
             note += "\n（AI の判定です。内容を確認して、許可するか決めてください）"
             notes.append(note)
-    return notes, auto
+    return [f"{n}\n{SCRIPT_GRANT_NOTE}" for n in notes], auto
 
 
 def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
@@ -2264,7 +2267,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         store.log_permission(channel_id, conversation_id, "granted_auto", auto_entries)
         permission_errors = [e for e in permission_errors if e not in auto_errors]
         review_notes.insert(0, ":zap: 実害の出る操作が見つからなかったため、この会話の間だけ自動で許可しました:\n"
-                               + "\n".join(f"  • `{a}`" for a in auto_entries))
+                               + "\n".join(f"  • `{a}`" for a in auto_entries) + f"\n{SCRIPT_GRANT_NOTE}")
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
         lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)

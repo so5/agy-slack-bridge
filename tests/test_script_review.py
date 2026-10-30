@@ -334,3 +334,11 @@ def test_same_command_denied_again_after_auto_grant_stops_the_loop(project, monk
            "message": "user denied permission to run"}
     client, store, perms = _drive(monkeypatch, project, "harmless", [_agy_result([err])])   # fails identically
     assert len(store.temp) == 1 and store.retries == []            # already allowed: reported as stuck, no loop
+
+
+def test_script_notes_say_the_grant_lasts_for_the_conversation(project, monkeypatch):
+    err = [_err("python3 scratch/a.py")]
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("needs_review", reasons=["r"]))
+    assert bridge.SCRIPT_GRANT_NOTE in bridge._review_scripts(err, "p", "r", True, PERMS)[0][0]
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["x"]))
+    assert bridge.SCRIPT_GRANT_NOTE in bridge._review_scripts(err, "p", "r", True, PERMS)[0][0]
