@@ -1802,8 +1802,8 @@ def _is_plain_command(command: str) -> bool:
 
 def _script_summary_enabled(channel_id: str) -> bool:
     """Per-channel option `script_summary` (default on): whether a script that doesn't
-    look like what was asked for gets its summary and full text shown in Slack
-    (stage 3 of tools/script_review.py). Stages 1 and 2 always run."""
+    look like what was asked for gets a "show summary" button (stage 3 of
+    tools/script_review.py, run only when clicked). Stages 1 and 2 always run."""
     try:
         return bool((load_channel_map().get(channel_id) or {}).get("script_summary", True))
     except (Exception, SystemExit):
@@ -1838,11 +1838,19 @@ def _script_listing(text: str, truncated: bool) -> str:
     return "```\n" + shown + "\n```" + ("\n（長いため先頭のみ表示しています）" if cut else "")
 
 
+def _summary_text(path: str, root: str, command: str) -> str:
+    """Stage 3 of the script review, as the Slack text: summary, then the script itself."""
+    res = script_review.summarize(path, command, AGY_BIN)
+    return (f"`{os.path.relpath(path, root)}` の要約: {res['summary'] or '（要約を作れませんでした）'}\n"
+            + _script_listing(res["script_text"], res["truncated"]))
+
+
 def _review_scripts(permission_errors: list[dict], project_id: str, user_request: str,
-                    summary: bool, permissions: "ProjectPermissionsFile") -> tuple[list[str], list[dict]]:
+                    summary: bool, permissions: "ProjectPermissionsFile") -> tuple[list[str], list[dict], list[str]]:
     """Before the grant buttons go out, reviews every script the denied commands would
-    run (tools/script_review.py: harm check, then intent check, then summary) and
-    returns (short notes to show above the buttons, errors to grant automatically).
+    run (tools/script_review.py: harm check, then intent check) and returns (short notes
+    to show above the buttons, errors to grant automatically, entries that get a "show
+    summary" button - only scripts that don't look like the request, and only if `summary`).
     A command whose script passed stage 1 completely (nothing harmful, whole script
     checked) is returned in the second list: the caller grants it for this
     conversation only, without a button. Every other command keeps its button and the
@@ -1852,6 +1860,7 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
     file_rules = _file_rules(project_id, permissions)
     notes: list[str] = []
     auto: list[dict] = []
+    offer: list[str] = []
     for err in permission_errors:
         grantable = _grantable_entry(err)
         path = None
@@ -1862,7 +1871,7 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         name = os.path.relpath(path, str(root))
         try:
             res = script_review.review(path, user_request, grantable["describe"], AGY_BIN,
-                                       str(root), file_rules, summary=summary)
+                                       str(root), file_rules)
         except script_review.ReviewError as exc:
             log.warning("script review failed for %s: %s", path, exc)
             notes.append(f":grey_question: `{name}` は自動チェックできませんでした（{exc}）。"
@@ -1885,16 +1894,17 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         else:
             lines = "".join(f"\n  • {r}" for r in res["reasons"] or res["operations"])
             note = f":warning: `{name}` は、依頼と合わない処理を含む可能性があります。{cut}{lines}"
-            if res["summary"]:
-                note += f"\n要約: {res['summary']}"
-            if summary:
-                note += "\n" + _script_listing(res["script_text"], res["truncated"])
             note += "\n（AI の判定です。内容を確認して、許可するか決めてください）"
+            if summary:
+                note += "\n「要約を見る」を押すと、要約とスクリプトの内容を表示します（20 秒ほどかかります）。"
+                if grantable["entry"] not in offer:
+                    offer.append(grantable["entry"])
             notes.append(note)
-    return [f"{n}\n{SCRIPT_GRANT_NOTE}" for n in notes], auto
+    return [f"{n}\n{SCRIPT_GRANT_NOTE}" for n in notes], auto, offer
 
 
-def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
+def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str,
+                        summary_entries: "list[str] | tuple" = ()) -> list[dict]:
     """Reply blocks for a turn that hit at least one grantable denial: the
     text as usual, plus one pair of grant/retry buttons per distinct
     denied entry, and - only when 2 or more distinct entries showed up in
@@ -1902,7 +1912,8 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
     buttons, since clicking the individual ones one at a time would only
     ever grant one and immediately re-run the whole prompt, possibly
     hitting the others all over again. Denials we can't map to a
-    permissions.allow entry (see _grantable_entry) stay text-only."""
+    permissions.allow entry (see _grantable_entry) stay text-only. An entry in
+    `summary_entries` also gets a "show summary" button (the script review's stage 3)."""
     blocks = _text_to_section_blocks(outgoing_text)
     entries: list[dict] = []
     seen: set[str] = set()
@@ -1937,6 +1948,13 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                 },
             ],
         })
+        if entry in summary_entries:
+            blocks[-1]["elements"].append({
+                "type": "button",
+                "text": {"type": "plain_text", "text": "要約を見る"},
+                "action_id": "script_summary",
+                "value": json.dumps({"retry_id": retry_id, "entry": entry, "describe": describe}),
+            })
 
     if len(entries) >= 2:
         all_entries = [g["entry"] for g in entries]
@@ -2322,8 +2340,9 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
     buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     review_notes: list[str] = []
     auto_errors: list[dict] = []
+    summary_entries: list[str] = []
     if permission_errors and not buttons_throttled:
-        review_notes, auto_errors = _review_scripts(
+        review_notes, auto_errors, summary_entries = _review_scripts(
             permission_errors, project_id, remember_text if remember_text is not None else text,
             _script_summary_enabled(channel_id), permissions)
     auto_entries: list[str] = []
@@ -2461,7 +2480,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         retry_id = uuid.uuid4().hex[:12]
         store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id,
                          remember_text if remember_text is not None else text)
-        blocks = _build_reply_blocks(outgoing_text, permission_errors, retry_id)
+        blocks = _build_reply_blocks(outgoing_text, permission_errors, retry_id, summary_entries)
 
     log.info("posting to slack text=%r", outgoing_text)
     try:
@@ -2784,6 +2803,42 @@ def build_app() -> App:
                 blocks=[],
             )
         store.delete_retry(retry_id)
+
+    _summaries_shown: set = set()
+
+    @app.action("script_summary")
+    def handle_script_summary(ack, body, client):  # noqa: ANN001 - Bolt signature
+        """Stage 3 of the script review, on request: a summary and the script text, in the thread."""
+        ack()
+        try:
+            payload = json.loads(body["actions"][0]["value"])
+        except (KeyError, json.JSONDecodeError):
+            log.error("bad button value: %r", body["actions"][0].get("value"))
+            return
+        retry_id, entry = payload.get("retry_id"), payload.get("entry") or ""
+        ctx = store.get_retry(retry_id) if retry_id else None
+        if not ctx:
+            client.chat_postMessage(channel=body["channel"]["id"], thread_ts=(body.get("message") or {}).get("ts"),
+                                    text=":warning: このボタンは期限切れです。もう一度メッセージを送ってください。")
+            return
+        key = (retry_id, entry)
+        if key in _summaries_shown:
+            return
+        _summaries_shown.add(key)
+        persona = _persona_kwargs(channel_map.get(ctx["channel_id"], {}))
+        root = _project_root(ctx["project_id"])
+        path = _resolve_permanent_script_path(entry, root) if root is not None else None
+        posted = client.chat_postMessage(channel=ctx["channel_id"], thread_ts=ctx["thread_ts"],
+                                         text=":hourglass_flowing_sand: 要約を作っています...", **persona)
+        try:
+            if not path or not os.path.isfile(path):
+                raise script_review.ReviewError("スクリプトが見つかりません")
+            text = _summary_text(path, str(root), payload.get("describe") or entry)
+        except script_review.ReviewError as exc:
+            _summaries_shown.discard(key)
+            log.warning("script summary failed for %s: %s", entry, exc)
+            text = f":grey_question: 要約を作れませんでした（{exc}）。中身を自分で確認してください。"
+        client.chat_update(channel=ctx["channel_id"], ts=posted["ts"], text=text)
 
     @app.action("grant_once")
     def handle_grant_once(ack, body, client):  # noqa: ANN001 - Bolt signature

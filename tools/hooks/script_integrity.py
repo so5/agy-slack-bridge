@@ -138,6 +138,31 @@ def find_script_targets(cmdline: str, root: str) -> list[str]:
     return out
 
 
+def outside_redirects(cmdline: str, root: str) -> list[str]:
+    """Redirection targets (`> f`, `>> f`, `2> f`, `&> f`) of a command line that lie outside
+    the project. agy's allow matching is a prefix match, so a granted `python3 a.py` also
+    allows `python3 a.py > /anywhere`; for a command that runs a script this closes that
+    gap. /dev/null and fd duplication (`2>&1`) are fine."""
+    try:
+        lexer = shlex.shlex(cmdline, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    real_root = os.path.realpath(root)
+    bad: list[str] = []
+    for i, tok in enumerate(tokens[:-1]):
+        if not tok or set(tok) - set("<>&") or ">" not in tok:
+            continue
+        target = tokens[i + 1]
+        if target in SHELL_OPERATORS or target == "/dev/null" or target.isdigit() or target == "-":
+            continue
+        path = os.path.realpath(target if os.path.isabs(target) else os.path.join(real_root, target))
+        if path != real_root and not path.startswith(real_root + os.sep):
+            bad.append(target)
+    return bad
+
+
 def load_permanent_pins(state: str) -> dict:
     """`<state>/permanent.json`: resolved absolute script path ->
     sha256 of the content approved at grant time. A bare string entry (the
@@ -274,6 +299,15 @@ def main(argv: "list[str] | None" = None) -> None:
         targets = find_script_targets(cmdline, root)
         if not targets or not os.path.isdir(state):
             print(json.dumps({"decision": "ask"}))
+            return
+
+        outside = outside_redirects(cmdline, root)
+        if outside:
+            print(json.dumps({
+                "decision": "deny",
+                "reason": ("スクリプトを実行するコマンドの出力を、プロジェクトの外（" + ", ".join(outside) +
+                           "）へリダイレクトすることはできません。出力先はプロジェクトの中にしてください。"),
+            }))
             return
 
         pins = load_permanent_pins(state)

@@ -1,6 +1,7 @@
 """Review a script with separate, throwaway agy conversations before the user is asked to allow it.
 
-Three stages, each its own agy call, stopping at the first that settles it:
+Two stages run before the permission button, each its own agy call, stopping at the first
+that settles it; the summary (stage 3) is run only when the person asks for it:
 
 1. Harm check: does the script do anything with real-world effect (writes or deletes
    files, reads files outside the project or credentials, calls an external API other
@@ -9,8 +10,10 @@ Three stages, each its own agy call, stopping at the first that settles it:
    cannot do damage.
 2. Intent check: only when stage 1 found such operations. The script is compared with
    the user's request: does it do only what the request needs? If so, the button.
-3. Summary: only when stage 2 says it does not (or cannot tell). A short summary of
-   what the script does; the caller shows it together with the script text.
+3. Summary (`summarize`): not part of `review`. When stage 2 says the script does not match
+   (or cannot tell), the caller offers a "show summary" button; clicking it runs this: a
+   short summary of what the script does, shown together with the script text. It is slow
+   (about 20 s), so it is not run unasked.
 
 Each call runs without `--project`, in an empty temporary directory, in plan mode, so
 no project permissions apply and nothing written in the script can act. The script is
@@ -227,18 +230,27 @@ def _bool(data: dict, key: str) -> bool:
     return data[key]
 
 
-def review(script_path: str, user_request: str, command: str, agy_bin: str,
-           project_root: str, file_rules: dict, summary: bool = True) -> dict:
-    """Runs the stages. Returns {"outcome": "harmless" | "intended" | "needs_review",
-    "operations", "reasons", "summary", "truncated", "script_text"}. Raises ReviewError."""
+def _read_script(script_path: str) -> tuple:
     try:
         raw = Path(script_path).read_bytes()
     except OSError as exc:
         raise ReviewError(f"スクリプトを読めません: {exc}")
-    truncated = len(raw) > MAX_SCRIPT_BYTES
-    text = raw[:MAX_SCRIPT_BYTES].decode("utf-8", errors="replace")
-    out = {"outcome": "harmless", "operations": [], "reasons": [], "summary": "",
-           "truncated": truncated, "script_text": text}
+    return raw[:MAX_SCRIPT_BYTES].decode("utf-8", errors="replace"), len(raw) > MAX_SCRIPT_BYTES
+
+
+def summarize(script_path: str, command: str, agy_bin: str) -> dict:
+    """Stage 3, on request. Returns {"summary", "truncated", "script_text"}. Raises ReviewError."""
+    text, truncated = _read_script(script_path)
+    summary = clean_summary(_ask(summary_prompt(text, command, truncated), SUMMARY_SCHEMA, agy_bin).get("summary"))
+    return {"summary": summary, "truncated": truncated, "script_text": text}
+
+
+def review(script_path: str, user_request: str, command: str, agy_bin: str,
+           project_root: str, file_rules: dict) -> dict:
+    """Runs stages 1 and 2. Returns {"outcome": "harmless" | "intended" | "needs_review",
+    "operations", "reasons", "truncated"}. Raises ReviewError."""
+    text, truncated = _read_script(script_path)
+    out = {"outcome": "harmless", "operations": [], "reasons": [], "truncated": truncated}
 
     stage1 = _ask(harm_prompt(text, command, project_root, file_rules, truncated), HARM_SCHEMA, agy_bin)
     out["operations"] = _strings(stage1.get("operations"))
@@ -252,6 +264,4 @@ def review(script_path: str, user_request: str, command: str, agy_bin: str,
         return out
 
     out["outcome"] = "needs_review"
-    if summary:
-        out["summary"] = clean_summary(_ask(summary_prompt(text, command, truncated), SUMMARY_SCHEMA, agy_bin).get("summary"))
     return out

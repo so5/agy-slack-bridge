@@ -103,3 +103,22 @@ def test_nothing_is_written_into_the_project(repo):
     _hook(repo, "python3 scratch.py")
     assert not (repo / ".agents").exists()
     assert os.path.exists(os.path.join(_state(repo), "hashes.json"))
+
+
+def test_redirect_outside_the_project_is_denied_for_a_script_command(repo):
+    (repo / "scratch.py").write_text("a\n")
+    for cmd in ("python3 scratch.py > /tmp/x", "python3 scratch.py >>/tmp/x", "python3 scratch.py 2> ../e",
+                "python3 scratch.py &> /etc/y", "python3 scratch.py 2>&1 > /tmp/z"):
+        res = _hook(repo, cmd)
+        assert res["decision"] == "deny" and "リダイレクト" in res["reason"], cmd
+
+
+def test_redirect_inside_the_project_or_to_devnull_is_fine(repo):
+    (repo / "scratch.py").write_text("a\n")
+    for cmd in ("python3 scratch.py > out.txt", "python3 scratch.py > %s/out.txt" % repo,
+                "python3 scratch.py > /dev/null 2>&1", "python3 scratch.py 2>&1"):
+        assert _hook(repo, cmd)["decision"] == "ask", cmd
+
+
+def test_redirect_check_only_applies_to_commands_that_run_a_script(repo):
+    assert _hook(repo, "echo hi > /tmp/x")["decision"] == "ask"   # not ours to judge

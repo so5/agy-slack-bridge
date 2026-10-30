@@ -18,10 +18,10 @@
 # "default-cli-project" below) plus a high-reasoning model makes a plain
 # thinking-mode chat channel with no workspace/file access.
 #
-# script_summary: false (optional, default true) stops the summary and full
-# text of a script from being shown in Slack when the automatic check
-# (docs/permissions.md) thinks the script may not match the request. The
-# first two stages of that check always run.
+# script_summary: false (optional, default true) removes the "show summary"
+# button (summary and full text of the script, made only when clicked) that
+# is added when the automatic check (docs/permissions.md) thinks the script
+# may not match the request. The check itself always runs.
 #
 # watched_config_files is also optional: paths (relative to that agy
 # project's own workspace root) to locally-operated files you want drift-

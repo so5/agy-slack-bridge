@@ -86,18 +86,18 @@ def test_intended_stops_after_stage_2(monkeypatch, script):
     assert [c[0] for c in fake.calls] == ["harmful", "matches"]
 
 
-def test_needs_review_runs_summary_unless_off(monkeypatch, script):
+def test_needs_review_stops_after_stage_2_and_summary_is_separate(monkeypatch, script):
     answers = {"harmful": {"harmful": True, "operations": ["外部送信"]},
                "matches": {"matches": False, "reasons": ["依頼にない送信"]},
                "summary": {"summary": "データを送る"}}
     fake = FakeAgy(answers)
     monkeypatch.setattr(subprocess, "run", fake)
     r = sr.review(str(script), "依頼", "python3 a.py", "agy", "/proj", RULES)
-    assert r["outcome"] == "needs_review" and r["reasons"] == ["依頼にない送信"] and r["summary"] == "データを送る"
+    assert r["outcome"] == "needs_review" and r["reasons"] == ["依頼にない送信"]
+    assert [c[0] for c in fake.calls] == ["harmful", "matches"]          # no summary unasked
+    res = sr.summarize(str(script), "python3 a.py", "agy")
+    assert res["summary"] == "データを送る" and res["script_text"] == "print(1)" and not res["truncated"]
     assert [c[0] for c in fake.calls] == ["harmful", "matches", "summary"]
-    fake.calls.clear()
-    r = sr.review(str(script), "依頼", "python3 a.py", "agy", "/proj", RULES, summary=False)
-    assert r["summary"] == "" and [c[0] for c in fake.calls] == ["harmful", "matches"]
 
 
 def test_every_call_is_isolated(monkeypatch, script, tmp_path):
@@ -149,48 +149,56 @@ def project(tmp_path, monkeypatch):
 
 
 def _res(outcome, **kw):
-    base = {"outcome": outcome, "operations": [], "reasons": [], "summary": "", "truncated": False,
-            "script_text": "print(1)"}
+    base = {"outcome": outcome, "operations": [], "reasons": [], "truncated": False}
     return {**base, **kw}
 
 
 def test_notes_per_outcome(project, monkeypatch):
     err = [_err("python3 scratch/a.py")]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
-    notes, auto = bridge._review_scripts(err, "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts(err, "p", "r", True, PERMS)
     assert notes == [] and auto == err          # normal result: nothing added, granted without a button
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless", truncated=True))
-    notes, auto = bridge._review_scripts(err, "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts(err, "p", "r", True, PERMS)
     assert "先頭のみ" in notes[0] and auto == []
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["ファイル書き込み"]))
-    notes, auto = bridge._review_scripts(err, "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts(err, "p", "r", True, PERMS)
     intended = notes[0]
     assert auto == []
     assert "次の操作を行なうスクリプトを実行しようとしています" in intended and "\n  • ファイル書き込み" in intended
-    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(
-        "needs_review", reasons=["依頼にない送信"], summary="データを送る", script_text="x```y"))
-    note = bridge._review_scripts(err, "p", "r", True, PERMS)[0][0]
-    assert "依頼にない送信" in note and "データを送る" in note and "x" in note and "最終" not in note
-    assert note.count("```") == 2            # the script cannot close our code block
-    off = bridge._review_scripts(err, "p", "r", False, PERMS)[0][0]
-    assert "依頼にない送信" in off and "```" not in off
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("needs_review", reasons=["依頼にない送信"]))
+    notes, auto, offer = bridge._review_scripts(err, "p", "r", True, PERMS)
+    assert "依頼にない送信" in notes[0] and "要約を見る" in notes[0] and "```" not in notes[0]   # script not shown unasked
+    assert offer == ["command(python3 scratch/a.py)"]
+    notes, auto, offer = bridge._review_scripts(err, "p", "r", False, PERMS)
+    assert "依頼にない送信" in notes[0] and "要約を見る" not in notes[0] and offer == []
 
 
-def test_long_script_listing_is_cut(project, monkeypatch):
-    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(
-        "needs_review", reasons=["r"], script_text="a" * 5000))
-    note = bridge._review_scripts([_err("python3 scratch/a.py")], "p", "r", True, PERMS)[0][0]
-    assert "先頭のみ表示" in note and len(note) < 3500
+def test_summary_button_only_on_offered_entries():
+    errs = [_err("python3 scratch/a.py"), _err("python3 scratch/b.py")]
+    blocks = bridge._build_reply_blocks("x", errs, "rid", ["command(python3 scratch/a.py)"])
+    first, second = [b for b in blocks if b.get("block_id", "").startswith("perm_") and "all" not in b["block_id"]][:2]
+    assert [e["action_id"] for e in first["elements"]] == ["grant_once", "deny_grant", "script_summary"]
+    assert [e["action_id"] for e in second["elements"]] == ["grant_once", "deny_grant"]
+    assert json.loads(first["elements"][2]["value"])["entry"] == "command(python3 scratch/a.py)"
+
+
+def test_summarize_button_handler_posts_summary_and_listing(project, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(bridge.script_review, "summarize", lambda path, cmd, agy: calls.setdefault("r", {
+        "summary": "データを送る", "truncated": False, "script_text": "a" * 5000}))
+    text = bridge._summary_text(str(project / "scratch" / "a.py"), str(project), "python3 scratch/a.py")
+    assert "データを送る" in text and "先頭のみ表示" in text and len(text) < 3500 and text.count("```") == 2
 
 
 def test_failure_note_and_non_scripts(project, monkeypatch):
     def boom(*a, **k):
         raise bridge.script_review.ReviewError("timeout")
     monkeypatch.setattr(bridge.script_review, "review", boom)
-    notes, auto = bridge._review_scripts([_err("python3 scratch/a.py"), _err("git status")], "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts([_err("python3 scratch/a.py"), _err("git status")], "p", "r", True, PERMS)
     assert len(notes) == 1 and "自動チェックできませんでした" in notes[0] and auto == []
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
-    assert bridge._review_scripts([_err("git status")], "p", "r", True, PERMS) == ([], [])
+    assert bridge._review_scripts([_err("git status")], "p", "r", True, PERMS) == ([], [], [])
 
 
 def test_conversation_files_are_removed_after_each_call(monkeypatch, script, state_dir):
@@ -424,6 +432,6 @@ def test_summary_returned_as_a_json_string_is_unwrapped():
                                  "python3 scratch/a.py $(id)", "python3 scratch/a.py && ls", "python3 scratch/a.py `id`"])
 def test_commands_with_shell_syntax_are_never_granted_automatically(project, monkeypatch, cmd):
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
-    notes, auto = bridge._review_scripts([_err(cmd)], "p", "r", True, PERMS)
+    notes, auto, _ = bridge._review_scripts([_err(cmd)], "p", "r", True, PERMS)
     assert auto == [] and "自動では許可しません" in notes[0]
     assert bridge._is_plain_command("python3 scratch/a.py --out out.csv")

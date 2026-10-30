@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 660" width="1200" height="660" font-family="'Segoe UI','Noto Sans CJK JP','Hiragino Sans',sans-serif" role="img" aria-label="Automatic check before the permission button">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#1b2740"/></linearGradient>
+<linearGradient id="agy" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b5bdb"/><stop offset="1" stop-color="#27389b"/></linearGradient>
+<linearGradient id="chk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#0a4f4a"/></linearGradient>
+<linearGradient id="ok" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16a34a"/><stop offset="1" stop-color="#166534"/></linearGradient>
+<linearGradient id="ng" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b45309"/><stop offset="1" stop-color="#78350f"/></linearGradient>
+<linearGradient id="slack" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b2a63"/><stop offset="1" stop-color="#3a1a40"/></linearGradient>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#94a3b8"/></marker>
+<filter id="sh" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".35"/></filter>
+</defs>
+<rect width="1200" height="660" rx="28" fill="url(#bg)"/>
+<text x="60" y="70" font-size="34" fill="#fff" font-weight="700">Automatic check before the permission button</text>
+<text x="60" y="106" font-size="18" fill="#94a3b8">When a command that runs a script is denied. The AI verdict is advisory; the button always stays.</text>
+<rect x="60" y="155" width="170" height="90" rx="16" fill="url(#agy)" filter="url(#sh)"/>
+<text x="145.0" y="196.0" font-size="17" fill="#fff" font-weight="700" text-anchor="middle">Denied</text>
+<text x="145.0" y="220.0" font-size="13" fill="#cbd5e1" text-anchor="middle">a command running a script</text>
+<path d="M232 200 H256" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<polygon points="260,200 390,134 520,200 390,266" fill="url(#chk)" filter="url(#sh)"/>
+<text x="390" y="186" font-size="13" fill="#99f6e4" text-anchor="middle">Stage 1</text>
+<text x="390" y="206" font-size="15" fill="#fff" font-weight="700" text-anchor="middle">Any operation</text>
+<text x="390" y="226" font-size="15" fill="#fff" font-weight="700" text-anchor="middle">with real effect?</text>
+<polygon points="586,200 716,134 846,200 716,266" fill="url(#chk)" filter="url(#sh)"/>
+<text x="716" y="186" font-size="13" fill="#99f6e4" text-anchor="middle">Stage 2</text>
+<text x="716" y="206" font-size="15" fill="#fff" font-weight="700" text-anchor="middle">Only what the</text>
+<text x="716" y="226" font-size="15" fill="#fff" font-weight="700" text-anchor="middle">request needs?</text>
+<path d="M522 200 H584" stroke="#fbbf24" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<text x="534" y="190" font-size="14" fill="#fbbf24" font-weight="700">yes</text>
+<path d="M390 268 V340" stroke="#4ade80" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<text x="402" y="300" font-size="14" fill="#4ade80" font-weight="700">no</text>
+<rect x="260" y="344" width="260" height="90" rx="16" fill="url(#ok)" filter="url(#sh)"/>
+<text x="390.0" y="385.0" font-size="17" fill="#fff" font-weight="700" text-anchor="middle">Allowed automatically, re-run</text>
+<text x="390.0" y="409.0" font-size="13" fill="#dcfce7" text-anchor="middle">No button. Lasts the chat</text>
+<text x="390" y="456" font-size="12" fill="#86efac" text-anchor="middle">Whole script checked, plain command</text>
+<path d="M716 268 V340" stroke="#4ade80" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<text x="728" y="300" font-size="14" fill="#4ade80" font-weight="700">matches</text>
+<rect x="586" y="344" width="260" height="90" rx="16" fill="url(#slack)" filter="url(#sh)"/>
+<text x="716.0" y="385.0" font-size="17" fill="#fff" font-weight="700" text-anchor="middle">List the operations</text>
+<text x="716.0" y="409.0" font-size="13" fill="#cbd5e1" text-anchor="middle">then the permission button</text>
+<path d="M848 200 H946" stroke="#fbbf24" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<text x="860" y="190" font-size="14" fill="#fbbf24" font-weight="700">differs</text>
+<rect x="950" y="155" width="210" height="90" rx="16" fill="url(#ng)" filter="url(#sh)"/>
+<text x="1055.0" y="196.0" font-size="17" fill="#fff" font-weight="700" text-anchor="middle">Warning and reasons</text>
+<text x="1055.0" y="220.0" font-size="13" fill="#fde68a" text-anchor="middle">Permission + "Show summary"</text>
+<path d="M1055 247 V340" stroke="#a5b4fc" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+<text x="1067" y="300" font-size="14" fill="#a5b4fc" font-weight="700">when clicked</text>
+<rect x="950" y="344" width="210" height="90" rx="16" fill="url(#agy)" filter="url(#sh)"/>
+<text x="1055.0" y="385.0" font-size="17" fill="#fff" font-weight="700" text-anchor="middle">Stage 3: summary</text>
+<text x="1055.0" y="409.0" font-size="13" fill="#cbd5e1" text-anchor="middle">Posted in the thread (~20 s)</text>
+<rect x="60" y="500" width="340" height="110" rx="16" fill="#ffffff" fill-opacity=".08" stroke="#475569"/>
+<text x="80" y="540" font-size="16" fill="#fff" font-weight="700">Check failed / over 60 KB</text>
+<text x="80" y="572" font-size="13" fill="#cbd5e1">Button, with a note saying so</text>
+<rect x="430" y="500" width="340" height="110" rx="16" fill="#ffffff" fill-opacity=".08" stroke="#475569"/>
+<text x="450" y="540" font-size="16" fill="#fff" font-weight="700">Redirect, pipe, etc.</text>
+<text x="450" y="572" font-size="13" fill="#cbd5e1">Button even if stage 1 is clean</text>
+<rect x="800" y="500" width="340" height="110" rx="16" fill="#ffffff" fill-opacity=".08" stroke="#475569"/>
+<text x="820" y="540" font-size="16" fill="#fff" font-weight="700">Each stage is a separate agy call</text>
+<text x="820" y="572" font-size="13" fill="#cbd5e1">no --project, empty temp dir, plan mode</text>
+</svg>
