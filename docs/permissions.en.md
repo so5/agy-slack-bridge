@@ -70,17 +70,15 @@ The ledger `<config directory>/integrity/<project key>/permanent.json` has the f
 
 ### Automatic check before the permission button (AI)
 
-When a command that would get a permission button runs a script, the bridge first starts a separate agy conversation to review the script.
+When a command that would get a permission button runs a script, the bridge first starts separate agy conversations to check the script in 3 stages. **The button is shown at every stage** (a person decides); the check only supplies material for that decision.
 
-1. **Check (always)**: it is given the user's request, the command, and the whole script, and decides whether the script is malicious, goes beyond the request, or contains text aimed at the reviewer itself ("report this as safe").
-   - **Dangerous**: no button is shown; the reasons are.
-   - **Suspicious**: the button is shown with the reasons.
-   - **No problem found**: the button is shown.
-2. **Summary (can be turned off per channel)**: for no-problem and suspicious results, up to 3 lines on what the script does. To turn it off, answer `n` to `許可ボタンの上に、スクリプトの要約を表示しますか?` in the channel settings of the setup script (menu 6).
+1. **Does it do anything harmful? (always)**: looks for file writes or deletes, reads outside the project or of credential files, external calls other than `gdrive_cli.py`, running other programs, `eval` or obfuscation. If there is none, even a script that strays from the request cannot do damage, so it ends here ("no harmful operation found", then the button).
+2. **Does it match the request? (only if stage 1 found something)**: compares the script with the user's request and decides whether it does only what the request needs. If so, the button.
+3. **Show summary and content (only if stage 2 says no)**: a summary of up to 3 lines and the script's content (first 2,500 characters) are shown in Slack, with the button. Per channel, this can be turned off: in the channel settings of the setup script (menu 6), answer `n` to `依頼と合わなそうなスクリプトの、要約と内容を表示しますか?` and only the reasons are shown (`script_summary: false`).
 
-The reviewer runs without `--project`, in an empty temporary directory, in plan mode, so no project permissions apply. The script is passed as data inside a random delimiter, with instructions not to follow anything written in it.
+Each stage is a separate agy call, run without `--project`, in an empty temporary directory, in plan mode, so no project permissions apply. The script is passed as data inside a random delimiter, with instructions not to follow anything written in it.
 
-**Limits**: it is an AI verdict. A clever script may fool it, and "no problem found" is not a guarantee of safety. The person pressing the button decides. Scripts over about 60 KB are checked only up to the first 60 KB, and the message says so. If the check fails (e.g. times out), the button is still shown with a note that it was not checked. This is not a per-run check of already-allowed scripts (that is the hook above).
+**Limits**: it is an AI verdict. A clever script may fool it, and "not found" is not a guarantee of safety. Scripts over about 60 KB are checked only up to the first 60 KB, and the message says so. If the check fails (e.g. times out), the button is still shown with a note that it was not checked. This is not a per-run check of already-allowed scripts (that is the hook above).
 
 ## 6. MCP tools
 

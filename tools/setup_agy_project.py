@@ -916,7 +916,7 @@ def _ask_watch_stats(ask: Prompter, entry: dict, config_dir: Path) -> None:
     telemetry["permission_stats"] = stats          # N も記録する（一覧で「回答済み」と分かるように）
     _set_or_pop(entry, "telemetry", telemetry or None)
     # 既定は表示する。N のときだけ `script_summary: false` を記録する（キーが無い＝表示）
-    if ask.yes_no("許可ボタンの上に、スクリプトの要約を表示しますか?", default=entry.get("script_summary", True)):
+    if ask.yes_no("依頼と合わなそうなスクリプトの、要約と内容を表示しますか?", default=entry.get("script_summary", True)):
         entry.pop("script_summary", None)
     else:
         entry["script_summary"] = False

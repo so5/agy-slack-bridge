@@ -1754,23 +1754,32 @@ def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
 
 
 def _script_summary_enabled(channel_id: str) -> bool:
-    """Per-channel option `script_summary` (default on): whether the script review
-    also shows a short summary. The malicious-or-not check itself is always on."""
+    """Per-channel option `script_summary` (default on): whether a script that doesn't
+    look like what was asked for gets its summary and full text shown in Slack
+    (stage 3 of tools/script_review.py). Stages 1 and 2 always run."""
     try:
         return bool((load_channel_map().get(channel_id) or {}).get("script_summary", True))
     except (Exception, SystemExit):
         return True
 
 
+SCRIPT_SHOWN_CHARS = 2500
+
+
+def _script_listing(text: str, truncated: bool) -> str:
+    shown = text[:SCRIPT_SHOWN_CHARS].replace("```", "ˋˋˋ")   # keep the script from closing our code block
+    cut = len(text) > SCRIPT_SHOWN_CHARS or truncated
+    return "```\n" + shown + "\n```" + ("\n（長いため先頭のみ表示しています）" if cut else "")
+
+
 def _review_scripts(permission_errors: list[dict], project_id: str, user_request: str,
-                    summary: bool) -> tuple[list[dict], list[str]]:
-    """Before offering a grant button for a command that runs a script, have a
-    throwaway agy conversation (tools/script_review.py) review the script text
-    against the user's request. Returns (errors that still get a button, notes to
-    show above the buttons). A script judged malicious loses its button. A review
-    failure never blocks: the button stays, with a note that it was not checked."""
+                    summary: bool) -> list[str]:
+    """Before the grant buttons go out, reviews every script the denied commands would
+    run (tools/script_review.py: harm check, then intent check, then summary) and
+    returns short notes to show above the buttons. Every command keeps its button -
+    the review only informs the person pressing it. A review failure adds a
+    "not checked" note."""
     root = _project_root(project_id)
-    kept: list[dict] = []
     notes: list[str] = []
     for err in permission_errors:
         grantable = _grantable_entry(err)
@@ -1778,27 +1787,33 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         if grantable and root is not None and err.get("tool_name") == "run_command":
             path = _resolve_permanent_script_path(grantable["entry"], root)
         if not path or not os.path.isfile(path):
-            kept.append(err)
             continue
         name = os.path.relpath(path, str(root))
         try:
-            res = script_review.review(path, user_request, grantable["describe"], AGY_BIN, summary=summary)
+            res = script_review.review(path, user_request, grantable["describe"], AGY_BIN,
+                                       str(root), summary=summary)
         except script_review.ReviewError as exc:
             log.warning("script review failed for %s: %s", path, exc)
-            notes.append(f":grey_question: `{name}` は自動チェックできませんでした（{exc}）。中身を自分で確認してから許可してください。")
-            kept.append(err)
+            notes.append(f":grey_question: `{name}` は自動チェックできませんでした（{exc}）。"
+                         "中身を自分で確認してから許可してください。")
             continue
-        log.info("script review %s: %s %r", path, res["verdict"], res["reasons"])
-        reasons = "".join(f"\n  • {r}" for r in res["reasons"])
+        log.info("script review %s: %s ops=%r reasons=%r", path, res["outcome"], res["operations"], res["reasons"])
         cut = "（長いため先頭のみ検査）" if res["truncated"] else ""
-        if res["verdict"] == "malicious":
-            notes.append(f":no_entry: `{name}` は危険と判定されたため、許可ボタンを出していません。{cut}{reasons}")
-            continue
-        head = ":warning: 依頼の範囲を超える操作があるかもしれません" if res["verdict"] == "suspicious" else ":white_check_mark: 問題は見つかりませんでした"
-        body = f"\n  {res['summary']}" if res["summary"] else ""
-        notes.append(f"`{name}` の自動チェック: {head}{cut}{reasons}{body}\n  （AI の判定です。最終判断はあなたが行ってください）")
-        kept.append(err)
-    return kept, notes
+        if res["outcome"] == "harmless":
+            notes.append(f":white_check_mark: `{name}`: 実害の出る操作は見つかりませんでした。{cut}")
+        elif res["outcome"] == "intended":
+            ops = "、".join(res["operations"])
+            notes.append(f":white_check_mark: `{name}`: 依頼に必要な処理だけのようです（{ops}）。{cut}")
+        else:
+            lines = "".join(f"\n  • {r}" for r in res["reasons"] or res["operations"])
+            note = f":warning: `{name}` は、依頼と合わない処理を含む可能性があります。{cut}{lines}"
+            if res["summary"]:
+                note += f"\n要約: {res['summary']}"
+            if summary:
+                note += "\n" + _script_listing(res["script_text"], res["truncated"])
+            note += "\n（AI の判定です。内容を確認して、許可するか決めてください）"
+            notes.append(note)
+    return notes
 
 
 def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
@@ -2202,12 +2217,12 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         )
         store.log_permission(channel_id, conversation_id, "stuck",
                               [_describe_tool_error(e) for e, _ in stuck_errors])
+    buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     review_notes: list[str] = []
-    if permission_errors:
-        permission_errors, review_notes = _review_scripts(
+    if permission_errors and not buttons_throttled:
+        review_notes = _review_scripts(
             permission_errors, project_id, remember_text if remember_text is not None else text,
             _script_summary_enabled(channel_id))
-    buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
         lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)

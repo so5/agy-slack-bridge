@@ -11,55 +11,105 @@ def _stdout(response):
     return json.dumps({"event": "result", "result": {"response": response}}) + "\n"
 
 
-def test_parse_result_ok_and_embedded_json():
-    r = sr.parse_result(_stdout('結果: {"verdict": "ok", "reasons": [], "summary": "ログを数える"}'))
-    assert r == {"verdict": "ok", "reasons": [], "summary": "ログを数える"}
+def test_parse_result_embedded_json():
+    assert sr.parse_result(_stdout('結果: {"harmful": false, "operations": []}')) == {"harmful": False, "operations": []}
 
 
-@pytest.mark.parametrize("out", ["", _stdout(""), _stdout("no json"), _stdout('{"verdict": "great"}'),
-                                 _stdout("{broken")])
+@pytest.mark.parametrize("out", ["", _stdout(""), _stdout("no json"), _stdout("{broken")])
 def test_parse_result_rejects(out):
     with pytest.raises(sr.ReviewError):
         sr.parse_result(out)
 
 
-def test_prompt_has_request_command_script_and_fence():
-    p = sr.build_prompt("print(1)", "ログを数えて", "python3 a.py", summary=True, truncated=False)
-    assert "ログを数えて" in p and "python3 a.py" in p and "print(1)" in p
-    assert "summary" in p and "服従" in p
-    fence = p.split("<<")[1].split("\n")[0]
-    assert p.count(fence) == 3          # named in the intro, opening and closing marker
-    assert "- summary:" not in sr.build_prompt("x", "r", "c", summary=False, truncated=False)
+def test_prompts_carry_inputs_fence_and_guard():
+    for p in (sr.harm_prompt("print(1)", "python3 a.py", "/proj", False),
+              sr.intent_prompt("print(1)", "ログを数えて", "python3 a.py", ["ファイル削除"], False),
+              sr.summary_prompt("print(1)", "python3 a.py", False)):
+        assert "print(1)" in p and "python3 a.py" in p and "服従" in p
+        fence = p.split("<<")[1].split("\n")[0]
+        assert p.count(fence) == 3          # named in the label, opening and closing marker
+    assert "/proj" in sr.harm_prompt("x", "c", "/proj", False) and "gdrive_cli" in sr.harm_prompt("x", "c", "/proj", False)
+    i = sr.intent_prompt("x", "ログを数えて", "c", ["ファイル削除"], False)
+    assert "ログを数えて" in i and "ファイル削除" in i
+    assert "先頭部分のみ" in sr.harm_prompt("x", "c", "/p", True)
 
 
-def test_review_runs_isolated_agy(monkeypatch, tmp_path):
-    script = tmp_path / "a.py"
-    script.write_text("print(1)")
-    seen = {}
+class FakeAgy:
+    """Answers the three stages in order of the schema asked for; records every call."""
+    def __init__(self, answers):
+        self.answers, self.calls = answers, []
 
-    def fake_run(cmd, **kw):
-        seen["cmd"], seen["kw"] = cmd, kw
-        return subprocess.CompletedProcess(cmd, 0, _stdout('{"verdict":"suspicious","reasons":["外部へ送信"],"summary":"s"}'), "")
+    def __call__(self, cmd, **kw):
+        schema = json.loads(cmd[cmd.index("--json-schema") + 1])
+        stage = ("harmful" if "harmful" in schema["properties"] else
+                 "matches" if "matches" in schema["properties"] else "summary")
+        self.calls.append((stage, cmd, kw))
+        return subprocess.CompletedProcess(cmd, 0, _stdout(json.dumps(self.answers[stage])), "")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    r = sr.review(str(script), "依頼", "python3 a.py", "agy", summary=False)
-    assert r["verdict"] == "suspicious" and r["reasons"] == ["外部へ送信"] and r["summary"] == ""
-    cmd = seen["cmd"]
+
+@pytest.fixture
+def script(tmp_path):
+    p = tmp_path / "a.py"
+    p.write_text("print(1)")
+    return p
+
+
+def test_harmless_stops_after_stage_1(monkeypatch, script):
+    fake = FakeAgy({"harmful": {"harmful": False, "operations": []}})
+    monkeypatch.setattr(subprocess, "run", fake)
+    r = sr.review(str(script), "依頼", "python3 a.py", "agy", "/proj")
+    assert r["outcome"] == "harmless" and [c[0] for c in fake.calls] == ["harmful"]
+
+
+def test_intended_stops_after_stage_2(monkeypatch, script):
+    fake = FakeAgy({"harmful": {"harmful": True, "operations": ["ファイル書き込み"]},
+                    "matches": {"matches": True, "reasons": []}})
+    monkeypatch.setattr(subprocess, "run", fake)
+    r = sr.review(str(script), "依頼", "python3 a.py", "agy", "/proj")
+    assert r["outcome"] == "intended" and r["operations"] == ["ファイル書き込み"]
+    assert [c[0] for c in fake.calls] == ["harmful", "matches"]
+
+
+def test_needs_review_runs_summary_unless_off(monkeypatch, script):
+    answers = {"harmful": {"harmful": True, "operations": ["外部送信"]},
+               "matches": {"matches": False, "reasons": ["依頼にない送信"]},
+               "summary": {"summary": "データを送る"}}
+    fake = FakeAgy(answers)
+    monkeypatch.setattr(subprocess, "run", fake)
+    r = sr.review(str(script), "依頼", "python3 a.py", "agy", "/proj")
+    assert r["outcome"] == "needs_review" and r["reasons"] == ["依頼にない送信"] and r["summary"] == "データを送る"
+    assert [c[0] for c in fake.calls] == ["harmful", "matches", "summary"]
+    fake.calls.clear()
+    r = sr.review(str(script), "依頼", "python3 a.py", "agy", "/proj", summary=False)
+    assert r["summary"] == "" and [c[0] for c in fake.calls] == ["harmful", "matches"]
+
+
+def test_every_call_is_isolated(monkeypatch, script, tmp_path):
+    fake = FakeAgy({"harmful": {"harmful": False, "operations": []}})
+    monkeypatch.setattr(subprocess, "run", fake)
+    sr.review(str(script), "r", "c", "agy", "/proj")
+    _, cmd, kw = fake.calls[0]
     assert "--project" not in cmd and cmd[cmd.index("--mode") + 1] == "plan"
-    assert "--dangerously-skip-permissions" not in cmd
-    assert seen["kw"]["cwd"] != str(tmp_path)
+    assert "--dangerously-skip-permissions" not in cmd and kw["cwd"] != str(tmp_path)
 
 
-def test_review_truncates_and_errors(monkeypatch, tmp_path):
-    big = tmp_path / "b.py"
-    big.write_bytes(b"x" * (sr.MAX_SCRIPT_BYTES + 5))
-    monkeypatch.setattr(subprocess, "run", lambda c, **k: subprocess.CompletedProcess(c, 0, _stdout('{"verdict":"ok","reasons":[]}'), ""))
-    assert sr.review(str(big), "r", "c", "agy")["truncated"] is True
+def test_errors(monkeypatch, tmp_path, script):
     monkeypatch.setattr(subprocess, "run", lambda c, **k: subprocess.CompletedProcess(c, 3, "", ""))
     with pytest.raises(sr.ReviewError):
-        sr.review(str(big), "r", "c", "agy")
+        sr.review(str(script), "r", "c", "agy", "/p")
     with pytest.raises(sr.ReviewError):
-        sr.review(str(tmp_path / "missing.py"), "r", "c", "agy")
+        sr.review(str(tmp_path / "missing.py"), "r", "c", "agy", "/p")
+    # a stage answer without the boolean is not read as "fine"
+    monkeypatch.setattr(subprocess, "run", FakeAgy({"harmful": {"operations": []}}))
+    with pytest.raises(sr.ReviewError):
+        sr.review(str(script), "r", "c", "agy", "/p")
+
+
+def test_truncates(monkeypatch, tmp_path):
+    big = tmp_path / "b.py"
+    big.write_bytes(b"x" * (sr.MAX_SCRIPT_BYTES + 5))
+    monkeypatch.setattr(subprocess, "run", FakeAgy({"harmful": {"harmful": False, "operations": []}}))
+    assert sr.review(str(big), "r", "c", "agy", "/p")["truncated"] is True
 
 
 def _err(cmd):
@@ -74,29 +124,39 @@ def project(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_malicious_loses_button_others_keep(project, monkeypatch):
-    verdicts = {"a.py": {"verdict": "malicious", "reasons": ["鍵を送る"], "summary": "", "truncated": False}}
-    monkeypatch.setattr(bridge.script_review, "review", lambda path, *a, **k: verdicts["a.py"])
-    errs = [_err("python3 scratch/a.py"), _err("git status")]
-    kept, notes = bridge._review_scripts(errs, "p", "依頼", True)
-    assert [e["parameters"]["CommandLine"] for e in kept] == ["git status"]
-    assert len(notes) == 1 and "危険" in notes[0] and "鍵を送る" in notes[0]
+def _res(outcome, **kw):
+    base = {"outcome": outcome, "operations": [], "reasons": [], "summary": "", "truncated": False,
+            "script_text": "print(1)"}
+    return {**base, **kw}
 
 
-def test_ok_shows_summary_and_failure_keeps_button(project, monkeypatch):
-    monkeypatch.setattr(bridge.script_review, "review",
-                        lambda *a, **k: {"verdict": "ok", "reasons": [], "summary": "1を出力", "truncated": False})
-    kept, notes = bridge._review_scripts([_err("python3 scratch/a.py")], "p", "依頼", True)
-    assert len(kept) == 1 and "1を出力" in notes[0] and "最終判断" in notes[0]
+def test_notes_per_outcome(project, monkeypatch):
+    err = [_err("python3 scratch/a.py")]
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
+    assert "実害の出る操作は見つかりませんでした" in bridge._review_scripts(err, "p", "r", True)[0]
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["ファイル書き込み"]))
+    assert "依頼に必要な処理だけ" in bridge._review_scripts(err, "p", "r", True)[0]
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(
+        "needs_review", reasons=["依頼にない送信"], summary="データを送る", script_text="x```y"))
+    note = bridge._review_scripts(err, "p", "r", True)[0]
+    assert "依頼にない送信" in note and "データを送る" in note and "x" in note and "最終" not in note
+    assert note.count("```") == 2            # the script cannot close our code block
+    off = bridge._review_scripts(err, "p", "r", False)[0]
+    assert "依頼にない送信" in off and "```" not in off
 
+
+def test_long_script_listing_is_cut(project, monkeypatch):
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(
+        "needs_review", reasons=["r"], script_text="a" * 5000))
+    note = bridge._review_scripts([_err("python3 scratch/a.py")], "p", "r", True)[0]
+    assert "先頭のみ表示" in note and len(note) < 3500
+
+
+def test_failure_note_and_non_scripts(project, monkeypatch):
     def boom(*a, **k):
         raise bridge.script_review.ReviewError("timeout")
     monkeypatch.setattr(bridge.script_review, "review", boom)
-    kept, notes = bridge._review_scripts([_err("python3 scratch/a.py")], "p", "依頼", True)
-    assert len(kept) == 1 and "自動チェックできませんでした" in notes[0]
-
-
-def test_non_script_not_reviewed(project, monkeypatch):
+    notes = bridge._review_scripts([_err("python3 scratch/a.py"), _err("git status")], "p", "r", True)
+    assert len(notes) == 1 and "自動チェックできませんでした" in notes[0]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
-    kept, notes = bridge._review_scripts([_err("git status")], "p", "r", True)
-    assert len(kept) == 1 and notes == []
+    assert bridge._review_scripts([_err("git status")], "p", "r", True) == []

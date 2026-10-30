@@ -261,9 +261,9 @@ def test_channel_mapping_written_with_project_id_and_all_fields(env):
 def test_script_summary_option_only_recorded_when_turned_off(env):
     run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123"}))
     assert "script_summary" not in channels(env)["C0TEST123"]
-    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "スクリプトの要約": "n"}))
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "要約と内容": "n"}))
     assert channels(env)["C0TEST123"]["script_summary"] is False
-    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "スクリプトの要約": "y"}))
+    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "要約と内容": "y"}))
     assert "script_summary" not in channels(env)["C0TEST123"]
 
 
