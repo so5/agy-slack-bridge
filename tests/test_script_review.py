@@ -310,14 +310,15 @@ def test_script_that_needs_review_still_gets_a_button(project, monkeypatch):
     assert any("余計な送信" in p for p in client.posts)
 
 
-def test_auto_grant_chain_is_bounded(project, monkeypatch):
+def test_auto_grants_count_toward_the_denial_throttle(project, monkeypatch):
     def err(i):
         return {"tool_name": "run_command", "parameters": {"CommandLine": f"python3 scratch/a.py {i}"},
                 "message": "user denied permission to run"}
     results = [_agy_result([err(i)]) for i in range(10)]          # a new denied command every time
     client, store, perms = _drive(monkeypatch, project, "harmless", results)
-    assert len(store.temp) == bridge.AUTO_GRANT_CHAIN_LIMIT    # then the person is asked after all
-    assert len(store.retries) == 1
+    assert len(store.temp) == bridge.DENIAL_BUTTON_LIMIT           # then the existing limit stops it
+    assert store.retries == []                                     # throttled: no button either
+    assert any("一時停止" in p for p in client.posts)
 
 
 def test_over_60kb_script_gets_a_button_not_an_auto_grant(project, monkeypatch):

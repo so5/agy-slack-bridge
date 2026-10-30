@@ -1913,9 +1913,6 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
     return blocks
 
 
-# How many times in a row one message may be re-run after an automatic temporary grant
-# (see _review_scripts) before the person is asked after all.
-AUTO_GRANT_CHAIN_LIMIT = 5
 GREY_QUESTION_AUTO_RETRIES = 2
 # The model (esp. the Flash tier) sometimes ends a turn with an empty response
 # right after a tool result, mid-task. If the turn still ran tools, the task
@@ -1931,12 +1928,6 @@ GREY_QUESTION_PROGRESS_RETRIES = 5
 DENIAL_BUTTON_LIMIT = 3
 DENIAL_BUTTON_WINDOW_SEC = 600
 _denial_log: dict = {}
-
-
-def _denial_throttle_reached(conversation_id: str) -> bool:
-    """Whether the limit is already hit, without counting this turn."""
-    now = time.time()
-    return len([t for t in _denial_log.get(conversation_id, []) if now - t < DENIAL_BUTTON_WINDOW_SEC]) >= DENIAL_BUTTON_LIMIT
 
 
 def _denial_buttons_throttled(conversation_id: str) -> bool:
@@ -2098,8 +2089,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                     remember_text: Optional[str] = None,
                     auto_retries_left: int = GREY_QUESTION_AUTO_RETRIES,
                     progress_retries_left: int = GREY_QUESTION_PROGRESS_RETRIES,
-                    model: Optional[str] = None, effort: Optional[str] = None,
-                    auto_grants_left: int = AUTO_GRANT_CHAIN_LIMIT) -> None:
+                    model: Optional[str] = None, effort: Optional[str] = None) -> None:
     """Runs one agy turn and posts the reply, attaching permission-grant
     buttons if a run_command call got denied. Shared by the normal message
     handler and by the grant_once/grant_permanent retry flow.
@@ -2253,14 +2243,18 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         )
         store.log_permission(channel_id, conversation_id, "stuck",
                               [_describe_tool_error(e) for e, _ in stuck_errors])
+    # Counts every turn with a denial - automatically granted ones too - so a conversation
+    # that keeps provoking denials is stopped by the same limit (DENIAL_BUTTON_LIMIT per
+    # DENIAL_BUTTON_WINDOW_SEC) whether or not a person would have clicked.
+    buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     review_notes: list[str] = []
     auto_errors: list[dict] = []
-    if permission_errors and not _denial_throttle_reached(conversation_id):
+    if permission_errors and not buttons_throttled:
         review_notes, auto_errors = _review_scripts(
             permission_errors, project_id, remember_text if remember_text is not None else text,
             _script_summary_enabled(channel_id), permissions)
     auto_entries: list[str] = []
-    if auto_errors and auto_grants_left > 0:
+    if auto_errors:
         for e in auto_errors:
             g = _grantable_entry(e)
             if g and g["entry"] not in auto_entries:
@@ -2271,7 +2265,6 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         permission_errors = [e for e in permission_errors if e not in auto_errors]
         review_notes.insert(0, ":zap: 実害の出る操作が見つからなかったため、この会話の間だけ自動で許可しました:\n"
                                + "\n".join(f"  • `{a}`" for a in auto_entries))
-    buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
         lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
@@ -2304,7 +2297,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
             client, store, permissions, channel_id, thread_key, project_id, conversation_id,
             retry_prompt, persona_kwargs, status_text="自動で許可して再実行しています...",
             remember_text=remember_text if remember_text is not None else text,
-            model=model, effort=effort, auto_grants_left=auto_grants_left - 1,
+            model=model, effort=effort,
         )
         return
     if not tool_errors and result.get("denied_actions") and not result.get("response"):
@@ -2334,7 +2327,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                 remember_text=remember_text if remember_text is not None else text,
                 auto_retries_left=auto_retries_left if made_progress else auto_retries_left - 1,
                 progress_retries_left=progress_retries_left - 1 if made_progress else progress_retries_left,
-                model=model, effort=effort, auto_grants_left=auto_grants_left,
+                model=model, effort=effort,
             )
             return
 
