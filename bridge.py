@@ -46,6 +46,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 import agy_models  # noqa: E402
+import agy_settings  # noqa: E402
 import script_review  # noqa: E402
 import safety_stack  # noqa: E402  (tools/ sits next to bridge.py in the install directory)
 
@@ -1764,6 +1765,22 @@ def _script_summary_enabled(channel_id: str) -> bool:
 
 
 SCRIPT_SHOWN_CHARS = 2500
+_FILE_RULE_PREFIXES = ("read_file(", "write_file(")
+
+
+def _file_rules(project_id: str, permissions: "ProjectPermissionsFile") -> dict:
+    """The file read/write rules agy enforces on its own tools: machine-wide
+    settings.json deny/allow plus the project's allow list. They don't bind what a
+    script does itself, so the script review (stage 1) checks the script against them."""
+    try:
+        perms = (agy_settings.load_json(AGY_GLOBAL_SETTINGS_PATH).get("permissions") or {})
+    except Exception:
+        perms = {}
+
+    def pick(entries):
+        return [e for e in entries or [] if isinstance(e, str) and e.startswith(_FILE_RULE_PREFIXES)]
+    return {"deny": pick(perms.get("deny")),
+            "allow": pick(perms.get("allow")) + pick(permissions.list_entries(project_id))}
 
 
 def _script_listing(text: str, truncated: bool) -> str:
@@ -1773,13 +1790,14 @@ def _script_listing(text: str, truncated: bool) -> str:
 
 
 def _review_scripts(permission_errors: list[dict], project_id: str, user_request: str,
-                    summary: bool) -> list[str]:
+                    summary: bool, permissions: "ProjectPermissionsFile") -> list[str]:
     """Before the grant buttons go out, reviews every script the denied commands would
     run (tools/script_review.py: harm check, then intent check, then summary) and
     returns short notes to show above the buttons. Every command keeps its button -
     the review only informs the person pressing it. A review failure adds a
     "not checked" note."""
     root = _project_root(project_id)
+    file_rules = _file_rules(project_id, permissions)
     notes: list[str] = []
     for err in permission_errors:
         grantable = _grantable_entry(err)
@@ -1791,7 +1809,7 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         name = os.path.relpath(path, str(root))
         try:
             res = script_review.review(path, user_request, grantable["describe"], AGY_BIN,
-                                       str(root), summary=summary)
+                                       str(root), file_rules, summary=summary)
         except script_review.ReviewError as exc:
             log.warning("script review failed for %s: %s", path, exc)
             notes.append(f":grey_question: `{name}` は自動チェックできませんでした（{exc}）。"
@@ -2222,7 +2240,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
     if permission_errors and not buttons_throttled:
         review_notes = _review_scripts(
             permission_errors, project_id, remember_text if remember_text is not None else text,
-            _script_summary_enabled(channel_id))
+            _script_summary_enabled(channel_id), permissions)
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
         lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
