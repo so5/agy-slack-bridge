@@ -41,10 +41,10 @@
 <text x="304" y="366" font-size="17" fill="#fff" font-weight="700">① 前回と同じ内容?</text>
 <text x="304" y="394" font-size="12" fill="#86efac">初回は記録して通す</text>
 <path d="M472 375 H500" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
-<rect x="504" y="330" width="300" height="90" rx="14" fill="url(#ng)" filter="url(#sh)"/>
-<text x="520" y="366" font-size="17" fill="#fff" font-weight="700">違えば、一度だけ拒否</text>
-<text x="520" y="394" font-size="13" fill="#fde68a">差分を表示。もう一度送れば通る</text>
-<path d="M806 375 H1064" stroke="#94a3b8" stroke-width="3" fill="none" stroke-dasharray="7 6" marker-end="url(#ar)"/>
+<rect x="504" y="330" width="340" height="90" rx="14" fill="url(#ng)" filter="url(#sh)"/>
+<text x="520" y="366" font-size="17" fill="#fff" font-weight="700">変わっていれば、一度止める</text>
+<text x="520" y="394" font-size="13" fill="#fde68a">AI が初回と同じ点検。問題なしなら自動で再実行</text>
+<path d="M846 375 H1064" stroke="#94a3b8" stroke-width="3" fill="none" stroke-dasharray="7 6" marker-end="url(#ar)"/>
 <rect x="1068" y="330" width="72" height="90" rx="14" fill="url(#ok)" filter="url(#sh)"/><text x="1104" y="384" font-size="22" fill="#fff" font-weight="700" text-anchor="middle">実行</text>
 <rect x="60" y="470" width="530" height="90" rx="16" fill="#ffffff" fill-opacity=".08" stroke="#475569"/>
 <text x="84" y="505" font-size="17" fill="#fff" font-weight="700">承認の記録と台帳</text>

@@ -41,10 +41,10 @@
 <text x="304" y="366" font-size="17" fill="#fff" font-weight="700">1. Unchanged?</text>
 <text x="304" y="394" font-size="12" fill="#86efac">First run: recorded, runs</text>
 <path d="M472 375 H500" stroke="#94a3b8" stroke-width="3" fill="none" marker-end="url(#ar)"/>
-<rect x="504" y="330" width="300" height="90" rx="14" fill="url(#ng)" filter="url(#sh)"/>
-<text x="520" y="366" font-size="17" fill="#fff" font-weight="700">If changed, blocked once</text>
-<text x="520" y="394" font-size="13" fill="#fde68a">Shows a diff. Resend to run</text>
-<path d="M806 375 H1064" stroke="#94a3b8" stroke-width="3" fill="none" stroke-dasharray="7 6" marker-end="url(#ar)"/>
+<rect x="504" y="330" width="340" height="90" rx="14" fill="url(#ng)" filter="url(#sh)"/>
+<text x="520" y="366" font-size="17" fill="#fff" font-weight="700">If changed, stopped once</text>
+<text x="520" y="394" font-size="13" fill="#fde68a">AI checks it like a first run; clean = re-run</text>
+<path d="M846 375 H1064" stroke="#94a3b8" stroke-width="3" fill="none" stroke-dasharray="7 6" marker-end="url(#ar)"/>
 <rect x="1068" y="330" width="72" height="90" rx="14" fill="url(#ok)" filter="url(#sh)"/><text x="1104" y="384" font-size="22" fill="#fff" font-weight="700" text-anchor="middle">Runs</text>
 <rect x="60" y="470" width="530" height="90" rx="16" fill="#ffffff" fill-opacity=".08" stroke="#475569"/>
 <text x="84" y="505" font-size="17" fill="#fff" font-weight="700">Approval record and ledger</text>

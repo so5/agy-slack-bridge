@@ -44,7 +44,8 @@ Slack からの操作方法は [usage.md](usage.md) の「Managing permissions f
 
 - 拒否された操作に付く承認ボタン「許可して再実行」は、その会話の間だけの一時許可で、その**プロジェクトの** `permissionGrants.allow` に即座に書かれ、同時に bridge の state DB（`temp_grants`、会話単位）にも記録される。
   - 1 回失敗しても外さない。その会話が「エラーなし」で終わった（clean turn）時点で、同じプロジェクトの他の会話がまだ必要としていなければ外す。
-  - 会話が 1 時間（`AGY_TEMP_GRANT_MAX_AGE_SEC`）以上動いていない場合も、外す（同じ「同一プロジェクト内で他に使ってないか」の確認付き）。
+  - 許可から 1 時間（`AGY_TEMP_GRANT_MAX_AGE_SEC`）たった場合も、外す（同じ「同一プロジェクト内で他に使ってないか」の確認付き）。
+  - スクリプトを実行するコマンドの一時許可（自動許可、ボタンの許可）は、「エラーなし」のターンでは外さず、この時間切れで外します（[許可ボタンの前の自動チェック](#許可ボタンの前の自動チェックai)）。
 - 恒久許可は、ボタンではなく `/agy-permissions add` で行う。同じ**プロジェクトの** `permissionGrants.allow` に書かれたままになる。スクリプトなら、設定ディレクトリの台帳 `permanent.json` に seal も入る。
 - 使われた回数は、`permission_log` に記録される。`/agy-permissions stats` で見られる（記録は `telemetry` の `permission_stats` で切り替え）。
 - 停滞の検知（silent denial）: agy が「DONE・出力なし」で終わった `run_command` は、拒否と誤判定されうる。すでに許可済みのエントリと一致する場合は、拒否扱いしない。

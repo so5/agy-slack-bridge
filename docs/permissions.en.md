@@ -44,7 +44,8 @@ Several projects may use the same script (such as `gdrive_cli.py`), but that is 
 
 - The approval button on a denied action (「許可して再実行」) is a temporary grant for that conversation; it writes immediately to the **project's** `permissionGrants.allow`, and is also recorded in the bridge's state DB (`temp_grants`, per conversation).
   - It is not removed after a single failure. It is removed when that conversation ends without errors (a clean turn), provided no other conversation in the same project still needs it.
-  - It is also removed if the conversation has been inactive for 1 hour (`AGY_TEMP_GRANT_MAX_AGE_SEC`) or more (with the same check of whether anything else in the same project is using it).
+  - It is also removed 1 hour (`AGY_TEMP_GRANT_MAX_AGE_SEC`) after it was granted (with the same check of whether anything else in the same project is using it).
+  - Temporary grants for commands that run a script (automatic or by button) are not removed at a clean turn; only by this time limit (see [Automatic check before the permission button](#automatic-check-before-the-permission-button-ai)).
 - A permanent grant is made with `/agy-permissions add`, not with a button. It leaves the entry written in the same **project's** `permissionGrants.allow`. For a script, a seal is also stored in the ledger `permanent.json` in the config directory.
 - The number of times each grant is used is recorded in `permission_log`. You can view it with `/agy-permissions stats` (recording is toggled by `permission_stats` under `telemetry`).
 - Stall detection (silent denial): a `run_command` for which agy finishes with "DONE, no output" can be misjudged as a denial. If it matches an already-allowed entry, it is not treated as a denial.
