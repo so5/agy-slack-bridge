@@ -1821,8 +1821,8 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
             notes.append(f":white_check_mark: `{name}`: 実害の出る操作は見つかりませんでした。{cut}")
         elif res["outcome"] == "intended":
             ops = "".join(f"\n  • {o}" for o in res["operations"])
-            notes.append(f":white_check_mark: `{name}`: 実害の出うる操作がありますが、依頼に必要な処理のようです。{cut}"
-                         f"\n見つかった操作:{ops}")
+            notes.append(f":white_check_mark: `{name}`: 次の操作を行なうスクリプトを実行しようとしています。{cut}"
+                         f"{ops}")
         else:
             lines = "".join(f"\n  • {r}" for r in res["reasons"] or res["operations"])
             note = f":warning: `{name}` は、依頼と合わない処理を含む可能性があります。{cut}{lines}"
