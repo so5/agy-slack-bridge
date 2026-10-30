@@ -1767,6 +1767,16 @@ def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": c}} for c in chunks]
 
 
+# Entries the person refused with the "拒否" button, per conversation: asked for again in the same
+# conversation they are refused without a review or a button (until restart or /agy-permissions add).
+_USER_DENIED: dict = {}
+
+
+def _remember_user_denial(conversation_id: Optional[str], entries: list) -> None:
+    if conversation_id:
+        _USER_DENIED.setdefault(conversation_id, set()).update(e for e in entries if isinstance(e, str))
+
+
 # Entries that run a script and were allowed in a conversation (automatically, or by a click) stay
 # allowed until the age sweep (AGY_TEMP_GRANT_MAX_AGE_SEC) instead of at the first clean turn, so
 # running the same script again in that conversation is not asked again. Lost on restart, which
@@ -2242,6 +2252,19 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
     # or offered a button like a denied one): the hook already updated its ledger, so the
     # same command passes it from here on. It is never "stuck" - it may well be allowed already.
     permission_errors.extend(script_changed_errors)
+
+    # Already refused by the person in this conversation: refuse again, no review, no button.
+    refused = _USER_DENIED.get(conversation_id) or set()
+    refused_errors = [e for e in permission_errors if (_grantable_entry(e) or {}).get("entry") in refused]
+    if refused_errors:
+        permission_errors = [e for e in permission_errors if e not in refused_errors]
+        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in refused_errors)
+        parts.append(
+            ":no_entry_sign: 先ほどあなたが拒否したため、自動で拒否しました（ボタンは出しません）:\n"
+            f"{lines}\n許可したいときは、`/agy-permissions add <エントリ>` で明示的に許可してください。"
+        )
+        store.log_permission(channel_id, conversation_id, "refused_auto",
+                              [(_grantable_entry(e) or {}).get("entry") or "?" for e in refused_errors])
 
     # other_errors (no buttons) is deliberately placed *before*
     # permission_errors (which gets buttons) in the text, not after -
@@ -2731,6 +2754,7 @@ def build_app() -> App:
         log.info("denied grant for %r by user=%s", describe, clicker)
         store.log_permission(ctx["channel_id"], ctx.get("conversation_id"), "denied",
                               payload.get("entries") or [describe], clicker)
+        _remember_user_denial(ctx.get("conversation_id"), payload.get("entries") or [])
 
         # Deliberately no agy turn here: the permission_errors text this
         # button was attached to already told agy everything it knows about

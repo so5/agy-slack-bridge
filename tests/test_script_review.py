@@ -394,3 +394,20 @@ def test_clear_temp_grants_keeps_the_kept_entries(tmp_path):
     store.add_temp_grant("c1", "command(ls)")
     assert store.clear_temp_grants("c1", "a", keep={"command(x)"}) == ["command(ls)"]
     assert store.clear_temp_grants("c1", "a") == ["command(x)"]
+
+
+def test_entry_the_person_refused_is_refused_again_in_that_conversation(project, monkeypatch):
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
+           "message": "user denied permission to run"}
+    bridge._USER_DENIED.clear()
+    bridge._remember_user_denial("c1", ["command(python3 scratch/a.py)"])
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
+    client, store, perms = _drive(monkeypatch, project, "harmless", [_agy_result([err])])
+    assert perms.entries == [] and store.retries == [] and store.temp == []
+    assert any("拒否したため、自動で拒否" in p for p in client.posts)
+    assert ("refused_auto", ["command(python3 scratch/a.py)"]) in store.logged
+    bridge._USER_DENIED.clear()
+    bridge._remember_user_denial("other", ["command(python3 scratch/a.py)"])      # another conversation: asked as usual
+    client, store, perms = _drive(monkeypatch, project, "needs_review", [_agy_result([err])], reasons=["r"])
+    assert len(store.retries) == 1
+    bridge._USER_DENIED.clear()
