@@ -1790,15 +1790,19 @@ def _script_listing(text: str, truncated: bool) -> str:
 
 
 def _review_scripts(permission_errors: list[dict], project_id: str, user_request: str,
-                    summary: bool, permissions: "ProjectPermissionsFile") -> list[str]:
+                    summary: bool, permissions: "ProjectPermissionsFile") -> tuple[list[str], list[dict]]:
     """Before the grant buttons go out, reviews every script the denied commands would
     run (tools/script_review.py: harm check, then intent check, then summary) and
-    returns short notes to show above the buttons. Every command keeps its button -
-    the review only informs the person pressing it. A review failure adds a
-    "not checked" note."""
+    returns (short notes to show above the buttons, errors to grant automatically).
+    A command whose script passed stage 1 completely (nothing harmful, whole script
+    checked) is returned in the second list: the caller grants it for this
+    conversation only, without a button. Every other command keeps its button and the
+    review only informs the person pressing it. A review failure adds a "not checked"
+    note and never grants anything."""
     root = _project_root(project_id)
     file_rules = _file_rules(project_id, permissions)
     notes: list[str] = []
+    auto: list[dict] = []
     for err in permission_errors:
         grantable = _grantable_entry(err)
         path = None
@@ -1818,8 +1822,10 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
         log.info("script review %s: %s ops=%r reasons=%r", path, res["outcome"], res["operations"], res["reasons"])
         cut = "（長いため先頭のみ検査）" if res["truncated"] else ""
         if res["outcome"] == "harmless":
-            if cut:      # nothing to say, except that the check was only partial
+            if cut:      # only part of it was checked: not enough to skip the person
                 notes.append(f":grey_question: `{name}` は長いため、先頭のみ自動チェックしました。")
+            else:
+                auto.append(err)
         elif res["outcome"] == "intended":
             ops = "".join(f"\n  • {o}" for o in res["operations"])
             notes.append(f":white_check_mark: `{name}`: 次の操作を行なうスクリプトを実行しようとしています。{cut}"
@@ -1833,7 +1839,7 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
                 note += "\n" + _script_listing(res["script_text"], res["truncated"])
             note += "\n（AI の判定です。内容を確認して、許可するか決めてください）"
             notes.append(note)
-    return notes
+    return notes, auto
 
 
 def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str) -> list[dict]:
@@ -1907,6 +1913,9 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
     return blocks
 
 
+# How many times in a row one message may be re-run after an automatic temporary grant
+# (see _review_scripts) before the person is asked after all.
+AUTO_GRANT_CHAIN_LIMIT = 5
 GREY_QUESTION_AUTO_RETRIES = 2
 # The model (esp. the Flash tier) sometimes ends a turn with an empty response
 # right after a tool result, mid-task. If the turn still ran tools, the task
@@ -1922,6 +1931,12 @@ GREY_QUESTION_PROGRESS_RETRIES = 5
 DENIAL_BUTTON_LIMIT = 3
 DENIAL_BUTTON_WINDOW_SEC = 600
 _denial_log: dict = {}
+
+
+def _denial_throttle_reached(conversation_id: str) -> bool:
+    """Whether the limit is already hit, without counting this turn."""
+    now = time.time()
+    return len([t for t in _denial_log.get(conversation_id, []) if now - t < DENIAL_BUTTON_WINDOW_SEC]) >= DENIAL_BUTTON_LIMIT
 
 
 def _denial_buttons_throttled(conversation_id: str) -> bool:
@@ -2083,7 +2098,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                     remember_text: Optional[str] = None,
                     auto_retries_left: int = GREY_QUESTION_AUTO_RETRIES,
                     progress_retries_left: int = GREY_QUESTION_PROGRESS_RETRIES,
-                    model: Optional[str] = None, effort: Optional[str] = None) -> None:
+                    model: Optional[str] = None, effort: Optional[str] = None,
+                    auto_grants_left: int = AUTO_GRANT_CHAIN_LIMIT) -> None:
     """Runs one agy turn and posts the reply, attaching permission-grant
     buttons if a run_command call got denied. Shared by the normal message
     handler and by the grant_once/grant_permanent retry flow.
@@ -2237,12 +2253,25 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         )
         store.log_permission(channel_id, conversation_id, "stuck",
                               [_describe_tool_error(e) for e, _ in stuck_errors])
-    buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     review_notes: list[str] = []
-    if permission_errors and not buttons_throttled:
-        review_notes = _review_scripts(
+    auto_errors: list[dict] = []
+    if permission_errors and not _denial_throttle_reached(conversation_id):
+        review_notes, auto_errors = _review_scripts(
             permission_errors, project_id, remember_text if remember_text is not None else text,
             _script_summary_enabled(channel_id), permissions)
+    auto_entries: list[str] = []
+    if auto_errors and auto_grants_left > 0:
+        for e in auto_errors:
+            g = _grantable_entry(e)
+            if g and g["entry"] not in auto_entries:
+                auto_entries.append(g["entry"])
+                if permissions.add_entry(project_id, g["entry"]):
+                    store.add_temp_grant(conversation_id, g["entry"])
+        store.log_permission(channel_id, conversation_id, "granted_auto", auto_entries)
+        permission_errors = [e for e in permission_errors if e not in auto_errors]
+        review_notes.insert(0, ":zap: 実害の出る操作が見つからなかったため、この会話の間だけ自動で許可しました:\n"
+                               + "\n".join(f"  • `{a}`" for a in auto_entries))
+    buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
         lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors)
@@ -2262,6 +2291,22 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
             )
     if review_notes:
         parts.append("\n".join(review_notes))
+    if auto_entries and not permission_errors and not other_errors and not blocked_errors and not stuck_errors:
+        # Everything that was denied has been granted automatically: say so and run it again.
+        client.chat_postMessage(channel=channel_id, thread_ts=thread_key,
+                                text="\n".join(review_notes), **persona_kwargs)
+        describe = ", ".join(auto_entries)
+        retry_prompt = (
+            f"(先ほど拒否された次の操作が許可されました。実行してください: `{describe}`)\n\n"
+            f"{remember_text if remember_text is not None else text}"
+        )
+        _run_and_reply(
+            client, store, permissions, channel_id, thread_key, project_id, conversation_id,
+            retry_prompt, persona_kwargs, status_text="自動で許可して再実行しています...",
+            remember_text=remember_text if remember_text is not None else text,
+            model=model, effort=effort, auto_grants_left=auto_grants_left - 1,
+        )
+        return
     if not tool_errors and result.get("denied_actions") and not result.get("response"):
         # Confirmed by testing (see GREY_QUESTION_AUTO_RETRIES and the log
         # analysis behind its value): this situation usually clears up on
@@ -2289,7 +2334,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                 remember_text=remember_text if remember_text is not None else text,
                 auto_retries_left=auto_retries_left if made_progress else auto_retries_left - 1,
                 progress_retries_left=progress_retries_left - 1 if made_progress else progress_retries_left,
-                model=model, effort=effort,
+                model=model, effort=effort, auto_grants_left=auto_grants_left,
             )
             return
 

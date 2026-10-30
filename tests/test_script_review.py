@@ -157,25 +157,29 @@ def _res(outcome, **kw):
 def test_notes_per_outcome(project, monkeypatch):
     err = [_err("python3 scratch/a.py")]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless"))
-    assert bridge._review_scripts(err, "p", "r", True, PERMS) == []          # the normal button, nothing added
+    notes, auto = bridge._review_scripts(err, "p", "r", True, PERMS)
+    assert notes == [] and auto == err          # normal result: nothing added, granted without a button
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("harmless", truncated=True))
-    assert "先頭のみ" in bridge._review_scripts(err, "p", "r", True, PERMS)[0]
+    notes, auto = bridge._review_scripts(err, "p", "r", True, PERMS)
+    assert "先頭のみ" in notes[0] and auto == []
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["ファイル書き込み"]))
-    intended = bridge._review_scripts(err, "p", "r", True, PERMS)[0]
+    notes, auto = bridge._review_scripts(err, "p", "r", True, PERMS)
+    intended = notes[0]
+    assert auto == []
     assert "次の操作を行なうスクリプトを実行しようとしています" in intended and "\n  • ファイル書き込み" in intended
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(
         "needs_review", reasons=["依頼にない送信"], summary="データを送る", script_text="x```y"))
-    note = bridge._review_scripts(err, "p", "r", True, PERMS)[0]
+    note = bridge._review_scripts(err, "p", "r", True, PERMS)[0][0]
     assert "依頼にない送信" in note and "データを送る" in note and "x" in note and "最終" not in note
     assert note.count("```") == 2            # the script cannot close our code block
-    off = bridge._review_scripts(err, "p", "r", False, PERMS)[0]
+    off = bridge._review_scripts(err, "p", "r", False, PERMS)[0][0]
     assert "依頼にない送信" in off and "```" not in off
 
 
 def test_long_script_listing_is_cut(project, monkeypatch):
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(
         "needs_review", reasons=["r"], script_text="a" * 5000))
-    note = bridge._review_scripts([_err("python3 scratch/a.py")], "p", "r", True, PERMS)[0]
+    note = bridge._review_scripts([_err("python3 scratch/a.py")], "p", "r", True, PERMS)[0][0]
     assert "先頭のみ表示" in note and len(note) < 3500
 
 
@@ -183,10 +187,10 @@ def test_failure_note_and_non_scripts(project, monkeypatch):
     def boom(*a, **k):
         raise bridge.script_review.ReviewError("timeout")
     monkeypatch.setattr(bridge.script_review, "review", boom)
-    notes = bridge._review_scripts([_err("python3 scratch/a.py"), _err("git status")], "p", "r", True, PERMS)
-    assert len(notes) == 1 and "自動チェックできませんでした" in notes[0]
+    notes, auto = bridge._review_scripts([_err("python3 scratch/a.py"), _err("git status")], "p", "r", True, PERMS)
+    assert len(notes) == 1 and "自動チェックできませんでした" in notes[0] and auto == []
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
-    assert bridge._review_scripts([_err("git status")], "p", "r", True, PERMS) == []
+    assert bridge._review_scripts([_err("git status")], "p", "r", True, PERMS) == ([], [])
 
 
 def test_conversation_files_are_removed_after_each_call(monkeypatch, script, state_dir):
@@ -229,3 +233,103 @@ def test_file_rules_collects_only_file_entries(tmp_path, monkeypatch):
                                               "allow": ["read_file(/data)", "read_file(/proj/extra)"]}
     monkeypatch.setattr(bridge, "AGY_GLOBAL_SETTINGS_PATH", tmp_path / "missing.json")
     assert bridge._file_rules("p", PERMS)["deny"] == []
+
+
+# --- automatic temporary grant (stage 1 clean) ------------------------------------------
+
+class FakeClient:
+    def __init__(self):
+        self.posts = []
+
+    def chat_postMessage(self, **kw):
+        self.posts.append(kw["text"])
+
+    def assistant_threads_setStatus(self, **kw):
+        pass
+
+
+class FakeStore:
+    def __init__(self):
+        self.temp, self.logged, self.retries = [], [], []
+
+    def put(self, *a): pass
+    def put_retry(self, *a): self.retries.append(a)
+    def clear_temp_grants(self, *a): return []
+    def add_temp_grant(self, cid, entry): self.temp.append((cid, entry))
+    def log_permission(self, ch, cid, event, entries, user=None): self.logged.append((event, entries))
+
+
+class FakePermissions:
+    def __init__(self):
+        self.entries = []
+
+    def add_entry(self, pid, entry):
+        self.entries.append(entry)
+        return True
+
+    def list_entries(self, pid):
+        return list(self.entries)
+
+    def remove_entry(self, pid, entry):
+        self.entries.remove(entry)
+
+
+def _agy_result(errors, response="x"):
+    return {"status": "SUCCESS", "conversation_id": "c1", "response": response, "_tool_errors": errors,
+            "_tool_steps": 1, "num_turns": 2}
+
+
+def _drive(monkeypatch, project, outcome, results, **kw):
+    monkeypatch.setattr(bridge, "_run_with_status", lambda *a, **k: results.pop(0) if len(results) > 1 else results[0])
+    monkeypatch.setattr(bridge, "_script_summary_enabled", lambda c: True)
+    monkeypatch.setattr(bridge, "_file_rules", lambda *a: {"deny": [], "allow": []})
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(outcome, **kw))
+    bridge._denial_log.clear()
+    client, store, perms = FakeClient(), FakeStore(), FakePermissions()
+    bridge._run_and_reply(client, store, perms, "C1", "t1", "p", "c1", "依頼", {})
+    return client, store, perms
+
+
+def test_stage1_clean_script_is_granted_and_rerun_without_a_button(project, monkeypatch):
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
+           "message": "user denied permission to run"}
+    results = [_agy_result([err]), _agy_result([], response="done")]
+    client, store, perms = _drive(monkeypatch, project, "harmless", results)
+    assert perms.entries == ["command(python3 scratch/a.py)"]
+    assert store.temp == [("c1", "command(python3 scratch/a.py)")]
+    assert ("granted_auto", ["command(python3 scratch/a.py)"]) in store.logged
+    assert any("自動で許可" in p for p in client.posts) and any("done" in p for p in client.posts)
+    assert store.retries == []                       # no button was prepared
+
+
+def test_script_that_needs_review_still_gets_a_button(project, monkeypatch):
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
+           "message": "user denied permission to run"}
+    client, store, perms = _drive(monkeypatch, project, "needs_review", [_agy_result([err])], reasons=["余計な送信"])
+    assert perms.entries == [] and store.temp == [] and len(store.retries) == 1
+    assert any("余計な送信" in p for p in client.posts)
+
+
+def test_auto_grant_chain_is_bounded(project, monkeypatch):
+    def err(i):
+        return {"tool_name": "run_command", "parameters": {"CommandLine": f"python3 scratch/a.py {i}"},
+                "message": "user denied permission to run"}
+    results = [_agy_result([err(i)]) for i in range(10)]          # a new denied command every time
+    client, store, perms = _drive(monkeypatch, project, "harmless", results)
+    assert len(store.temp) == bridge.AUTO_GRANT_CHAIN_LIMIT    # then the person is asked after all
+    assert len(store.retries) == 1
+
+
+def test_over_60kb_script_gets_a_button_not_an_auto_grant(project, monkeypatch):
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
+           "message": "user denied permission to run"}
+    client, store, perms = _drive(monkeypatch, project, "harmless", [_agy_result([err])], truncated=True)
+    assert perms.entries == [] and len(store.retries) == 1
+    assert any("先頭のみ" in p for p in client.posts)
+
+
+def test_same_command_denied_again_after_auto_grant_stops_the_loop(project, monkeypatch):
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
+           "message": "user denied permission to run"}
+    client, store, perms = _drive(monkeypatch, project, "harmless", [_agy_result([err])])   # fails identically
+    assert len(store.temp) == 1 and store.retries == []            # already allowed: reported as stuck, no loop
