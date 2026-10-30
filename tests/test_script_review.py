@@ -342,3 +342,35 @@ def test_script_notes_say_the_grant_lasts_for_the_conversation(project, monkeypa
     assert bridge.SCRIPT_GRANT_NOTE in bridge._review_scripts(err, "p", "r", True, PERMS)[0][0]
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res("intended", operations=["x"]))
     assert bridge.SCRIPT_GRANT_NOTE in bridge._review_scripts(err, "p", "r", True, PERMS)[0][0]
+
+
+CHANGED = ("a.py の中身が、前回この同じコマンドを実行した時から変わっています。\n変更内容:\n--- a.py\n+print(2)\n"
+           "変更が意図したものか確認し、問題なければ同じ指示をもう一度送ってください。")
+
+
+def _changed_err(cmd="python3 scratch/a.py"):
+    return {"tool_name": "run_command", "parameters": {"CommandLine": cmd}, "message": CHANGED}
+
+
+def test_changed_script_is_reviewed_and_granted_like_a_first_run(project, monkeypatch):
+    results = [_agy_result([_changed_err()]), _agy_result([], response="done")]
+    client, store, perms = _drive(monkeypatch, project, "harmless", results)
+    assert store.temp == [("c1", "command(python3 scratch/a.py)")]
+    assert any("done" in p for p in client.posts) and store.retries == []
+    assert not any("print(2)" in p for p in client.posts)        # the diff is not shown
+
+
+def test_changed_script_with_harm_gets_a_button_and_no_diff(project, monkeypatch):
+    client, store, perms = _drive(monkeypatch, project, "needs_review", [_agy_result([_changed_err()])],
+                                  reasons=["余計な送信"])
+    assert len(store.retries) == 1 and perms.entries == []
+    text = "\n".join(client.posts)
+    assert "内容が前回から変わっています" in text and "print(2)" not in text
+
+
+def test_changed_script_already_allowed_is_not_reported_as_stuck(project, monkeypatch):
+    results = [_agy_result([_changed_err()]), _agy_result([], response="done")]
+    monkeypatch.setattr(FakePermissions, "list_entries", lambda self, pid: ["command(python3 scratch/a.py)"])
+    client, store, perms = _drive(monkeypatch, project, "harmless", results)
+    assert any("done" in p for p in client.posts)
+    assert not any("すでに許可リスト" in p for p in client.posts)

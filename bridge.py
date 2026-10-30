@@ -1080,6 +1080,8 @@ def _describe_tool_error(err: dict) -> str:
     message = err.get("message") or ""
     if "denied permission" in message.lower():
         return head  # the grant button / surrounding text already covers this one
+    if _is_script_changed_error(err):
+        return f"{head} — スクリプトの内容が前回から変わっています"   # the hook's diff isn't shown
 
     # Not a permission issue (e.g. a file edit whose target text no longer
     # matches the file) - the reason itself is the useful part here, so
@@ -1121,6 +1123,15 @@ def _is_permission_error(err: dict) -> bool:
     literally says "user denied permission ..." (to run a command, or for
     read_file(...)/read_url(...)), so anchor on that instead."""
     return "denied permission" in (err.get("message") or "").lower()
+
+
+# The wording tools/hooks/script_integrity.py uses when a non-permanent script's content changed
+# since the same command last ran (the hook stops it once; the ledger is already updated).
+_SCRIPT_CHANGED_MARK = "の中身が、前回この同じコマンドを実行した時から変わっています"
+
+
+def _is_script_changed_error(err: dict) -> bool:
+    return err.get("tool_name") == "run_command" and _SCRIPT_CHANGED_MARK in (err.get("message") or "")
 
 
 def _is_deny_rule_error(err: dict) -> bool:
@@ -2193,8 +2204,10 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
 
     permission_candidates = _dedupe([e for e in tool_errors if _is_permission_error(e)])
     blocked_errors = _dedupe([e for e in tool_errors if _is_deny_rule_error(e)])
+    script_changed_errors = _dedupe([e for e in tool_errors if _is_script_changed_error(e)])
     other_errors = _dedupe([e for e in tool_errors
-                             if not _is_permission_error(e) and not _is_deny_rule_error(e)])
+                             if not _is_permission_error(e) and not _is_deny_rule_error(e)
+                             and not _is_script_changed_error(e)])
 
     # Split off denials that only *look* like an ordinary permission gap -
     # a button offering to "grant and retry" would be actively misleading
@@ -2208,6 +2221,11 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
             stuck_errors.append((e, reason))
         else:
             permission_errors.append(e)
+
+    # A script that changed since its last run is reviewed like a first run (and then granted
+    # or offered a button like a denied one): the hook already updated its ledger, so the
+    # same command passes it from here on. It is never "stuck" - it may well be allowed already.
+    permission_errors.extend(script_changed_errors)
 
     # other_errors (no buttons) is deliberately placed *before*
     # permission_errors (which gets buttons) in the text, not after -
