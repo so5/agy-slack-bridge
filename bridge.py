@@ -1528,6 +1528,14 @@ AGY_MODELS_CACHE_TTL_SEC = 300
 AGY_MODELS_FILE_TTL_SEC = 3600
 
 
+_QUOTE_CHARS = "`\"'\u2018\u2019\u201c\u201d"
+
+
+def _strip_quotes(text: str) -> str:
+    """Drops backticks and quotes: IDs copied from the `/agy-model` list arrive wrapped in them."""
+    return text.translate({ord(c): None for c in _QUOTE_CHARS})
+
+
 def _fetch_agy_models() -> list[tuple[str, str]]:
     """The `agy models` list as (id, label). Best-effort: on any failure returns the
     last cached list (possibly empty) rather than raising, since this only feeds a UX
@@ -3087,7 +3095,7 @@ def build_app() -> App:
             respond(text="このチャンネルは agy-slack-bridge の対象外です。", response_type="ephemeral")
             return
 
-        tokens = (command.get("text") or "").split()
+        tokens = _strip_quotes(command.get("text") or "").split()
         sub = tokens[0].lower() if tokens else "list"
         rest = tokens[1:]
 

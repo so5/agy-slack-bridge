@@ -92,3 +92,8 @@ def test_promote_is_scoped_to_project(store):
     store.add_temp_grant("c2", "command(ls)")
     store.promote_temp_grant("a", "command(ls)")
     assert store.clear_temp_grants("c2", "b") == ["command(ls)"]
+
+
+def test_strip_quotes_removes_backticks_and_quotes():
+    assert bridge._strip_quotes("set `gemini-3` high") == "set gemini-3 high"
+    assert bridge._strip_quotes("set \"a\" 'b' “c” ‘d’") == "set a b c d"
