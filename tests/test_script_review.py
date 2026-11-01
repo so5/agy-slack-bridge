@@ -451,3 +451,10 @@ def test_the_installed_drive_cli_is_not_reviewed_as_a_script(project, monkeypatc
     monkeypatch.setattr(bridge, "_DRIVE_CLI_PATH", str(project / "scratch" / "a.py"))
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
     assert bridge._review_scripts([_err("python3 scratch/a.py")], "p", "r", PERMS) == ([], [], [])
+
+
+def test_script_the_agent_cannot_have_written_is_not_reviewed(project, monkeypatch):
+    monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
+    real = bridge.os.access
+    monkeypatch.setattr(bridge.os, "access", lambda p, m: False if str(p).startswith(str(project)) else real(p, m))
+    assert bridge._review_scripts([_err("python3 scratch/a.py")], "p", "r", PERMS) == ([], [], [])

@@ -1835,6 +1835,14 @@ def _summary_text(path: str, root: str, command: str) -> str:
             + _script_listing(res["script_text"], res["truncated"]))
 
 
+def _writable_by_us(path: str) -> bool:
+    """Could the agent (running as this user) have created or changed this file? Its shell
+    commands run as this user, so a file neither writable itself nor inside a writable
+    directory cannot be the agent's work."""
+    real = os.path.realpath(path)
+    return os.access(real, os.W_OK) or os.access(os.path.dirname(real), os.W_OK)
+
+
 _DRIVE_CLI_PATH = os.path.realpath(Path(__file__).resolve().parent / "tools" / "gdrive_cli.py")
 
 
@@ -1865,6 +1873,8 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
             continue
         if os.path.realpath(path) == _DRIVE_CLI_PATH:
             continue    # the installed Drive CLI is the bridge's own code (policy is enforced inside it); no review
+        if not _writable_by_us(path):
+            continue    # root-owned (/usr/local, /opt, ...): the agent cannot have written it, nothing to review
         name = os.path.relpath(path, str(root))
         noted = len(notes)
         try:
