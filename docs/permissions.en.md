@@ -85,6 +85,8 @@ Each stage is a separate agy call, run without `--project`, in an empty temporar
 
 **Redirect targets (hook)**: Because of that, the hook (`script_integrity.py`) denies, whether or not the command is allowed, a command that runs a script when its output redirection (`>` `>>` `2>` `&>`) points outside the project (`/dev/null` and `2>&1` are fine). Appending `> /tmp/x` to an allowed `python3 a.py` therefore cannot write outside; this also applies to commands allowed with the button. Appended arguments are not prevented by this.
 
+**Exempt**: the installed Drive CLI (`gdrive_cli.py`) is the bridge's own code and is not reviewed (reading the profile is its job, and folder limits are enforced inside it). The normal permission button is shown.
+
 **Limits**: it is an AI verdict. A clever script may fool it, and "not found" is not a guarantee of safety. Scripts over about 60 KB are checked only up to the first 60 KB, and the message says so. If the check fails (e.g. times out), the button is still shown with a note that it was not checked. This is not a per-run check of already-allowed scripts (that is the hook above).
 
 ## 6. MCP tools

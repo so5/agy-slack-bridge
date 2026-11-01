@@ -1835,6 +1835,9 @@ def _summary_text(path: str, root: str, command: str) -> str:
             + _script_listing(res["script_text"], res["truncated"]))
 
 
+_DRIVE_CLI_PATH = os.path.realpath(Path(__file__).resolve().parent / "tools" / "gdrive_cli.py")
+
+
 def _review_scripts(permission_errors: list[dict], project_id: str, user_request: str,
                     permissions: "ProjectPermissionsFile",
                     reviewed: "list | None" = None) -> tuple[list[str], list[dict], list[str]]:
@@ -1860,6 +1863,8 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
             path = _resolve_permanent_script_path(grantable["entry"], root)
         if not path or not os.path.isfile(path):
             continue
+        if os.path.realpath(path) == _DRIVE_CLI_PATH:
+            continue    # the installed Drive CLI is the bridge's own code (policy is enforced inside it); no review
         name = os.path.relpath(path, str(root))
         noted = len(notes)
         try:
