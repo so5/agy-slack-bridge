@@ -1,0 +1,44 @@
+[
+ {
+  "prefix": [
+   "{prefix}/.venv/bin/python",
+   "-I",
+   "{prefix}/tools/gdrive_cli.py",
+   "--profile",
+   "*",
+   "upload"
+  ],
+  "flags": [
+   "--folder"
+  ],
+  "label": "このフォルダへのアップロード"
+ },
+ {
+  "prefix": [
+   "{prefix}/.venv/bin/python",
+   "-I",
+   "{prefix}/tools/gdrive_cli.py",
+   "--profile",
+   "*",
+   "mkdir"
+  ],
+  "flags": [
+   "--parent"
+  ],
+  "label": "このフォルダへのディレクトリ作成"
+ },
+ {
+  "prefix": [
+   "{prefix}/.venv/bin/python",
+   "-I",
+   "{prefix}/tools/gdrive_cli.py",
+   "--profile",
+   "*",
+   "update"
+  ],
+  "flags": [
+   "--file"
+  ],
+  "label": "このファイルの上書き"
+ }
+]

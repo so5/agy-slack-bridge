@@ -47,6 +47,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 import agy_models  # noqa: E402
 import agy_settings  # noqa: E402
+import grant_scope  # noqa: E402
 import script_review  # noqa: E402
 import safety_stack  # noqa: E402  (tools/ sits next to bridge.py in the install directory)
 
@@ -1176,6 +1177,27 @@ def _stuck_denial_reason(err: dict, permissions: "ProjectPermissionsFile", proje
     return None
 
 
+_GRANT_SCOPE_RULES: Optional[list] = None
+
+
+def _grant_scopes() -> list:
+    """tools/grant_scopes.json (installed with the code): see tools/grant_scope.py."""
+    global _GRANT_SCOPE_RULES
+    if _GRANT_SCOPE_RULES is None:
+        here = Path(__file__).resolve().parent
+        _GRANT_SCOPE_RULES = grant_scope.load_rules(here / "tools" / "grant_scopes.json", here)
+    return _GRANT_SCOPE_RULES
+
+
+def _permission_line(err: dict) -> str:
+    """What a denied command is listed as above the buttons: the question for a command a
+    grant scope covers, else the usual description."""
+    g = _grantable_entry(err)
+    if g and g.get("label"):
+        return f"「{g['label']}」を許可しますか?\n  `{g['describe']}`"
+    return _describe_tool_error(err)
+
+
 def _grantable_entry(err: dict) -> Optional[dict]:
     """Figures out the literal permissions.allow entry that would have let
     one run_agy() tool error through, plus a short human-readable
@@ -1189,6 +1211,9 @@ def _grantable_entry(err: dict) -> Optional[dict]:
         cmd = params.get("CommandLine")
         if not cmd:
             return None
+        scope = grant_scope.match(cmd, _grant_scopes())
+        if scope:
+            return {"entry": f"command({scope['entry_command']})", "describe": cmd, "label": scope["label"]}
         return {"entry": f"command({cmd})", "describe": cmd}
 
     m = _ENTRY_IN_MESSAGE_RE.search(err.get("message") or "")
@@ -1784,9 +1809,13 @@ def _remember_user_denial(conversation_id: Optional[str], entries: list) -> None
 _KEPT_SCRIPT_GRANTS: dict = {}
 
 
-def _keep_if_script(project_id: str, conversation_id: str, entry: str) -> None:
+def _keep_for_conversation(project_id: str, conversation_id: str, entry: str) -> None:
+    """Grants for a script, or widened by a grant scope, last for the conversation (the age
+    sweep, at most an hour) instead of being released at the first clean turn."""
     root = _project_root(project_id)
-    if root is not None and _resolve_permanent_script_path(entry, root):
+    scoped = (entry.startswith("command(") and entry.endswith(")")
+              and grant_scope.is_scope_entry(entry[len("command("):-1], _grant_scopes()))
+    if scoped or (root is not None and _resolve_permanent_script_path(entry, root)):
         _KEPT_SCRIPT_GRANTS.setdefault(conversation_id, set()).add(entry)
 
 
@@ -1942,7 +1971,8 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
 
     for i, g in enumerate(entries):
         entry, describe = g["entry"], g["describe"]
-        value = json.dumps({"retry_id": retry_id, "entries": [entry], "describe": describe})
+        value = json.dumps({"retry_id": retry_id, "entries": [entry], "describe": describe,
+                            **({"label": g["label"]} if g.get("label") else {})})
         blocks.append({
             "type": "actions",
             "block_id": f"perm_{i}_{retry_id}",
@@ -2368,7 +2398,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                 auto_entries.append(g["entry"])
                 if permissions.add_entry(project_id, g["entry"]):
                     store.add_temp_grant(conversation_id, g["entry"])
-                _keep_if_script(project_id, conversation_id, g["entry"])
+                _keep_for_conversation(project_id, conversation_id, g["entry"])
         store.log_permission(channel_id, conversation_id, "granted_auto", auto_entries)
         permission_errors = [e for e in permission_errors if e not in auto_errors]
         review_notes.insert(0, ":zap: 実害の出る操作が見つからなかったため、この会話の間だけ自動で許可しました:\n"
@@ -2376,7 +2406,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
         # A reviewed script's own note says what to decide; the generic warning would only repeat it.
-        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in permission_errors if e not in reviewed_errors)
+        lines = "\n".join(f"- {_permission_line(e)}" for e in permission_errors if e not in reviewed_errors)
         if buttons_throttled:
             parts.append(
                 ":no_entry: 短時間に権限拒否が続いたため、許可ボタンを一時停止しました"
@@ -2741,12 +2771,13 @@ def build_app() -> App:
                 # different entry later in the same conversation doesn't
                 # undo it.
                 store.add_temp_grant(conversation_id, entry)
-                _keep_if_script(ctx["project_id"], conversation_id, entry)
+                _keep_for_conversation(ctx["project_id"], conversation_id, entry)
 
         if message_ts:
             client.chat_update(
                 channel=origin_channel_id, ts=message_ts,
-                text=f":gear: {label}して再実行しています... (`{describe}`)",
+                text=(f":gear: 「{payload['label']}」を許可して再実行しています... (`{describe}`)"
+                      if payload.get("label") else f":gear: {label}して再実行しています... (`{describe}`)"),
                 blocks=[],
             )
 

@@ -19,9 +19,15 @@ Slack ブリッジ経由のエージェントが Drive を読み書きするた�
     <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> read <file_id>       # テキスト化して標準出力
     <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> download <file_id>   # <プロジェクト>/scratch/gdrive/ に保存し、絶対パスを出力する
   書き込み系（毎回ユーザーの承認が要る。許可リストには入れない）:
-    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> mkdir <parent_id> <name>
-    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> upload <local_file> <folder_id> [--name <name>]
-    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> update <file_id> <local_file>
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> mkdir --parent <parent_id> <name>
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> upload --folder <folder_id> <local_file> [--name <name>]
+    <prefix>/.venv/bin/python -I <prefix>/tools/gdrive_cli.py --profile <name> update --file <file_id> <local_file>
+
+  書き込み系は、書き込み先（フォルダ ID・ファイル ID）を、サブコマンドの直後のフラグで渡す。
+  許可は前方一致なので、書き込み先までを許可の単位にして、アップロードするファイルなどを
+  任意にするため（tools/grant_scopes.json）。古い位置引数の形（mkdir <parent_id> <name>、
+  upload <local_file> <folder_id>、update <file_id> <local_file>）も受け付けるが、
+  そのまま許可には使えず、毎回の承認になる。
 
   `--profile <名前>` は固定の許可リストエントリの一部になる。名前の先は設定ファイルの中
   なので、裏の保管先を変えても、承認済みのコマンド文字列は変わらない。
@@ -478,10 +484,22 @@ def guess_mime(path):
     return mimetypes.guess_type(path)[0] or "application/octet-stream"
 
 
+def take_flag(args, flag):
+    """args が `<flag> <値>` で始まるなら (値, 残り)、そうでなければ (None, args)。"""
+    if args and args[0] == flag:
+        if len(args) < 2:
+            sys.exit(f"error: {flag} には値が必要です")
+        return args[1], args[2:]
+    return None, args
+
+
 def cmd_mkdir(service, profile, args):
-    if len(args) < 2:
-        sys.exit("usage: mkdir <parent_id> <name>")
-    parent, name = check_id(args[0]), args[1]
+    parent, args = take_flag(args, "--parent")
+    if parent is None:                      # 古い形: <parent_id> <name>
+        parent, args = (args[0], args[1:]) if args else (None, args)
+    if parent is None or len(args) < 1:
+        sys.exit("usage: mkdir --parent <parent_id> <name>")
+    parent, name = check_id(parent), args[0]
     ensure_in_allowed(service, profile, parent)
     existing = list_files(
         service,
@@ -496,15 +514,27 @@ def cmd_mkdir(service, profile, args):
     print(fmt(f))
 
 
+def upload_parts(args):
+    """upload の引数を (folder_id, local_file, 残り) に分ける。足りなければ None を返す。
+    新しい形は `--folder <folder_id> <local_file> ...`、古い形は `<local_file> <folder_id> ...`。"""
+    folder, rest = take_flag(args, "--folder")
+    if folder is not None:
+        return (folder, rest[0], rest[1:]) if rest else (None, None, [])
+    if len(args) >= 2:
+        return args[1], args[0], args[2:]
+    return None, None, []
+
+
 def cmd_upload(service, profile, args):
     from googleapiclient.http import MediaFileUpload
 
-    if len(args) < 2:
-        sys.exit("usage: upload <local_file> <folder_id> [--name <name>]")
-    local = resolve_upload_source(args[0], profile)
-    folder = check_id(args[1])
+    folder, source, rest = upload_parts(args)
+    if folder is None:
+        sys.exit("usage: upload --folder <folder_id> <local_file> [--name <name>]")
+    local = resolve_upload_source(source, profile)
+    folder = check_id(folder)
     ensure_in_allowed(service, profile, folder)
-    name = args[3] if len(args) >= 4 and args[2] == "--name" else os.path.basename(local)
+    name = rest[1] if len(rest) >= 2 and rest[0] == "--name" else os.path.basename(local)
     media = MediaFileUpload(local, mimetype=guess_mime(local), resumable=True)
     f = service.files().create(
         body={"name": name, "parents": [folder]}, media_body=media,
@@ -515,10 +545,13 @@ def cmd_upload(service, profile, args):
 def cmd_update(service, profile, args):
     from googleapiclient.http import MediaFileUpload
 
-    if len(args) < 2:
-        sys.exit("usage: update <file_id> <local_file>")
-    file_id = check_id(args[0])
-    local = resolve_upload_source(args[1], profile)
+    file_id, args = take_flag(args, "--file")
+    if file_id is None:                     # 古い形: <file_id> <local_file>
+        file_id, args = (args[0], args[1:]) if args else (None, args)
+    if file_id is None or len(args) < 1:
+        sys.exit("usage: update --file <file_id> <local_file>")
+    file_id = check_id(file_id)
+    local = resolve_upload_source(args[0], profile)
     ensure_in_allowed(service, profile, file_id)
     meta = service.files().get(fileId=file_id, fields="name, mimeType", supportsAllDrives=True).execute()
     if meta["mimeType"] == FOLDER_MIME:
@@ -551,9 +584,10 @@ NEW_FILES_DOC_URL = "https://github.com/so5/agy-slack-bridge/blob/master/tools/g
 
 def upload_target_name(args):
     """upload の引数から、Drive に作ろうとしたファイル名を求める(エラーメッセージ用)。"""
-    if len(args) >= 4 and args[2] == "--name":
-        return args[3]
-    return os.path.basename(args[0]) if args else None
+    _, source, rest = upload_parts(args)
+    if len(rest) >= 2 and rest[0] == "--name":
+        return rest[1]
+    return os.path.basename(source) if source else None
 
 
 def http_error_message(status, content, write, sa_email="?", file_name=None):

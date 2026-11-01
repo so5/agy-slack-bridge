@@ -327,8 +327,10 @@ def test_quota_error_for_an_oauth_account_means_its_own_drive_is_full():
 
 
 def test_upload_target_name_follows_the_name_option_or_the_local_basename():
-    assert g.upload_target_name(["/p/a/report.pdf", "FOLDERID1234"]) == "report.pdf"
+    assert g.upload_target_name(["/p/a/report.pdf", "FOLDERID1234"]) == "report.pdf"          # old order
     assert g.upload_target_name(["/p/a/report.pdf", "FOLDERID1234", "--name", "x.pdf"]) == "x.pdf"
+    assert g.upload_target_name(["--folder", "FOLDERID1234", "/p/a/report.pdf"]) == "report.pdf"
+    assert g.upload_target_name(["--folder", "FOLDERID1234", "/p/a/report.pdf", "--name", "x.pdf"]) == "x.pdf"
     assert g.upload_target_name([]) is None
 
 
@@ -364,3 +366,14 @@ def test_download_writes_under_the_project_and_prints_an_absolute_path(proj, mon
     g.cmd_download(service, make_profile(), [A])
     out = capsys.readouterr().out.strip()
     assert out == str(proj / "scratch/gdrive/a_b.pdf") and os.path.isfile(out)
+
+
+def test_write_commands_take_their_target_as_a_flag_and_still_read_the_old_form():
+    assert g.take_flag(["--folder", "ID", "a.pdf"], "--folder") == ("ID", ["a.pdf"])
+    assert g.take_flag(["a.pdf", "ID"], "--folder") == (None, ["a.pdf", "ID"])
+    with pytest.raises(SystemExit):
+        g.take_flag(["--folder"], "--folder")
+    assert g.upload_parts(["--folder", "ID", "a.pdf", "--name", "n"]) == ("ID", "a.pdf", ["--name", "n"])
+    assert g.upload_parts(["a.pdf", "ID", "--name", "n"]) == ("ID", "a.pdf", ["--name", "n"])
+    assert g.upload_parts(["--folder", "ID"]) == (None, None, [])
+    assert g.upload_parts([]) == (None, None, [])

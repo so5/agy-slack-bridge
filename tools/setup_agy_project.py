@@ -484,9 +484,9 @@ def gdrive_rules_text(prefix: Path, profile: str, commands: "list[str]") -> str:
             ("read", f"テキストで読む（Docs/Sheets/Slides/テキスト）: `{base} read <ファイルID>`"),
             ("download", f"取得: `{base} download <ファイルID>`（プロジェクトの `scratch/gdrive/` に保存し、絶対パスを出力する。"
                          "PDF・画像はその後 `view_file` で読める）")]
-    write = [("mkdir", f"フォルダ作成: `{base} mkdir <親フォルダID> <名前>`"),
-             ("upload", f"新規アップロード: `{base} upload <ローカルファイル> <フォルダID> [--name <名前>]`"),
-             ("update", f"内容の上書き: `{base} update <ファイルID> <ローカルファイル>`")]
+    write = [("mkdir", f"フォルダ作成: `{base} mkdir --parent <親フォルダID> <名前>`"),
+             ("upload", f"新規アップロード: `{base} upload --folder <フォルダID> <ローカルファイル> [--name <名前>]`"),
+             ("update", f"内容の上書き: `{base} update --file <ファイルID> <ローカルファイル>`")]
     r = [f"- {t}" for c, t in read if c in commands]
     w = [f"- {t}" for c, t in write if c in commands]
     out = ["---", "trigger: always_on", "---", GDRIVE_RULES_MARK, "",
