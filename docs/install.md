@@ -68,7 +68,7 @@ python3 /opt/agy-slack-bridge/tools/install.py --prefix /opt/agy-slack-bridge --
 1. 対象の指定（agy に登録済みのプロジェクトから選ぶか、新しいディレクトリのパスを入力）。
    ディレクトリが git リポジトリでなければ `git init` します（git 管理は必須です）。`git init` したリポジトリには、セットアップが作ったファイル（`.agents/`、`.gitignore`）をコミットします。既存のリポジトリには勝手にコミットせず、コミットしていないファイルがあれば警告とコマンドを表示します。`.gitignore` がある場合は、`scratch/` と `inbox/`（Slack の添付の保存先）の除外を足します（すでに記載があれば触りません）。
 2. 未登録なら `agy --new-project` で登録（モデルを 1 回呼びます）。
-3. 安全規則（`.agents/rules/agent-safety-rules.md`）、trustedWorkspaces、フックの登録。
+3. 安全規則（`.agents/rules/agent-safety-rules.md`）、trustedWorkspaces、フックの登録。安全規則のリンクの場所に別のリンクや実体のファイルが既にあれば、置き換えてよいかを聞きます（既定は No。ディレクトリは置き換えません）。確認の文には、元に戻せるか（git でコミット済みなら戻せる。未コミット・追跡外・git の外は戻せない）が出ます。バックアップは作りません。
 4. Slack チャンネルとの対応づけ（必須はチャンネル ID だけ。表示名・アイコン・モデルなどの任意項目は、続けるかを聞かれます）。
 5. Slack のトークン（未設定のとき）。
 6. （任意）Google Drive CLI を使うなら、プロファイルの作成と方針（有効なコマンド、許可フォルダ、

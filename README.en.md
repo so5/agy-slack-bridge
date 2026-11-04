@@ -150,8 +150,9 @@ The original `config.yaml` is kept as `config.yaml.bak`.
 |---|---|
 | `SLACK_BOT_TOKEN（xoxb-…）` | Paste the Bot token from step 1 (input is not echoed). Empty skips |
 | `SLACK_APP_TOKEN（xapp-…）` | Paste the App token from step 1 |
+| `設定済みのトークンを入れ直しますか?（…）` | Asked only when one of them is already set. **N** (default): keep as is. **y**: asks again for the ones already set too (empty keeps the current value). `env` is outside git, so this cannot be undone |
 
-The tokens are saved to `~/.config/agy-slack-bridge/env` (0600). Ones already set are not asked again.
+The tokens are saved to `~/.config/agy-slack-bridge/env` (0600). Ones already set are not asked again unless you answer that you want to re-enter them.
 
 #### 3-4. Google Drive CLI (optional; skip if unused)
 

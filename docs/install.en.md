@@ -71,7 +71,7 @@ in order without showing the menu.
 1. Picks the target (choose from the projects agy already knows, or enter a new directory path).
    A directory that is not a git repository gets `git init` (git is mandatory), and the files setup created (`.agents/`, `.gitignore`) are committed there. An existing repository is never committed to by setup: it prints a warning with the command if files are uncommitted. If a `.gitignore` exists, `scratch/` and `inbox/` (where Slack attachments are saved) are added to it (left alone if already mentioned).
 2. Registers it with agy (`agy --new-project`, one model call) if needed.
-3. Sets up the safety rules (`.agents/rules/agent-safety-rules.md`), trustedWorkspaces and the hook registration.
+3. Sets up the safety rules (`.agents/rules/agent-safety-rules.md`), trustedWorkspaces and the hook registration. If another link or a regular file is already where the safety-rules link goes, it asks whether to replace it (default No; a directory is never replaced). The question says whether it can be undone (committed in git: yes; uncommitted, untracked or outside git: no). No backup is made.
 4. Maps a Slack channel (only the channel ID is required; you are asked whether to continue with the optional items: display name, icon, model, ...).
 5. Asks for the Slack tokens if they are not set yet.
 6. (Optional) For the Google Drive CLI: creates the profile and sets its policy (enabled commands, allowed

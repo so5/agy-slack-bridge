@@ -147,8 +147,9 @@ python3 tools/install.py --with-gdrive      # Drive CLI を使わないなら --
 |---|---|
 | `SLACK_BOT_TOKEN（xoxb-…）` | 手順 1 の Bot トークンを貼る（入力は画面に出ません）。空欄ならスキップ |
 | `SLACK_APP_TOKEN（xapp-…）` | 手順 1 の App トークンを貼る |
+| `設定済みのトークンを入れ直しますか?（…）` | どちらかが設定済みのときだけ聞かれます。**N**（既定）: 今のまま。**y**: 設定済みのものも聞き直します（空欄なら今のまま）。`env` は git の外なので、元には戻せません |
 
-トークンは `~/.config/agy-slack-bridge/env`（0600）に保存されます。設定済みのものは聞かれません。
+トークンは `~/.config/agy-slack-bridge/env`（0600）に保存されます。設定済みのものは、入れ直すと答えない限り聞かれません。
 
 #### 3-4. Google Drive CLI（任意。使わないなら飛ばす）
 

@@ -143,12 +143,43 @@ def test_failed_registration_still_sets_up_files_but_nothing_project_specific(en
     assert channels(env) == {}
 
 
-def test_refuses_real_file_in_place_of_the_safety_rules_link(env):
+def test_real_file_in_place_of_the_safety_rules_link_is_kept_unless_confirmed(env):
     (env.target / ".agents/rules").mkdir(parents=True)
-    (env.target / ".agents/rules/agent-safety-rules.md").write_text("mine")
+    link = env.target / ".agents/rules/agent-safety-rules.md"
+    link.write_text("mine")
+    run(env)                                              # Enter = No
+    assert not link.is_symlink() and link.read_text() == "mine"
+
+
+def test_real_file_in_place_of_the_safety_rules_link_is_replaced_on_yes(env):
+    (env.target / ".agents/rules").mkdir(parents=True)
+    link = env.target / ".agents/rules/agent-safety-rules.md"
+    link.write_text("mine")
+    ask = Scripted({"agent-safety-rules.md は既に": "y"})
+    run(env, ask)
+    assert link.is_symlink() and link.resolve() == (env.prefix / "tools/agent-safety-rules.md").resolve()
+    assert any("未コミット" in q or "追跡していない" in q for q in ask.asked)   # says it cannot be undone
+
+
+def test_a_directory_in_place_of_the_link_is_never_replaced(env):
+    (env.target / ".agents/rules/agent-safety-rules.md").mkdir(parents=True)
     with pytest.raises(SystemExit):
         run(env)
-    assert (env.target / ".agents/rules/agent-safety-rules.md").read_text() == "mine"
+
+
+def test_set_tokens_are_kept_unless_confirmed(env):
+    (env.cfg / "env").write_text("SLACK_BOT_TOKEN=xoxb-old\nSLACK_APP_TOKEN=xapp-old\n")
+    run(env, Scripted(secrets={"SLACK_BOT_TOKEN": "xoxb-new"}))
+    assert "xoxb-old" in (env.cfg / "env").read_text()
+
+
+def test_set_tokens_are_replaced_on_yes_and_blank_keeps_the_old(env):
+    (env.cfg / "env").write_text("SLACK_BOT_TOKEN=xoxb-old\nSLACK_APP_TOKEN=xapp-old\n")
+    ask = Scripted({"入れ直しますか": "y"}, secrets={"SLACK_BOT_TOKEN": "xoxb-new"})
+    run(env, ask)
+    text = (env.cfg / "env").read_text()
+    assert "xoxb-new" in text and "xapp-old" in text
+    assert any("git の外" in q for q in ask.asked)
 
 
 def test_old_project_level_hook_is_removed_so_it_does_not_fire_twice(env):

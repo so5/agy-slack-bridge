@@ -226,8 +226,32 @@ class Prompter:
 
 # --- 共通の小物 ------------------------------------------------------------------
 
-def absolute_symlink(target_dir: Path, dest_rel_path: str, source: Path) -> None:
-    """target_dir/<dest_rel_path> を、source への絶対シンボリックリンクにする。"""
+def revert_note(path: Path) -> str:
+    """上書き・置き換えの確認に添える、元に戻せるかの説明。バックアップは作らない方針で、
+    git でコミット済みならそこから戻せる。それ以外(未コミットの変更、追跡外、git の外)は戻せない。"""
+    def git(*args):
+        return subprocess.run(["git", "-C", str(path.parent), *args], capture_output=True, text=True)
+    try:
+        if git("rev-parse", "--show-toplevel").returncode != 0:
+            return "git の外にあるので、元に戻せません"
+        if git("ls-files", "--error-unmatch", "--", path.name).returncode != 0:
+            return "git で追跡していないので、元に戻せません"
+        dirty = git("status", "--porcelain", "--", path.name)
+        if dirty.returncode == 0 and not dirty.stdout.strip():
+            return "コミット済みなので、git で戻せます"
+        return "未コミットの変更が失われ、元に戻せません"
+    except OSError:
+        return "git で戻せるか確認できませんでした。戻せないものとして扱ってください"
+
+
+def confirm_replace(ask: "Prompter", path: Path, label: str, current: str, proposed: str) -> bool:
+    """既にあるものを置き換えてよいか聞く(既定は No)。何から何に変わるかと、戻せるかを添える。"""
+    return ask.yes_no(f"{label} は既に {current} です。{proposed} に置き換えますか?（{revert_note(path)}）", default=False)
+
+
+def absolute_symlink(ask: "Prompter", target_dir: Path, dest_rel_path: str, source: Path) -> None:
+    """target_dir/<dest_rel_path> を、source への絶対シンボリックリンクにする。
+    既に別のもの(別のリンク先、実体のファイル)があれば、置き換えてよいか聞く。ディレクトリは触らない。"""
     dest = target_dir / dest_rel_path
     if not source.exists():
         print(f"  [スキップ] 元のファイルが無い: {source}")
@@ -236,11 +260,17 @@ def absolute_symlink(target_dir: Path, dest_rel_path: str, source: Path) -> None
         if dest.resolve() == source.resolve():
             print(f"  [OK] 既にリンク済み: {dest_rel_path}")
             return
-        sys.exit(f"エラー: {dest} は既に別のリンク先を指しています（{os.readlink(dest)}）。"
-                 "意図した切り替えなら、そのリンクを手動で削除してから再実行してください。")
-    if dest.exists():
-        sys.exit(f"エラー: {dest} は既に実体のあるファイル/ディレクトリです。"
-                 "上書きしないので、手動で確認してください。")
+        if not confirm_replace(ask, dest, dest_rel_path, f"別のリンク先（{os.readlink(dest)}）を指して", f"{source} へのリンク"):
+            print(f"  [スキップ] {dest_rel_path} は変更しません")
+            return
+        dest.unlink()
+    elif dest.is_dir():
+        sys.exit(f"エラー: {dest} は既にディレクトリです。置き換えないので、手動で確認してください。")
+    elif dest.exists():
+        if not confirm_replace(ask, dest, dest_rel_path, "実体のあるファイル", f"{source} へのリンク"):
+            print(f"  [スキップ] {dest_rel_path} は変更しません")
+            return
+        dest.unlink()
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.symlink_to(source)
     print(f"  [作成] {dest_rel_path} -> {source}")
@@ -257,16 +287,18 @@ def place_shared_copy(ask: "Prompter", target_dir: Path, dest_rel_path: str, sou
     if dest.is_symlink():
         real = dest.resolve()
         if owned.resolve() not in (real, *real.parents):
-            sys.exit(f"エラー: {dest} は既に別のリンク先を指しています（{os.readlink(dest)}）。"
-                     "意図した切り替えなら、そのリンクを手動で削除してから再実行してください。")
+            if not confirm_replace(ask, dest, dest_rel_path, f"別のリンク先（{os.readlink(dest)}）を指して", f"{source} のコピー"):
+                print(f"  [スキップ] {dest_rel_path} は変更しません")
+                return
+        else:
+            print(f"  [置換] {dest_rel_path}: 設定ディレクトリへのリンクをやめ、コピーにします（リンク先はエージェントが読めないため）")
         dest.unlink()
-        print(f"  [置換] {dest_rel_path}: 設定ディレクトリへのリンクをやめ、コピーにします（リンク先はエージェントが読めないため）")
     elif dest.exists():
         if dest.read_bytes() == data:
             print(f"  [OK] {dest_rel_path} は元のファイルと同じ")
             return
         if not ask.yes_no(f"{dest_rel_path} は元のファイル（{source}）と違います（エージェントが編集した可能性があります）。"
-                          "元のファイルで上書きしますか?", default=False):
+                          f"元のファイルで上書きしますか?（{revert_note(dest)}）", default=False):
             print(f"  [スキップ] {dest_rel_path} は変更しません")
             return
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -986,12 +1018,17 @@ def configure_tokens(ask: Prompter, env_path: Path) -> None:
         return
     text = env_path.read_text(encoding="utf-8")
     changed = False
-    for key, prefix_hint in (("SLACK_BOT_TOKEN", "xoxb-"), ("SLACK_APP_TOKEN", "xapp-")):
-        current = bridge_config.get_env_value(text, key)
-        if current and current != f"{prefix_hint}...":
-            print(f"  [OK] {key} は設定済み")
+    keys = (("SLACK_BOT_TOKEN", "xoxb-"), ("SLACK_APP_TOKEN", "xapp-"))
+    is_set = {k: bool((cur := bridge_config.get_env_value(text, k)) and cur != f"{h}...") for k, h in keys}
+    replace = False
+    if any(is_set.values()):
+        done = [k for k, _ in keys if is_set[k]]
+        print(f"  [OK] {', '.join(done)} は設定済み")
+        replace = ask.yes_no(f"設定済みのトークンを入れ直しますか?（{revert_note(env_path)}）", default=False)
+    for key, prefix_hint in keys:
+        if is_set[key] and not replace:
             continue
-        value = ask.secret(f"{key}（{prefix_hint}…）")
+        value = ask.secret(f"{key}（{prefix_hint}…）" + ("。空欄なら今のまま" if is_set[key] else ""))
         if value:
             text = bridge_config.set_env_value(text, key, value)
             changed = True
@@ -1114,7 +1151,7 @@ class Session:
             return
         print("-- 共有ファイル --")
         remove_legacy_includes(target_dir, prefix, config_dir)
-        absolute_symlink(target_dir, f"{RULES_DIR / SAFETY_RULES}", prefix / "tools" / SAFETY_RULES)
+        absolute_symlink(self.ask, target_dir, f"{RULES_DIR / SAFETY_RULES}", prefix / "tools" / SAFETY_RULES)
         for name in OPTIONAL_SHARED_FILES:
             src = config_dir / "shared" / name
             if src.exists():
