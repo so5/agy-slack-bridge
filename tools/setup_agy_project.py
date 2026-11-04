@@ -46,7 +46,9 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
      frontmatter 付き)と、あれば <設定ディレクトリ>/shared/ の local-tools.md(コピー)
      へのリンクを置く。AGENTS.md は触らない(エージェントが編集してよい)。以前のセットアップが
      作った .agents/ 直下のリンクと AGENTS.md の読み込み行は取り除く。
-     .gitignore に scratch/ の除外を追記(scratch について何も書かれていない場合のみ)。
+     .gitignore に scratch/ と inbox/(Slack の添付の保存先)の除外を追記(それぞれ、何も書かれていない場合のみ)。
+     作ったファイル(.agents/、.gitignore)は、このスクリプトが git init したリポジトリならコミットし、
+     既存のリポジトリなら、コミットしていないことを警告してコマンドを示す。
   5. Slack チャンネルとの対応づけ(config.yaml の channels。必須はチャンネル ID だけで、
      その後に任意の項目(表示名、アイコン、モデル、effort、監視する設定ファイル、統計)を
      設定するかを聞く)。
@@ -329,21 +331,60 @@ def warn_if_no_frontmatter(path: Path) -> None:
               "エラーにならずに無視され、エージェントには渡りません（実機で確認済み）。")
 
 
-def ensure_scratch_ignored(target_dir: Path) -> None:
-    """scratch/ は使い捨て置き場(agent-safety-rules.md #8)で、git で追跡する
-    必要は無い。.gitignore に scratch について一切記載が無いプロジェクトにだけ、
-    素朴な除外を足す。既に何らかの scratch ルールがあれば、導入者の意図したものとして触らない。"""
+def ensure_ignored(target_dir: Path, name: str, comment: str) -> None:
+    """`name/` を .gitignore に足す。.gitignore に name について一切記載が無いプロジェクトにだけ、
+    素朴な除外を足す。既に何らかのルールがあれば、導入者の意図したものとして触らない。"""
     gi_path = target_dir / ".gitignore"
     if not gi_path.exists():
         print("  [スキップ] .gitignore が無い")
         return
     lines = gi_path.read_text(encoding="utf-8").splitlines()
-    if any("scratch" in l for l in lines):
-        print("  [OK] .gitignore に scratch の記載が既にある（変更しない）")
+    if any(name in l for l in lines):
+        print(f"  [OK] .gitignore に {name} の記載が既にある（変更しない）")
         return
     with gi_path.open("a", encoding="utf-8") as f:
-        f.write("\n# 使い捨て作業ファイル置き場（恒久的な許可の対象にはしないこと）\nscratch/\n")
-    print("  [追加] .gitignore: scratch/")
+        f.write(f"\n# {comment}\n{name}/\n")
+    print(f"  [追加] .gitignore: {name}/")
+
+
+def ensure_scratch_ignored(target_dir: Path) -> None:
+    """scratch/ は使い捨て置き場(agent-safety-rules.md #8)で、git で追跡する必要は無い。"""
+    ensure_ignored(target_dir, "scratch", "使い捨て作業ファイル置き場（恒久的な許可の対象にはしないこと）")
+
+
+def ensure_inbox_ignored(target_dir: Path) -> None:
+    """inbox/ は bridge が Slack の添付を保存する場所で、git で追跡する必要は無い。"""
+    ensure_ignored(target_dir, "inbox", "Slack の添付の保存先（bridge が作る）")
+
+
+GENERATED_PATHS = (".agents", ".gitignore")      # セットアップが作る・書き換えるもの
+COMMIT_MESSAGE = "agy-slack-bridge: set up agent rules"
+
+
+def finish_git(target_dir: "Path | None", inited: bool) -> None:
+    """セットアップが作った・書き換えたファイル(GENERATED_PATHS)がコミットされていなければ、
+    git init したリポジトリではコミットし、既存のリポジトリでは警告とコマンドを示す
+    (既存の履歴に、勝手にコミットを足さない)。"""
+    if target_dir is None or not (target_dir / ".git").exists():
+        return
+    paths = [p for p in GENERATED_PATHS if (target_dir / p).exists() or (target_dir / p).is_symlink()]
+    status = subprocess.run(["git", "-C", str(target_dir), "status", "--porcelain", "--", *paths],
+                            capture_output=True, text=True)
+    if status.returncode != 0 or not status.stdout.strip():
+        return
+    cmd = f"git -C {target_dir} add {' '.join(paths)} && git -C {target_dir} commit -m \"{COMMIT_MESSAGE}\""
+    if inited:
+        done = subprocess.run(["git", "-C", str(target_dir), "add", "--", *paths], capture_output=True, text=True)
+        if done.returncode == 0:
+            done = subprocess.run(["git", "-C", str(target_dir), "commit", "-q", "-m", COMMIT_MESSAGE, "--", *paths],
+                                  capture_output=True, text=True)
+        if done.returncode == 0:
+            print(f"  [コミット] 新しく初期化したリポジトリに、セットアップで作ったファイルをコミットしました（{', '.join(paths)}）")
+            return
+        print(f"  [警告] 自動コミットできませんでした（{(done.stderr or done.stdout).strip()}）。次を実行してください:\n    {cmd}")
+        return
+    print(f"  [警告] セットアップで作った・書き換えたファイルが、まだコミットされていません（{', '.join(paths)}）。"
+          f"内容を確かめて、コミットしてください:\n    {cmd}")
 
 
 def register_with_hook(target_dir: Path, config_dir: Path) -> None:
@@ -1022,12 +1063,14 @@ class Session:
         self.project_json: "Path | None" = None
         self.project_id = self.project_name = None
         self.selected = False
+        self.git_inited = False
 
     # --- 対象のプロジェクト ---
     def open_project(self, target_dir: "Path | None", existing: "dict | None" = None) -> None:
         """対象を決める。ディレクトリが無ければ作り、git リポジトリでなければ git init し、
         agy に未登録なら登録する(いずれも確認なし。結果を表示する)。ルールやフックの配置は setup_files。"""
         ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
+        self.git_inited = False
         if target_dir is not None:
             if prefix == target_dir or prefix in target_dir.parents or config_dir in (target_dir, *target_dir.parents):
                 sys.exit("エラー: インストール先・設定ディレクトリの中をプロジェクトにはできません。")
@@ -1038,7 +1081,8 @@ class Session:
             if not (target_dir / ".git").exists():
                 # git 管理は必須(恒久許可コマンドの commit-before-run 判定の前提)
                 subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
-                print(f"  [git init] {target_dir} は git リポジトリではなかったので初期化しました（git 管理は必須です。コミットはしていません）")
+                self.git_inited = True
+                print(f"  [git init] {target_dir} は git リポジトリではなかったので初期化しました（git 管理は必須です）")
         else:
             print(f"=== {existing['name']}（ディレクトリ無しのプロジェクト） ===")
         self.target_dir, self.existing, self.selected = target_dir, existing, True
@@ -1079,6 +1123,8 @@ class Session:
         remove_project_hook(target_dir)
         register_with_hook(target_dir, config_dir)
         ensure_scratch_ignored(target_dir)
+        ensure_inbox_ignored(target_dir)
+        finish_git(target_dir, self.git_inited)
 
         print("-- machine-wide settings --")
         agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
@@ -1126,6 +1172,7 @@ class Session:
         enabled = configure_gdrive_profile(ask, config_dir, profile, gate)
         update_project_gdrive_allow(self.project_json, prefix, profile, enabled)
         write_gdrive_rules(ask, self.target_dir, prefix, config_dir, profile)
+        finish_git(self.target_dir, self.git_inited)
         warn_if_profile_missing(config_dir, profile)
         warn_if_gdrive_packages_missing(prefix)
 

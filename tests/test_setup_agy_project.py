@@ -1037,3 +1037,42 @@ def test_drive_setup_writes_usage_rules_with_the_exact_allowed_commands_and_deta
     rules.write_text(text)                                    # ours again (carries the marker)
     _drive_menu(env, {"選択": ["1", "7", "4", "q"], "削除しますか": "n"})
     assert not rules.exists()
+
+
+def _git_identity(monkeypatch):
+    for k, v in (("GIT_AUTHOR_NAME", "t"), ("GIT_AUTHOR_EMAIL", "t@example.com"),
+                 ("GIT_COMMITTER_NAME", "t"), ("GIT_COMMITTER_EMAIL", "t@example.com")):
+        monkeypatch.setenv(k, v)
+
+
+def _git(path, *args):
+    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True).stdout
+
+
+def test_inbox_is_ignored_like_scratch(env):
+    (env.target / ".gitignore").write_text("*.pyc\n")
+    run(env)
+    text = (env.target / ".gitignore").read_text()
+    assert "scratch/" in text and "inbox/" in text
+
+
+def test_inbox_rule_already_there_is_left_alone(env):
+    (env.target / ".gitignore").write_text("scratch/\ninbox/*\n")
+    run(env)
+    assert (env.target / ".gitignore").read_text() == "scratch/\ninbox/*\n"
+
+
+def test_generated_files_are_committed_when_setup_ran_git_init(env, tmp_path, monkeypatch):
+    _git_identity(monkeypatch)
+    other = tmp_path / "nogit"
+    other.mkdir()
+    run(env, target=other)
+    assert _git(other, "status", "--porcelain", "--", ".agents").strip() == ""
+    assert "set up agent rules" in _git(other, "log", "--oneline")
+
+
+def test_existing_repo_is_not_committed_to_but_warned(env, capsys):
+    run(env)
+    out = capsys.readouterr().out
+    assert _git(env.target, "log", "--oneline").strip() == ""      # no commit was made
+    assert "コミットされていません" in out and f"git -C {env.target} add" in out

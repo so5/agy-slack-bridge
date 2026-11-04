@@ -69,7 +69,7 @@ project menu asks 1–5 below in order (the Slack tokens are `t` in the list men
 in order without showing the menu.
 
 1. Picks the target (choose from the projects agy already knows, or enter a new directory path).
-   A directory that is not a git repository gets `git init` (git is mandatory).
+   A directory that is not a git repository gets `git init` (git is mandatory), and the files setup created (`.agents/`, `.gitignore`) are committed there. An existing repository is never committed to by setup: it prints a warning with the command if files are uncommitted. If a `.gitignore` exists, `scratch/` and `inbox/` (where Slack attachments are saved) are added to it (left alone if already mentioned).
 2. Registers it with agy (`agy --new-project`, one model call) if needed.
 3. Sets up the safety rules (`.agents/rules/agent-safety-rules.md`), trustedWorkspaces and the hook registration.
 4. Maps a Slack channel (only the channel ID is required; you are asked whether to continue with the optional items: display name, icon, model, ...).
