@@ -140,7 +140,7 @@ systemctl --user restart agy-slack-bridge.service
 4. agy の設定から、ブリッジが足したものを削除: `settings.json` の `deny`（インストール先・設定
    ディレクトリに関するもの）と各プロジェクトの `trustedWorkspaces`、`~/.gemini/config/hooks.json` の
    `script-integrity`。
-5. 各プロジェクトの `.agents/rules/agent-safety-rules.md`（リンク）と、そのプロジェクトの
+5. 各プロジェクトの `.agents/rules/agent-safety-rules.md` と `.agents/rules/tool-usage-rules.md`（どちらもリンク。後者は、組み込みのツールを先に使う・コマンドは先に調べる、という作業の規則で、安全規則とは別）と、そのプロジェクトの
    `permissionGrants` にあるブリッジ由来の許可。
 
 ## トラブルシュート

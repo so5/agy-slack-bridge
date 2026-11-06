@@ -1107,3 +1107,11 @@ def test_existing_repo_is_not_committed_to_but_warned(env, capsys):
     out = capsys.readouterr().out
     assert _git(env.target, "log", "--oneline").strip() == ""      # no commit was made
     assert "コミットされていません" in out and f"git -C {env.target} add" in out
+
+
+def test_tool_usage_rules_are_linked_next_to_the_safety_rules(env):
+    run(env)
+    link = env.target / ".agents/rules/tool-usage-rules.md"
+    assert link.is_symlink() and link.resolve() == (env.prefix / "tools/tool-usage-rules.md").resolve()
+    assert link.read_text().startswith("---\ntrigger: always_on\n---\n")
+    assert "write_file(" + str(link) not in json.dumps(settings(env))   # not a safety rule: the agent may replace the link

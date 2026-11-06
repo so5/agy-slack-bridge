@@ -142,7 +142,7 @@ Only the code is replaced; your config (`config.yaml`, `env`, state DB) is untou
 3. Delete the config dir (it holds the tokens and the state DB; keep it if you want them).
 4. Remove what the bridge added to agy's settings: the install-dir / config-dir `deny` entries and
    each project's `trustedWorkspaces` in `settings.json`, and `script-integrity` in `~/.gemini/config/hooks.json`.
-5. Each project's `.agents/rules/agent-safety-rules.md` link and any bridge-created grants in its `permissionGrants`.
+5. Each project's `.agents/rules/agent-safety-rules.md` and `.agents/rules/tool-usage-rules.md` links (the latter is a work rule, separate from the safety rules: use built-in tools first, check a command exists before calling it) and any bridge-created grants in its `permissionGrants`.
 
 ## Troubleshooting
 

@@ -42,7 +42,8 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
      と実行履歴の置き場)を作る。これがあるプロジェクトだけが、フックの対象になる。
      以前のセットアップが置いたプロジェクトごとの .agents/hooks.json のフックは外す
      (グローバルのフックと二重に動くため)。
-  4. 対象の .agents/rules/ に、安全規則(インストール先のファイルへのシンボリックリンク。
+  4. 対象の .agents/rules/ に、安全規則と、ツールの使い方の規則(tool-usage-rules.md。安全規則とは別。どちらも
+     インストール先のファイルへのシンボリックリンク。
      frontmatter 付き)と、あれば <設定ディレクトリ>/shared/ の local-tools.md(コピー)
      へのリンクを置く。AGENTS.md は触らない(エージェントが編集してよい)。以前のセットアップが
      作った .agents/ 直下のリンクと AGENTS.md の読み込み行は取り除く。
@@ -108,6 +109,7 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # ルールファイルを、エラーも出さずに無視する(実機で確認済み)。
 RULES_DIR = Path(".agents") / "rules"
 SAFETY_RULES = "agent-safety-rules.md"
+TOOL_RULES = "tool-usage-rules.md"            # ツールの使い方(安全規則とは別。インストール先へのリンク)
 # 運用者がマシンごとに用意する任意のファイル(<設定ディレクトリ>/shared/ に置く)。
 # あれば .agents/rules/ にコピーする(リンクにしない理由は place_shared_copy)。frontmatter を付けておくこと。
 OPTIONAL_SHARED_FILES = ["local-tools.md"]
@@ -1152,6 +1154,7 @@ class Session:
         print("-- 共有ファイル --")
         remove_legacy_includes(target_dir, prefix, config_dir)
         absolute_symlink(self.ask, target_dir, f"{RULES_DIR / SAFETY_RULES}", prefix / "tools" / SAFETY_RULES)
+        absolute_symlink(self.ask, target_dir, f"{RULES_DIR / TOOL_RULES}", prefix / "tools" / TOOL_RULES)
         for name in OPTIONAL_SHARED_FILES:
             src = config_dir / "shared" / name
             if src.exists():
