@@ -1109,13 +1109,13 @@ def _is_permission_error(err: dict) -> bool:
     """Distinguishes a genuine permission denial (grantable via
     permissions.allow) from some other tool failure - e.g.
     replace_file_content failing because its target text didn't match the
-    file's *current* content, or view_file failing because the model
+    file's *current* content, or read_file failing because the model
     itself gave a wrong/nonexistent path, which are real bugs elsewhere,
     not a permission problem.
 
     Checks for the specific phrase "denied permission", not just
     "permission" - confirmed live that a bare substring check is too loose
-    and produces false positives: a view_file failure's own message
+    and produces false positives: a read_file failure's own message
     ("declaring permissions: ... convert tool call for permissions: ...
     failed to read file: stat ...: no such file or directory") mentions
     "permissions" in its internal plumbing description, with nothing to do

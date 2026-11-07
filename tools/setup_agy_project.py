@@ -558,7 +558,7 @@ def gdrive_rules_text(prefix: Path, profile: str, commands: "list[str]") -> str:
             ("meta", f"情報: `{base} meta <ファイルID>`"),
             ("read", f"テキストで読む（Docs/Sheets/Slides/テキスト）: `{base} read <ファイルID>`"),
             ("download", f"取得: `{base} download <ファイルID>`（プロジェクトの `scratch/gdrive/` に保存し、絶対パスを出力する。"
-                         "PDF・画像はその後 `view_file` で読める）")]
+                         "PDF・画像はその後 `read_file` で読める）")]
     write = [("mkdir", f"フォルダ作成: `{base} mkdir --parent <親フォルダID> <名前>`"),
              ("upload", f"新規アップロード: `{base} upload --folder <フォルダID> <ローカルファイル> [--name <名前>]`"),
              ("update", f"内容の上書き: `{base} update --file <ファイルID> <ローカルファイル>`")]
