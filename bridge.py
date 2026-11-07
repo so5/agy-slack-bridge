@@ -1823,8 +1823,48 @@ def _keep_for_conversation(project_id: str, conversation_id: str, entry: str) ->
     root = _project_root(project_id)
     scoped = (entry.startswith("command(") and entry.endswith(")")
               and grant_scope.is_scope_entry(entry[len("command("):-1], _grant_scopes()))
-    if scoped or (root is not None and _resolve_permanent_script_path(entry, root)):
+    if scoped or _is_cleanup_entry(entry) or (root is not None and _resolve_permanent_script_path(entry, root)):
         _KEPT_SCRIPT_GRANTS.setdefault(conversation_id, set()).add(entry)
+
+
+_SCRATCH_CLEAN_PATH = Path(__file__).resolve().parent / "tools" / "scratch_clean.py"
+
+
+def _is_cleanup_entry(entry: str) -> bool:
+    return entry.startswith("command(") and f" -I {_SCRATCH_CLEAN_PATH} --root " in entry
+
+
+def _cleanup_for(project_id: str, entries: list) -> Optional[dict]:
+    """The deletion grant that goes with allowing a script the agent made under the project's
+    scratch/: {"entry", "prefix"}, or None. `rm` cannot be granted for one path (agy's prefix match
+    lets more paths follow), so the grant is for tools/scratch_clean.py, which checks its own
+    arguments, with the project root fixed in the granted prefix."""
+    root = _project_root(project_id)
+    if root is None:
+        return None
+    scratch = os.path.realpath(root / "scratch")
+    for entry in entries:
+        path = _resolve_permanent_script_path(entry, root)
+        if path and os.path.realpath(path).startswith(scratch + os.sep) and _writable_by_us(path):
+            py = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
+            parts = [str(py), "-I", str(_SCRATCH_CLEAN_PATH), "--root", str(root)]
+            if any(re.search(r"\s", x) or _SHELL_SYNTAX.search(x) for x in parts):
+                return None
+            prefix = " ".join(parts)
+            return {"entry": f"command({prefix})", "prefix": prefix}
+    return None
+
+
+def _cleanup_note(cleanup: dict) -> str:
+    return (f"(使い終わった `scratch/` のスクリプトを削除するときは、`rm` ではなく、必ず次の形で実行してください: "
+            f"`{cleanup['prefix']} <削除するパス>`)\n")
+
+
+def _grant_cleanup(store: "ThreadStore", permissions: "ProjectPermissionsFile", project_id: str,
+                   conversation_id: str, cleanup: dict) -> None:
+    if permissions.add_entry(project_id, cleanup["entry"]):
+        store.add_temp_grant(conversation_id, cleanup["entry"])
+    _keep_for_conversation(project_id, conversation_id, cleanup["entry"])
 
 
 _SHELL_SYNTAX = re.compile(r"[<>|&;`$(){}\n]")
@@ -2408,9 +2448,13 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                     store.add_temp_grant(conversation_id, g["entry"])
                 _keep_for_conversation(project_id, conversation_id, g["entry"])
         store.log_permission(channel_id, conversation_id, "granted_auto", auto_entries)
+        auto_cleanup = _cleanup_for(project_id, auto_entries)
+        if auto_cleanup:
+            _grant_cleanup(store, permissions, project_id, conversation_id, auto_cleanup)
         permission_errors = [e for e in permission_errors if e not in auto_errors]
         review_notes.insert(0, ":zap: 実害の出る操作が見つからなかったため、この会話の間だけ自動で許可しました:\n"
-                               + "\n".join(f"  • `{a}`" for a in auto_entries) + f"\n{SCRIPT_GRANT_NOTE}")
+                               + "\n".join(f"  • `{a}`" for a in auto_entries) + f"\n{SCRIPT_GRANT_NOTE}"
+                               + ("\n（実行後に、`scratch/` のスクリプトを削除することも許可しています）" if auto_cleanup else ""))
     if permission_errors:
         log.warning("agy permission errors: %r (buttons throttled=%s)", permission_errors, buttons_throttled)
         # A reviewed script's own note says what to decide; the generic warning would only repeat it.
@@ -2437,7 +2481,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                                 text="\n".join(review_notes), **persona_kwargs)
         describe = ", ".join(auto_entries)
         retry_prompt = (
-            f"(先ほど拒否された次の操作が許可されました。実行してください: `{describe}`)\n\n"
+            f"(先ほど拒否された次の操作が許可されました。実行してください: `{describe}`)\n"
+            + (_cleanup_note(auto_cleanup) if auto_cleanup else "") + "\n"
             f"{remember_text if remember_text is not None else text}"
         )
         _run_and_reply(
@@ -2781,11 +2826,16 @@ def build_app() -> App:
                 store.add_temp_grant(conversation_id, entry)
                 _keep_for_conversation(ctx["project_id"], conversation_id, entry)
 
+        cleanup = None if permanent else _cleanup_for(ctx["project_id"], entries)
+        if cleanup:
+            _grant_cleanup(store, permissions, ctx["project_id"], conversation_id, cleanup)
+
         if message_ts:
             client.chat_update(
                 channel=origin_channel_id, ts=message_ts,
                 text=(f":gear: 「{payload['label']}」を許可して再実行しています... (`{describe}`)"
-                      if payload.get("label") else f":gear: {label}して再実行しています... (`{describe}`)"),
+                      if payload.get("label") else f":gear: {label}して再実行しています... (`{describe}`)")
+                     + ("\n（実行後に、`scratch/` のスクリプトを削除することも許可しています）" if cleanup else ""),
                 blocks=[],
             )
 
@@ -2797,7 +2847,8 @@ def build_app() -> App:
         # around it. Prefix an explicit instruction naming what was just
         # allowed, so the retry actually exercises the grant.
         retry_prompt = (
-            f"(先ほど拒否された次の操作が許可されました。実行してください: `{describe}`)\n\n"
+            f"(先ほど拒否された次の操作が許可されました。実行してください: `{describe}`)\n"
+            + (_cleanup_note(cleanup) if cleanup else "") + "\n"
             f"{ctx['prompt_text']}"
         )
 

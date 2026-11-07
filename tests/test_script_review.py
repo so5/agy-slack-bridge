@@ -256,23 +256,24 @@ class FakeClient:
 
 class FakeStore:
     def __init__(self):
-        self.temp, self.logged, self.retries = [], [], []
+        self.temp, self.logged, self.retries, self.cleanup = [], [], [], []
 
     def put(self, *a): pass
     def put_retry(self, *a): self.retries.append(a)
     def clear_temp_grants(self, cid, pid, keep=()):
         self.cleared_keep = set(keep)
         return []
-    def add_temp_grant(self, cid, entry): self.temp.append((cid, entry))
+    def add_temp_grant(self, cid, entry):
+        (self.cleanup if bridge._is_cleanup_entry(entry) else self.temp).append((cid, entry))
     def log_permission(self, ch, cid, event, entries, user=None): self.logged.append((event, entries))
 
 
 class FakePermissions:
     def __init__(self):
-        self.entries = []
+        self.entries, self.cleanup = [], []
 
     def add_entry(self, pid, entry):
-        self.entries.append(entry)
+        (self.cleanup if bridge._is_cleanup_entry(entry) else self.entries).append(entry)
         return True
 
     def list_entries(self, pid):
@@ -458,3 +459,37 @@ def test_script_the_agent_cannot_have_written_is_not_reviewed(project, monkeypat
     real = bridge.os.access
     monkeypatch.setattr(bridge.os, "access", lambda p, m: False if str(p).startswith(str(project)) else real(p, m))
     assert bridge._review_scripts([_err("python3 scratch/a.py")], "p", "r", PERMS) == ([], [], [])
+
+
+# --- deleting the script afterwards: scratch_clean.py is granted with the script ---------
+
+def test_cleanup_is_granted_with_an_auto_granted_scratch_script(project, monkeypatch):
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
+           "message": "user denied permission to run"}
+    results = [_agy_result([err]), _agy_result([], response="done")]
+    client, store, perms = _drive(monkeypatch, project, "harmless", results)
+    (entry,) = perms.cleanup
+    assert entry.startswith("command(") and f"scratch_clean.py --root {project})" in entry
+    assert store.cleanup == [("c1", entry)]
+    assert any("削除することも許可" in p for p in client.posts)
+    assert entry in bridge._KEPT_SCRIPT_GRANTS["c1"]               # lasts for the conversation, not the first clean turn
+
+
+def test_cleanup_only_for_scratch_scripts_we_could_have_written(project, monkeypatch):
+    (project / "scripts").mkdir()
+    (project / "scripts" / "b.py").write_text("print(2)")
+    assert bridge._cleanup_for("p", ["command(python3 scripts/b.py)"]) is None      # not under scratch/
+    assert bridge._cleanup_for("p", ["command(ls -la)"]) is None                     # not a script
+    assert bridge._cleanup_for("p", ["read_file(/x)"]) is None
+    got = bridge._cleanup_for("p", ["command(python3 scratch/a.py)"])
+    assert got["prefix"].endswith(f"--root {project}") and "-I" in got["prefix"]
+    monkeypatch.setattr(bridge, "_writable_by_us", lambda path: False)
+    assert bridge._cleanup_for("p", ["command(python3 scratch/a.py)"]) is None
+
+
+def test_cleanup_is_not_offered_when_the_root_has_a_space(project, monkeypatch):
+    spaced = project / "my project"
+    (spaced / "scratch").mkdir(parents=True)
+    (spaced / "scratch" / "a.py").write_text("x")
+    monkeypatch.setattr(bridge, "_project_root", lambda pid: spaced)
+    assert bridge._cleanup_for("p", ["command(python3 scratch/a.py)"]) is None

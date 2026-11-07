@@ -51,6 +51,17 @@ Several projects may use the same script (such as `gdrive_cli.py`), but that is 
 - The number of times each grant is used is recorded in `permission_log`. You can view it with `/agy-permissions stats` (recording is toggled by `permission_stats` under `telemetry`).
 - Stall detection (silent denial): a `run_command` for which agy finishes with "DONE, no output" can be misjudged as a denial. If it matches an already-allowed entry, it is not treated as a denial.
 
+### Deleting scripts (`scratch_clean.py`)
+
+When a script under `scratch/` (one the agent made) is temporarily allowed (by the button, or automatically after the check), a deletion grant is issued with it, also as a temporary grant for the same conversation. `rm` is not used: because of prefix matching, `rm <allowed path> <another path>` would also pass. The installed `tools/scratch_clean.py` is used instead.
+
+- The grant is `command(<python> -I <install dir>/tools/scratch_clean.py --root <project path>)`. The project path is part of the grant, so another directory's `scratch/` is out of reach.
+- `scratch_clean.py` does the checking. It can remove only things under `scratch/` (regular files, directories, sockets, anything; directories with their contents). `scratch/` itself cannot be removed.
+- Each path is resolved except for its last name, and must then be under `scratch/`. If the last name is a symlink, the link itself is removed (the target is never removed, wherever it is). Links inside a removed directory are not followed either; only the links themselves go.
+- All arguments are checked first; if any one fails, nothing is removed. Arguments starting with `-` are refused.
+- The lifetime is that of the script's temporary grant (the conversation, at most one hour). It is never added to permanent grants.
+- The agent is told to call it in this form in the retry prompt.
+
 ## 5. Permanently allowed scripts (seal)
 
 ![How scripts are checked](images/script-check.en.svg)
