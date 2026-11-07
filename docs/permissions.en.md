@@ -60,7 +60,7 @@ When a script under `scratch/` (one the agent made) is temporarily allowed (by t
 - Each path is resolved except for its last name, and must then be under `scratch/`. If the last name is a symlink, the link itself is removed (the target is never removed, wherever it is). Links inside a removed directory are not followed either; only the links themselves go.
 - All arguments are checked first; if any one fails, nothing is removed. Arguments starting with `-` are refused.
 - The lifetime is that of the script's temporary grant (the conversation, at most one hour). It is never added to permanent grants.
-- The agent is told to call it in this form in the retry prompt.
+- The agent is told to call it in this form by safety rule 8 and by the retry prompt (which gives the exact command line).
 
 ## 5. Permanently allowed scripts (seal)
 
