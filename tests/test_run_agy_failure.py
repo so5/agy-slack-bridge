@@ -65,3 +65,36 @@ def test_agy_runs_in_the_project_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, "_project_root", lambda pid: None)
     bridge.run_agy("hi", "proj", None)
     assert seen["cwd"] is None                        # unknown project: unchanged behaviour
+
+
+_ERR = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 17h2m45s."
+
+
+def _quota_stream(command="python scratch/x.py"):
+    import json as _j
+    step = {"event": "step_update", "step_update": {"step_index": 318, "state": "DONE", "step_type": "tool",
+            "tool_name": "run_command", "tool_info": {"name": "run_command", "parameters": {"CommandLine": command}}}}
+    res = {"event": "result", "result": {"conversation_id": "c1", "status": "ERROR", "response": "",
+           "error": _ERR, "denied_actions": [{"action": "command", "display_name": "Bash"}]}}
+    return "\n".join(_j.dumps(e) for e in (step, res))
+
+
+def test_nonzero_exit_with_a_result_keeps_the_denial_of_the_same_run(monkeypatch):
+    result = _run(monkeypatch, _quota_stream(), f"error: {_ERR}", 3)
+    assert result["status"] == "ERROR" and result["_exit_code"] == 3
+    assert [e["parameters"]["CommandLine"] for e in result["_tool_errors"]] == ["python scratch/x.py"]
+
+
+def test_nonzero_exit_without_denied_actions_adds_no_denial(monkeypatch):
+    out = _quota_stream().replace('"denied_actions": [{"action": "command", "display_name": "Bash"}]', '"x": 1')
+    assert _run(monkeypatch, out, f"error: {_ERR}", 3)["_tool_errors"] == []
+
+
+def test_quota_text_names_the_model_and_flags_a_repeated_error():
+    bridge._LAST_QUOTA_ERROR.clear()
+    first = bridge._agy_failure_text(_ERR, "gemini-3.8-flash-high", "c1")
+    assert "gemini-3.8-flash-high" in first and "17h2m45s" in first and "前回と同じ" not in first
+    assert "agy のデフォルト" in bridge._agy_failure_text(_ERR.replace("17h2m45s", "1h"), None, "c2")
+    again = bridge._agy_failure_text(_ERR, "gemini-3.8-flash-high", "c1")
+    assert "前回と同じ" in again
+    assert "前回と同じ" not in bridge._agy_failure_text(_ERR.replace("17h2m45s", "17h0m1s"), None, "c1")

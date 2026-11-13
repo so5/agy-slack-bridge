@@ -368,6 +368,15 @@ Socket Mode, and it rides on the same Interactivity setting as the buttons.
   with a 5-hour and a weekly window), with the reset time in JST and the
   group your channel's current model draws from highlighted. Data comes from
   agy's own `/usage` (no model call, so it costs no quota), cached for 60s.
+- **Quota is per model group.** A channel with no model set (`/agy-model` or
+  `config.yaml`) runs on agy's default model, so when that group's quota is
+  used up it fails even if other groups still have some. The quota error names
+  the model that ran (or "agy's default"). After a conversation has ended on a
+  429, agy may report the same error again (same "Resets in" time) at the end
+  of a later run; when the same text repeats in a conversation the bridge says
+  so - continue in a new conversation or from agy's Web UI. A run that ends in
+  an error still gets its permission buttons for a command denied in the same
+  run.
 - **Low-quota warning**: after a reply, if the channel's model group has a
   window at or below 10%, the bridge adds a one-line warning in the thread
   (at most once an hour per group), pointing at `/agy-model`.

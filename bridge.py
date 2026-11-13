@@ -1705,7 +1705,6 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
         # doing. Log it, but keep it out of the exception text, which
         # _agy_failure_text pattern-matches.
         log.error("agy exited %s; last stdout:\n%s", proc.returncode, _stdout_tail(proc.stdout))
-        raise RuntimeError(f"agy exited {proc.returncode}: {proc.stderr.strip()[-2000:]}")
 
     result = None
     tool_errors = []
@@ -1742,6 +1741,8 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
                     "message": (info.get("error") or {}).get("message"),
                 })
 
+    if proc.returncode != 0 and result is None:
+        raise RuntimeError(f"agy exited {proc.returncode}: {proc.stderr.strip()[-2000:]}")
     if result is None:
         raise RuntimeError(f"agy produced no result event: {proc.stdout[-2000:]}")
 
@@ -1767,8 +1768,17 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     # progress they almost certainly are, instead of looping a grant that
     # can't fix a command that was never actually the problem.
     already_allowed = set(permissions.list_entries(project_id)) if permissions else set()
-    if "auto-denied" in proc.stderr:
+    # A run that ends in an error (non-zero exit, a result with status ERROR) right after a
+    # tool step was soft-denied leaves the same silent step, but agy's stderr then carries only
+    # the error, not "auto-denied". The step in flight when the run ended is the one: report
+    # it like the loud form, but only that last step (denied_actions is cumulative, so it
+    # alone says nothing about this run).
+    ended_in_error = proc.returncode != 0 and bool(result.get("denied_actions"))
+    last_idx = max(last_tool_step) if last_tool_step else None
+    if "auto-denied" in proc.stderr or ended_in_error:
         for idx, step in last_tool_step.items():
+            if "auto-denied" not in proc.stderr and idx != last_idx:
+                continue
             info = step.get("tool_info") or {}
             cmd = (info.get("parameters") or {}).get("CommandLine")
             if not (step.get("tool_name") == "run_command" and step.get("state") == "DONE"
@@ -1776,12 +1786,14 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
                 continue
             if f"command({cmd})" in already_allowed:
                 continue  # almost certainly a silent success, not a denial
+            why = ("agy ended the step DONE with no output, and auto-denied it"
+                   if "auto-denied" in proc.stderr else
+                   "the run ended in an error right after this command ended DONE with no output")
             tool_errors.append({
                 "tool_name": "run_command",
                 "parameters": info.get("parameters"),
                 "message": f'permission check failed for unsandboxed "{cmd}": '
-                           f"user denied permission to run command:\n{cmd}\n"
-                           "(inferred: agy ended the step DONE with no output, and auto-denied it)",
+                           f"user denied permission to run command:\n{cmd}\n(inferred: {why})",
             })
             tool_steps.discard(idx)  # a denied command is not progress
 
@@ -1789,6 +1801,7 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     result["_tool_steps"] = len(tool_steps)
     result["_tool_events"] = raw_tool_events
     result["_stderr"] = proc.stderr.strip()[-1500:]
+    result["_exit_code"] = proc.returncode
     return result
 
 
@@ -2248,7 +2261,17 @@ def _post_safety_repair_notices(client, channel_id: str, thread_key: str, person
         )
 
 
-def _agy_failure_text(err: str) -> str:
+# The last quota error text per conversation. "Resets in" counts down, so the same text twice
+# (to the second) is not a new 429 but the previous one being reported again by agy.
+_LAST_QUOTA_ERROR: dict = {}
+
+
+def _model_label(model: Optional[str]) -> str:
+    return f"`{model}`" if model else "agy のデフォルト"
+
+
+def _agy_failure_text(err: str, model: Optional[str] = None,
+                      conversation_id: Optional[str] = None) -> str:
     """Slack text for a failed agy invocation. A model-quota 429 is common
     enough (and fixable from Slack) to deserve its own explanation instead
     of the generic "check the logs"."""
@@ -2258,12 +2281,20 @@ def _agy_failure_text(err: str) -> str:
         minutes = AGY_TIMEOUT_SEC // 60
         return (f":x: agy が {minutes} 分で打ち切られました。途中で止まっていた処理（認証待ちなど）が無いか確認してください。"
                 "止まっていた処理は、この bridge が停止させています。")
-    if "RESOURCE_EXHAUSTED" in err:
+    if "RESOURCE_EXHAUSTED" in err or "quota reached" in err:
         m = _QUOTA_RESET_RE.search(err)
         reset = f"（回復まであと {m.group(1)}）" if m else ""
-        return (f":x: モデルの利用枠を使い切りました{reset}。\n"
+        text = (f":x: モデルの利用枠を使い切りました{reset}（使用モデル: {_model_label(model)}）。\n"
                 "別系統の枠のモデルに切り替えれば続けられます（例: `/agy-model set claude-sonnet-4-6`）。"
                 "枠の残りは `/agy usage` で確認できます。")
+        if m and conversation_id:
+            seen = _LAST_QUOTA_ERROR.get(conversation_id)
+            _LAST_QUOTA_ERROR[conversation_id] = m.group(0)
+            if seen == m.group(0):
+                text += ("\n回復までの時間が前回と同じです。この会話に前回のエラーが残っていて、"
+                         "今回の実行では枠が尽きていない可能性があります。"
+                         "新しい会話で続けるか、agy の Web UI から続けてください。")
+        return text
     return ":x: agy invocation failed. Check the bridge's logs."
 
 
@@ -2295,7 +2326,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         _post_safety_repair_notices(client, channel_id, thread_key, persona_kwargs)
         client.chat_postMessage(
             channel=channel_id, thread_ts=thread_key,
-            text=_agy_failure_text(str(exc)),
+            text=_agy_failure_text(str(exc), model, conversation_id),
             **persona_kwargs,
         )
         return
@@ -2311,14 +2342,19 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         log.info("DIAG denied_actions without tool_errors: tool_events=%s stderr=%r",
                   json.dumps(result.get("_tool_events", [])[-12:], ensure_ascii=False)[:6000],
                   result.get("_stderr"))
+    failure_text = None
     if result.get("status") != "SUCCESS":
         log.error("agy returned non-SUCCESS status: %r", result)
-        client.chat_postMessage(
-            channel=channel_id, thread_ts=thread_key,
-            text=f":x: agy status={result.get('status')}: {result.get('error') or '(no error detail)'}",
-            **persona_kwargs,
-        )
-        return
+        failure_text = _agy_failure_text(result.get("error") or "", model, result.get("conversation_id") or conversation_id)
+        if "利用枠" not in failure_text:
+            failure_text = f":x: agy status={result.get('status')}: {result.get('error') or '(no error detail)'}"
+        # An error that ended the run does not make a permission denial from the same run
+        # go away: when there is one, carry on so its button / auto-grant is still offered
+        # (otherwise the person sees only the error and can never allow the command).
+        if not result.get("_tool_errors") or not result.get("conversation_id"):
+            client.chat_postMessage(channel=channel_id, thread_ts=thread_key,
+                                    text=failure_text, **persona_kwargs)
+            return
 
     conversation_id = result["conversation_id"]
     store.put(channel_id, thread_key, conversation_id, project_id)
@@ -2338,6 +2374,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
     response_text = markdown_to_mrkdwn(raw_response)
     if response_text:
         parts.append(response_text)
+    if failure_text:
+        parts.append(failure_text)
 
     tool_errors = result.get("_tool_errors") or []
     if not tool_errors:

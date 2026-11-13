@@ -514,3 +514,20 @@ def test_cleanup_is_not_offered_when_the_root_has_a_space(project, monkeypatch):
     (spaced / "scratch" / "a.py").write_text("x")
     monkeypatch.setattr(bridge, "_project_root", lambda pid: spaced)
     assert bridge._cleanup_for("p", ["command(python3 scratch/a.py)"]) is None
+
+
+def test_error_result_with_a_denial_still_offers_the_button(project, monkeypatch):
+    err = {"tool_name": "run_command", "parameters": {"CommandLine": "git status"},
+           "message": "user denied permission to run"}
+    res = _agy_result([err])
+    res.update(status="ERROR", error="Individual quota reached. Resets in 1h2m.")
+    client, store, perms = _drive(monkeypatch, project, "needs_review", [res])
+    text = "\n".join(client.posts)
+    assert "利用枠" in text and "git status" in text and len(store.retries) == 1
+
+
+def test_error_result_without_a_denial_just_reports_the_error(project, monkeypatch):
+    res = _agy_result([])
+    res.update(status="ERROR", error="Individual quota reached. Resets in 1h2m.")
+    client, store, perms = _drive(monkeypatch, project, "needs_review", [res])
+    assert len(client.posts) == 1 and "利用枠" in client.posts[0] and store.retries == []
