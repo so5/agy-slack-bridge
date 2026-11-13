@@ -2087,19 +2087,41 @@ GREY_QUESTION_PROGRESS_RETRIES = 5
 # purpose. After this many button-bearing denials in a conversation within
 # the window - without the user granting anything in between (see
 # _reset_denial_throttle) - stop offering buttons and say so instead.
+# Denials that script review passed and granted automatically need no human, so they are not
+# counted here (a conversation writing one fresh scratch/ script after another is normal: each
+# is denied once, reviewed, granted, re-run). They get a looser limit of their own, because each
+# review is an LLM call: past it, denials go through the button limit above like any other.
 DENIAL_BUTTON_LIMIT = 3
 DENIAL_BUTTON_WINDOW_SEC = 600
+AUTO_GRANT_LIMIT = 10
 _denial_log: dict = {}
+_auto_grant_log: dict = {}
+
+
+def _recent(log_: dict, conversation_id: str) -> list:
+    now = time.time()
+    recent = [t for t in log_.get(conversation_id, []) if now - t < DENIAL_BUTTON_WINDOW_SEC]
+    log_[conversation_id] = recent
+    return recent
+
+
+def _denial_throttle_reached(conversation_id: str) -> bool:
+    return len(_recent(_denial_log, conversation_id)) >= DENIAL_BUTTON_LIMIT
 
 
 def _denial_buttons_throttled(conversation_id: str) -> bool:
-    now = time.time()
-    recent = [t for t in _denial_log.get(conversation_id, []) if now - t < DENIAL_BUTTON_WINDOW_SEC]
-    throttled = len(recent) >= DENIAL_BUTTON_LIMIT
+    throttled = _denial_throttle_reached(conversation_id)
     if not throttled:
-        recent.append(now)
-    _denial_log[conversation_id] = recent
+        _recent(_denial_log, conversation_id).append(time.time())
     return throttled
+
+
+def _auto_grants_exhausted(conversation_id: str) -> bool:
+    return len(_recent(_auto_grant_log, conversation_id)) >= AUTO_GRANT_LIMIT
+
+
+def _count_auto_grant(conversation_id: str) -> None:
+    _recent(_auto_grant_log, conversation_id).append(time.time())
 
 
 def _reset_denial_throttle(conversation_id: Optional[str]) -> None:
@@ -2109,6 +2131,7 @@ def _reset_denial_throttle(conversation_id: Optional[str]) -> None:
     the user was approving every step)."""
     if conversation_id:
         _denial_log.pop(conversation_id, None)
+        _auto_grant_log.pop(conversation_id, None)
 
 
 AUTO_RETRY_TEXT = (
@@ -2426,18 +2449,25 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         )
         store.log_permission(channel_id, conversation_id, "stuck",
                               [_describe_tool_error(e) for e, _ in stuck_errors])
-    # Counts every turn with a denial - automatically granted ones too - so a conversation
-    # that keeps provoking denials is stopped by the same limit (DENIAL_BUTTON_LIMIT per
-    # DENIAL_BUTTON_WINDOW_SEC) whether or not a person would have clicked.
-    buttons_throttled = bool(permission_errors) and _denial_buttons_throttled(conversation_id)
+    # Only denials that would have needed a person count toward the button limit: ones that
+    # script review grants automatically don't (they have AUTO_GRANT_LIMIT). Review is skipped
+    # once either limit is reached - it is an LLM call an agent could otherwise keep provoking.
     review_notes: list[str] = []
     auto_errors: list[dict] = []
     summary_entries: list[str] = []
     reviewed_errors: list[dict] = []
-    if permission_errors and not buttons_throttled:
+    if (permission_errors and not _denial_throttle_reached(conversation_id)
+            and not _auto_grants_exhausted(conversation_id)):
         review_notes, auto_errors, summary_entries = _review_scripts(
             permission_errors, project_id, remember_text if remember_text is not None else text,
             permissions, reviewed_errors)
+    if auto_errors:
+        _count_auto_grant(conversation_id)
+    needs_person = [e for e in permission_errors if e not in auto_errors]
+    buttons_throttled = bool(needs_person) and _denial_buttons_throttled(conversation_id)
+    if buttons_throttled:
+        # No button will be offered, so the review's "decide below" notes would mislead.
+        review_notes, reviewed_errors = [], []
     auto_entries: list[str] = []
     if auto_errors:
         for e in auto_errors:

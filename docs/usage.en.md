@@ -288,7 +288,12 @@ but these make the easy mistakes (and easy probing) fail loudly:
   allows `agy --dangerously-skip-permissions ...`.
 - **Grant-button throttle**: more than 3 permission-button prompts in one
   conversation within 10 minutes stops offering buttons (and says so), so an
-  agent can't cheaply provoke prompts hoping one gets clicked. Granting
+  agent can't cheaply provoke prompts hoping one gets clicked. Denials that
+  script review passes and grants automatically need no person, so they are
+  not counted (writing one fresh `scratch/` script after another must not be
+  stopped). Automatic grants have a looser limit of their own (10 per
+  conversation per 10 minutes); past it, denials are no longer reviewed and
+  go through the button limit like any other. Granting
   something yourself in that conversation resets the count (you're evidently
   watching), so a legitimate trial-and-error session isn't cut off.
 - **A shared rules file in each project** (`.agents/rules/agent-safety-rules.md`, linked

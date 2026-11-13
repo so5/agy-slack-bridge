@@ -293,6 +293,7 @@ def _drive(monkeypatch, project, outcome, results, **kw):
     monkeypatch.setattr(bridge, "_file_rules", lambda *a: {"deny": [], "allow": []})
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: _res(outcome, **kw))
     bridge._denial_log.clear()
+    bridge._auto_grant_log.clear()
     client, store, perms = FakeClient(), FakeStore(), FakePermissions()
     bridge._run_and_reply(client, store, perms, "C1", "t1", "p", "c1", "依頼", {})
     return client, store, perms
@@ -331,15 +332,35 @@ def test_reviewed_script_does_not_also_get_the_generic_permission_warning(projec
     assert "権限不足で拒否" in text and "git status" in text and "scratch/a.py`\n" not in text.split("書き込み")[0].split("権限不足で拒否")[1]
 
 
-def test_auto_grants_count_toward_the_denial_throttle(project, monkeypatch):
-    def err(i):
-        return {"tool_name": "run_command", "parameters": {"CommandLine": f"python3 scratch/a.py {i}"},
-                "message": "user denied permission to run"}
-    results = [_agy_result([err(i)]) for i in range(10)]          # a new denied command every time
+def _new_cmd(i):
+    return {"tool_name": "run_command", "parameters": {"CommandLine": f"python3 scratch/a.py {i}"},
+            "message": "user denied permission to run"}
+
+
+def test_auto_grants_do_not_count_toward_the_button_throttle(project, monkeypatch):
+    # four scripts in a row, each reviewed harmless: all granted, the button limit never trips
+    results = [_agy_result([_new_cmd(i)]) for i in range(4)] + [_agy_result([], response="done")]
     client, store, perms = _drive(monkeypatch, project, "harmless", results)
-    assert len(store.temp) == bridge.DENIAL_BUTTON_LIMIT           # then the existing limit stops it
-    assert store.retries == []                                     # throttled: no button either
-    assert any("一時停止" in p for p in client.posts)
+    assert len(store.temp) == 4 and bridge.DENIAL_BUTTON_LIMIT < 4
+    assert not any("一時停止" in p for p in client.posts) and any("done" in p for p in client.posts)
+
+
+def test_auto_grants_have_a_looser_limit_of_their_own(project, monkeypatch):
+    results = [_agy_result([_new_cmd(i)]) for i in range(30)]
+    client, store, perms = _drive(monkeypatch, project, "harmless", results)
+    # AUTO_GRANT_LIMIT granted; the next denial is no longer reviewed: it is an ordinary one
+    assert len(store.temp) == bridge.AUTO_GRANT_LIMIT
+    assert len(store.retries) == 1
+
+
+def test_denials_that_need_a_person_still_stop_after_the_button_limit(project, monkeypatch):
+    results = [_agy_result([_new_cmd(i)]) for i in range(10)]
+    client, store, perms = _drive(monkeypatch, project, "needs_review", results, reasons=["x"])
+    bridge._denial_log.clear()
+    bridge._auto_grant_log.clear()
+    for i in range(bridge.DENIAL_BUTTON_LIMIT):
+        assert not bridge._denial_buttons_throttled("c1")
+    assert bridge._denial_buttons_throttled("c1")
 
 
 def test_over_60kb_script_gets_a_button_not_an_auto_grant(project, monkeypatch):
