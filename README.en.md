@@ -94,7 +94,7 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 
 | Item | What it does |
 |---|---|
-| `1` Set up everything | 3-1 → 3-2 → 3-4 in order (first time, or updating). Required items come first; the optional Drive CLI (3-4) comes last |
+| `1` Set up everything | 3-1 → 3-2 → 3-4 → 3-5 in order (first time, or updating). Required items come first; the optional Drive CLI (3-4) and credentials (3-5) come last |
 | `2` Place / update the rules and hook | Only the placement part of 3-1 |
 | `3` Set up the Slack channel mapping | Only the `チャンネル ID` prompt of 3-2 |
 | `4` Set up the channel appearance | The `表示名` / `アイコン絵文字` / `アイコン画像 URL` prompts of 3-2. Needs item `3` first |
@@ -102,6 +102,7 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 | `6` Set up change watching and statistics | The `監視するファイル` / `権限ボタンの統計` / summary-and-content prompt of 3-2. Needs item `3` first |
 | `7` Set up the Google Drive CLI | 3-4 |
 | `8` Show the current state | |
+| `9` Set up credentials (op and others) | 3-5 |
 | `b` Back to the project list | |
 | `q` Quit | |
 
@@ -113,7 +114,7 @@ Items `2`–`7` show their current state on the right (`[設定済み]` = set / 
 
 | Shown | Meaning |
 |---|---|
-| `[利用可能]` (available) | The required settings (safety mechanisms: rules, hook, `deny`; and a Slack channel) are in place, so it can be used from Slack. "Available" does **not** mean setup is finished: every unset optional item is listed after `未設定（任意）:` (Drive CLI, display name, icon, model, effort, watched files, permission-button stats). Leave alone what you do not use |
+| `[利用可能]` (available) | The required settings (safety mechanisms: rules, hook, `deny`; and a Slack channel) are in place, so it can be used from Slack. "Available" does **not** mean setup is finished: every unset optional item is listed after `未設定（任意）:` (Drive CLI, credentials, display name, icon, model, effort, watched files, permission-button stats). Leave alone what you do not use |
 | `[利用不可]` (unavailable) | Some required settings are missing, so it cannot be used from Slack; they are listed after `未設定（必須）:` |
 | `[未設定]` (not set up) | None of the required settings exist (exactly one of available / unavailable / not set up is shown) |
 | `⚠ …` | An inconsistency (a Drive permission without its profile, etc.) |
@@ -231,6 +232,24 @@ Choosing item `7` in the project menu for a project whose Drive CLI is already c
 | `3` Switch to another profile | `n`: switch to this project's own profile (named after the project ID; created if missing). A number: switch to the same settings and permissions as project "XXXX". The old profile's permissions are removed from this project. If no project uses the old profile any more, you are asked whether to delete it (default N) |
 | `4` Remove this project's Drive settings | Removes this project's Drive CLI permissions. If no project uses the profile any more, you are asked whether to delete it with its credentials (default N) |
 | `b` Back | |
+
+#### 3-5. Credentials (op and others; optional, skip if unused)
+
+For letting the agent use an external service's credentials (a 1Password CLI token, AWS keys, ...). The token is kept not in the project's `.env` but, as environment variables, in `<config dir>/credentials/<profile name>.json` (0600), where the agent cannot read it. The `.env` holds **only references** such as `op://…`. The agent is told (in a generated `.agents/rules/credentials.md`) to run commands with a fixed `tools/cred_run.py` prefix, which runs the command with the profile's environment variables and masks their values as `***` in its output. How it works and where it stops: "Credentials" in [docs/permissions.en.md](docs/permissions.en.md).
+
+| Prompt | How to answer |
+|---|---|
+| `認証情報（op など）を使いますか? [y/N]` (use credentials?) | Asked only for item `1` (set up everything). **N** to skip |
+| `認証情報のプロファイル` (`選択`) (credential profile) | Only when another project has a profile. `n` (default): create a new one. A number: use that profile (the token is shared; changing the value affects both) |
+| `プロファイル名` (profile name) | When creating one. Default `op`. Letters, digits, `_`, `-` |
+| `認証情報の種類` (`選択`) (kind) | `1`: 1Password CLI (`OP_SERVICE_ACCOUNT_TOKEN`), `2`: AWS (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`), `3`: other (name the variables yourself) |
+| `環境変数の名前（カンマ区切り）` (variable names) | For `3`. Names that change how programs load (`PATH`, `LD_*`, `PYTHON*`, ...) are refused |
+| `<name> の値（表示されません…）` (value; not echoed) | Type the value (not shown). Blank skips it (keeps the current one for an existing profile). A value under 6 characters is flagged: it would not be masked in output |
+| `値を入れ直しますか?（…）` (re-enter?) | Only when the profile exists. **N** (default): keep it. **y**: re-enter. The profile is outside git, so this cannot be undone |
+
+Choosing item `9` in a configured project offers `1` re-enter the values, `2` switch to another profile, `3` remove this project's setting (deletes only the rules file; the profile file stays).
+
+**Moving from an existing `.env` + `op run` setup**: (1) create the profile with item `9`; (2) delete the `OP_SERVICE_ACCOUNT_TOKEN` line from `.env` (keep the `op://…` references); (3) drop the hand-written `op run …` instructions from `AGENTS.md`/skills in favour of the generated `.agents/rules/credentials.md`; (4) the operator may want to rotate the token that sat in `.env` on the 1Password side (an agent that could read `.env` could see it).
 
 ### 4. Start
 

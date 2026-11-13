@@ -880,14 +880,15 @@ def test_configured_project_lists_every_unset_optional_item(env, capsys):
     out = _status(env, capsys)
     assert "[利用可能]" in out and "Slack: C0TEST123" in out
     optional = [l for l in out.splitlines() if "未設定（任意）" in l][0]
-    for item in ("Drive CLI", "表示名", "アイコン", "モデル", "effort", "監視ファイル", "権限ボタンの統計"):
+    for item in ("Drive CLI", "認証情報", "表示名", "アイコン", "モデル", "effort", "監視ファイル", "権限ボタンの統計"):
         assert item in optional
 
 
 def test_optional_items_disappear_from_the_list_once_set(env, capsys):
     run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Bot", "アイコン絵文字": "robot_face",
                        "モデル": "1", "effort": "high", "監視するファイル": "AGENTS.md", "権限ボタンの統計": "n",
-                       "Drive CLI": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "cat /k"}))
+                       "Drive CLI": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "cat /k",
+                       "認証情報（op など）を使いますか": "y"}, {"OP_SERVICE_ACCOUNT_TOKEN": "ops_token_1234567"}))
     out = _status(env, capsys)
     assert "[利用可能]" in out and "未設定（任意）" not in out
 
@@ -1115,3 +1116,44 @@ def test_tool_usage_rules_are_linked_next_to_the_safety_rules(env):
     assert link.is_symlink() and link.resolve() == (env.prefix / "tools/tool-usage-rules.md").resolve()
     assert link.read_text().startswith("---\ntrigger: always_on\n---\n")
     assert "write_file(" + str(link) not in json.dumps(settings(env))   # not a safety rule: the agent may replace the link
+
+
+# --- credentials (tools/cred_run.py profiles) ---------------------------------------
+
+def _cred_run(env, secrets, answers=None):
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "認証情報（op など）を使いますか": "y", **(answers or {})}, secrets))
+
+
+def test_credentials_profile_and_rules_are_written_without_the_value_in_the_project(env):
+    _cred_run(env, {"OP_SERVICE_ACCOUNT_TOKEN": "ops_token_1234567"})
+    prof = env.cfg / "credentials" / "op.json"
+    assert json.loads(prof.read_text()) == {"env": {"OP_SERVICE_ACCOUNT_TOKEN": "ops_token_1234567"}}
+    assert prof.stat().st_mode & 0o777 == 0o600
+    rules = (env.target / ".agents/rules/credentials.md").read_text()
+    assert "trigger: always_on" in rules and "cred_run.py --profile op --" in rules
+    assert "OP_SERVICE_ACCOUNT_TOKEN" in rules and "ops_token_1234567" not in rules
+    assert setup.current_cred_profile(env.target) == "op"
+    for f in env.target.rglob("*"):
+        if f.is_file() and ".git/" not in str(f):
+            assert "ops_token_1234567" not in f.read_text(errors="replace")
+
+
+def test_credentials_are_not_set_up_when_declined(env):
+    run(env, Scripted({"チャンネル ID": "C0TEST123"}))
+    assert not (env.cfg / "credentials").exists() and not (env.target / ".agents/rules/credentials.md").exists()
+
+
+def test_credentials_existing_profile_is_kept_unless_confirmed(env):
+    _cred_run(env, {"OP_SERVICE_ACCOUNT_TOKEN": "ops_token_1234567"})
+    _cred_run(env, {"OP_SERVICE_ACCOUNT_TOKEN": "other_token_7654321"}, {"選択": "1"})   # asks: re-enter? -> default No
+    prof = env.cfg / "credentials" / "op.json"
+    assert "ops_token_1234567" in prof.read_text()
+    _cred_run(env, {"OP_SERVICE_ACCOUNT_TOKEN": "other_token_7654321"}, {"選択": "1", "値を入れ直しますか": "y"})
+    assert "other_token_7654321" in prof.read_text()
+
+
+def test_credentials_detach_removes_only_the_rules_file(env):
+    _cred_run(env, {"OP_SERVICE_ACCOUNT_TOKEN": "ops_token_1234567"})
+    run(env, Scripted({"チャンネル ID": "C0TEST123", "認証情報（op など）を使いますか": "y", "選択": "3"}))
+    assert not (env.target / ".agents/rules/credentials.md").exists()
+    assert (env.cfg / "credentials" / "op.json").exists()

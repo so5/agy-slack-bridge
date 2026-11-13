@@ -531,3 +531,13 @@ def test_error_result_without_a_denial_just_reports_the_error(project, monkeypat
     res.update(status="ERROR", error="Individual quota reached. Resets in 1h2m.")
     client, store, perms = _drive(monkeypatch, project, "needs_review", [res])
     assert len(client.posts) == 1 and "利用枠" in client.posts[0] and store.retries == []
+
+
+def test_credential_values_never_reach_slack(project, monkeypatch, tmp_path):
+    import cred_profiles
+    cfg = tmp_path / "cfgdir"
+    monkeypatch.setattr(bridge, "CONFIG_PATH", cfg / "config.yaml")
+    cred_profiles.write_profile(cred_profiles.profile_path("op", str(cfg)), {"OP_SERVICE_ACCOUNT_TOKEN": "tok_ABCdef123456"})
+    client, store, perms = _drive(monkeypatch, project, "harmless", [_agy_result([], response="the token is tok_ABCdef123456")])
+    text = "\n".join(client.posts)
+    assert "tok_ABCdef123456" not in text and "the token is ***" in text

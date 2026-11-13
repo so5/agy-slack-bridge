@@ -47,6 +47,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 import agy_models  # noqa: E402
 import agy_settings  # noqa: E402
+import cred_profiles  # noqa: E402
 import grant_scope  # noqa: E402
 import script_review  # noqa: E402
 import safety_stack  # noqa: E402  (tools/ sits next to bridge.py in the install directory)
@@ -1323,6 +1324,21 @@ _SCRIPT_INTERPRETER_BASENAMES = {
 _SCRIPT_EXTS = (".py", ".sh", ".js", ".mjs", ".rb", ".pl")
 
 
+def _unwrap_credential_command(tokens: list) -> list:
+    """Same as script_integrity.unwrap_credential_command: the script behind a
+    `cred_run.py --profile NAME -- [op run ... --] <script run>` prefix is what gets reviewed."""
+    for i, tok in enumerate(tokens[:4]):
+        if os.path.basename(tok) == "cred_run.py" and "--" in tokens[i + 1:]:
+            inner = tokens[i + 1:][tokens[i + 1:].index("--") + 1:]
+            if inner:
+                head = inner[0]
+                if os.path.basename(head) not in _SCRIPT_INTERPRETER_BASENAMES and not head.endswith(_SCRIPT_EXTS) \
+                        and "--" in inner[1:]:
+                    inner = inner[inner.index("--", 1) + 1:]
+            return inner
+    return tokens
+
+
 def _resolve_permanent_script_path(entry: str, root: Path) -> Optional[str]:
     """Extracts the script a `command(...)` permission entry would run and
     resolves it to an absolute, normalized path under `root` - mirrors
@@ -1340,6 +1356,7 @@ def _resolve_permanent_script_path(entry: str, root: Path) -> Optional[str]:
         tokens = shlex.split(cmdline)
     except ValueError:
         return None
+    tokens = _unwrap_credential_command(tokens)
     if not tokens:
         return None
     head = tokens[0]
@@ -2632,6 +2649,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
             )
 
     outgoing_text = "\n\n".join(parts) if parts else "(empty response)"
+    # Credential values the agent may have come across never go to Slack (tools/cred_profiles.py).
+    outgoing_text = cred_profiles.mask(outgoing_text, cred_profiles.all_secrets(str(CONFIG_PATH.resolve().parent)))
 
     if permission_errors:
         asked = []

@@ -14,6 +14,7 @@ there** (reasons below).
 | `agent-safety-rules.md` | Behavioral rules for agents (do not inspect the bridge internals, do not work around a denial, etc.) |
 | `hooks.json`, `hooks/script_integrity.py` | PreToolUse hook for `run_command`. Checks that a permanently allowed script has not been quietly modified after approval |
 | `gdrive_cli.py` | A CLI for Google Drive with a fixed, limited set of commands. `--profile` switches credentials and restrictions. [`gdrive-profile.en.md`](gdrive-profile.en.md) |
+| `cred_run.py` | A prefix that runs a command with a credential profile's environment variables (`<config dir>/credentials/NAME.json`) and masks their values as `***` in its output. `cred_profiles.py` is the shared part. See README 3-5 and "Credentials" in docs/permissions.en.md |
 
 ## Why install
 

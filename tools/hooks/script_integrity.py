@@ -103,6 +103,24 @@ def split_segments(cmdline: str) -> list[list[str]]:
     return segments
 
 
+def unwrap_credential_command(seg: list[str]) -> list[str]:
+    """`<python> -I .../cred_run.py --profile NAME -- op run --env-file=.env -- python x.py`
+    runs x.py, so x.py is what to look at (the wrapper is the bridge's own code). Looks past
+    the wrapper's `--` and, when what follows is not itself a script run, past one more `--`
+    (the runner's: op run, aws-vault exec, ...). Anything else comes back unchanged.
+    bridge.py's `_unwrap_credential_command` is the same (tests/test_cred_run.py keeps them in step)."""
+    for i, tok in enumerate(seg[:4]):
+        if os.path.basename(tok) == "cred_run.py" and "--" in seg[i + 1:]:
+            inner = seg[i + 1:][seg[i + 1:].index("--") + 1:]
+            if inner:
+                head = inner[0]
+                if os.path.basename(head) not in INTERPRETER_BASENAMES and not head.endswith(SCRIPT_EXTS) \
+                        and "--" in inner[1:]:
+                    inner = inner[inner.index("--", 1) + 1:]
+            return inner
+    return seg
+
+
 def find_script_targets(cmdline: str, root: str) -> list[str]:
     """The script file(s) a command line actually executes - a direct
     `./foo.py`, or an interpreter (python/bash/node/...) followed by a
@@ -111,6 +129,7 @@ def find_script_targets(cmdline: str, root: str) -> list[str]:
     (`grep`, `cat`, `ls`, ...) is not "executing" anything and is ignored."""
     targets: list[str] = []
     for seg in split_segments(cmdline):
+        seg = unwrap_credential_command(seg)
         if not seg:
             continue
         head = seg[0]

@@ -101,6 +101,15 @@ Each stage is a separate agy call, run without `--project`, in an empty temporar
 
 **Limits**: it is an AI verdict. A clever script may fool it, and "not found" is not a guarantee of safety. Scripts over about 60 KB are checked only up to the first 60 KB, and the message says so. If the check fails (e.g. times out), the button is still shown with a note that it was not checked. This is not a per-run check of already-allowed scripts (that is the hook above).
 
+### Credentials (`cred_run.py`)
+
+Tokens and the like are kept not in the project's `.env` but in the config dir's `credentials/<name>.json` (0600; `deny` for the agent). To use them, prefix the command with `tools/cred_run.py --profile <name> -- <command>`. It runs the command with the profile's environment variables and replaces their values in stdout/stderr (as is, base64, URL-encoded, JSON-escaped) with `***`. The bridge likewise replaces every profile's values with `***` in the text it posts to Slack.
+
+- **Permissions:** a command with the prefix is granted per command string like any other (a button, or the temporary grant after the script's automatic check). The prefix gets no special grant and grant scopes do not widen it. The hook and the automatic script check skip the prefix (`cred_run.py … --`) and a runner such as `op run … --`, and look at **the script behind it** - so a script the agent wrote under `scratch/` is checked as before.
+- **Automatic check:** printing, saving or sending the whole environment, or a value that looks like a credential, counts as harmful. A script using credentials is auto-granted only when it merely passes them to the service through something like `op run`.
+- **Refused commands:** `env`, `printenv`, `export`, `eval`, `python -c`, `sh -c`, `node -e` and so on (anything that can print the environment directly), and commands pointing at `/proc`, are refused by the prefix.
+- **Limits:** the refusal covers the obvious forms; it is not a sandbox. A script that transforms a value before printing it (reversed, ...) is not masked - that is what the automatic check and the person's review before a grant are for. For anything you must not expose even in part, use a token scoped down at the service (read-only, ...). Values `op` resolves (what the `.env` references point to) are not the profile's values, so the prefix does not mask them (`op run` itself masks them in its output).
+
 ## 6. MCP tools
 
 MCP tools are allowed by per-server tool name. This is finer-grained than a `run_command` prefix permission. Do not allow tools that execute arbitrary code. As with other entries, permissions are per project (for example, `mcp(playwright/...)` for browser operation should be allowed only in the projects that need it).

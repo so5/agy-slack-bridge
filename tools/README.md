@@ -13,6 +13,7 @@ Slack ブリッジ経由で動かす agy プロジェクトに共通の、安全
 | `agent-safety-rules.md` | エージェント向けの行動規則(ブリッジ内部を調べない、拒否を迂回しない、など) |
 | `hooks.json`, `hooks/script_integrity.py` | `run_command` の PreToolUse フック。恒久許可したスクリプトが、承認後にこっそり書き換えられていないかを検査する |
 | `gdrive_cli.py` | Google Drive 用の、固定・限定コマンドの CLI。`--profile` で認証情報と制限を切り替える。[`gdrive-profile.md`](gdrive-profile.md) |
+| `cred_run.py` | 認証情報のプロファイル（`<設定ディレクトリ>/credentials/NAME.json`。環境変数の名前と値）をコマンドに渡す前置き。出力の中の値を `***` にする。`cred_profiles.py` が共通部分。README 3-5 と docs/permissions.md「認証情報」 |
 
 ## なぜインストールするのか
 
