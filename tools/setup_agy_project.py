@@ -636,7 +636,7 @@ def remove_project_gdrive_allow(project_json: Path, prefix: Path, profile: str) 
         return
     for e in gone:
         allow.remove(e)
-        print(f"  [削除] このプロジェクトに許可していたコマンド: {e[len('command('):-1] if e.startswith('command(') else e}")
+        print(f"  [削除] 「{e[len('command('):-1] if e.startswith('command(') else e}」の実行を許可する設定を削除しました")
     save_json(project_json, data)
 
 
@@ -682,9 +682,9 @@ def update_project_gdrive_allow(project_json: Path, prefix: Path, profile: str,
     if added or stale:
         save_json(project_json, data)
     for e in added:
-        print(f"  [追加] このプロジェクトに許可するコマンド: {e[len('command('):-1] if e.startswith('command(') else e}")
+        print(f"  [追加] 「{e[len('command('):-1] if e.startswith('command(') else e}」の実行を、このプロジェクトのエージェントに許可する設定を作成しました")
     for e in stale:
-        print(f"  [削除] このプロジェクトに許可していたコマンド: {e[len('command('):-1] if e.startswith('command(') else e}（プロファイルで無効なため）")
+        print(f"  [削除] 「{e[len('command('):-1] if e.startswith('command(') else e}」の実行を許可する設定を削除しました（Drive のプロファイルで無効にしたため）")
     if not added and not stale:
         print(f"  [OK] {project_json.name} は対応済み")
 
