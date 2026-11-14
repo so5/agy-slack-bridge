@@ -63,7 +63,7 @@ def install_global_hook(prefix: Path, config_dir: Path, path: "Path | None" = No
             h["command"] = f"python3 {hook} --config-dir {config_dir}"
     data = load_json(path)
     if data.get(HOOK_NAME) == entry:
-        print(f"  [OK] {path} は対応済み")
+        print("  [OK] スクリプト検査フックは、すでに agy に登録されています")
         return False
     data[HOOK_NAME] = entry
     save_json(path, data)
@@ -78,7 +78,7 @@ def describe_deny(entry: str) -> str:
     """deny ルール(`read_file(/path)` など)を、人に向けた言い方にする。"""
     action, _, rest = entry.partition("(")
     target = rest[:-1] if rest.endswith(")") else rest
-    return f"{target}{_DENY_VERBS[action]}" if action in _DENY_VERBS else entry
+    return f"「{target}」{_DENY_VERBS[action]}" if action in _DENY_VERBS else entry
 
 
 def update_settings(deny_rules: list[str], trusted_workspaces: "list[str] | None" = None,
@@ -96,5 +96,5 @@ def update_settings(deny_rules: list[str], trusted_workspaces: "list[str] | None
     for e in added_ws:
         print(f"  [追加] {e} を agy が信頼する作業ディレクトリとして登録しました")
     if not added_deny and not added_ws:
-        print("  [OK] settings.json は対応済み")
+        print("  [OK] agy の設定（settings.json）は、すでに最新です")
     return added_deny + added_ws

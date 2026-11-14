@@ -217,7 +217,7 @@ def test_git_is_mandatory_and_initialized_without_asking(env, tmp_path, capsys):
     run(env, ask, target=other)
     assert (other / ".git").exists()
     assert not any("git" in p for p in ask.asked)
-    assert "git init" in capsys.readouterr().out
+    assert "git リポジトリとして初期化しました" in capsys.readouterr().out
 
 
 def test_missing_target_is_created_when_confirmed(env, tmp_path):

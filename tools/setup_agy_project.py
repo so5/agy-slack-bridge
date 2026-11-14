@@ -268,11 +268,11 @@ def absolute_symlink(ask: "Prompter", target_dir: Path, dest_rel_path: str, sour
     既に別のもの(別のリンク先、実体のファイル)があれば、置き換えてよいか聞く。ディレクトリは触らない。"""
     dest = target_dir / dest_rel_path
     if not source.exists():
-        print(f"  [スキップ] 元のファイルが無い: {source}")
+        print(f"  [スキップ] {dest_rel_path} の元になるファイル（{source}）が見つからないので、置きませんでした")
         return
     if dest.is_symlink():
         if dest.resolve() == source.resolve():
-            print(f"  [OK] 既にリンク済み: {dest_rel_path}")
+            print(f"  [OK] {dest_rel_path} は、すでに正しいリンクになっています")
             return
         if not confirm_replace(ask, dest, dest_rel_path, f"別のリンク先（{os.readlink(dest)}）を指して", f"{source} へのリンク"):
             print(f"  [スキップ] {dest_rel_path} は変更しません")
@@ -287,7 +287,7 @@ def absolute_symlink(ask: "Prompter", target_dir: Path, dest_rel_path: str, sour
         dest.unlink()
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.symlink_to(source)
-    print(f"  [作成] {dest_rel_path} -> {source}")
+    print(f"  [作成] {dest_rel_path} を作成しました（{source} へのリンク）")
 
 
 def place_shared_copy(ask: "Prompter", target_dir: Path, dest_rel_path: str, source: Path, owned: Path) -> None:
@@ -305,11 +305,11 @@ def place_shared_copy(ask: "Prompter", target_dir: Path, dest_rel_path: str, sou
                 print(f"  [スキップ] {dest_rel_path} は変更しません")
                 return
         else:
-            print(f"  [置換] {dest_rel_path}: 設定ディレクトリへのリンクをやめ、コピーにします（リンク先はエージェントが読めないため）")
+            print(f"  [置換] {dest_rel_path} を、設定ディレクトリへのリンクから、コピーに置き換えました（設定ディレクトリの中身は、エージェントが読めないため）")
         dest.unlink()
     elif dest.exists():
         if dest.read_bytes() == data:
-            print(f"  [OK] {dest_rel_path} は元のファイルと同じ")
+            print(f"  [OK] {dest_rel_path} は、すでに元のファイルと同じ内容です")
             return
         if not ask.yes_no(f"{dest_rel_path} は元のファイル（{source}）と違います（エージェントが編集した可能性があります）。"
                           f"元のファイルで上書きしますか?（{revert_note(dest)}）", default=False):
@@ -317,7 +317,7 @@ def place_shared_copy(ask: "Prompter", target_dir: Path, dest_rel_path: str, sou
             return
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(data)
-    print(f"  [コピー] {dest_rel_path}（元: {source}）")
+    print(f"  [コピー] {source} を {dest_rel_path} にコピーしました")
 
 
 def remove_project_hook(target_dir: Path) -> None:
@@ -340,10 +340,10 @@ def remove_project_hook(target_dir: Path) -> None:
         sys.exit(f"エラー: {path} はシンボリックリンクで、他のフックも含みます。手で確認してください。")
     if data:
         save_json(path, data)
-        print(f"  [更新] {path} から {agy_settings.HOOK_NAME} を外しました（グローバルのフックに移行）")
+        print(f"  [更新] {path} から、以前のフックの設定（{agy_settings.HOOK_NAME}）を外しました（今は agy 全体の hooks.json で動いています）")
     else:
         path.unlink()
-        print(f"  [削除] {path}（フックはグローバルの hooks.json に移行）")
+        print(f"  [削除] {path} を削除しました（フックは agy 全体の hooks.json に移りました）")
 
 
 def remove_legacy_includes(target_dir: Path, prefix: Path, config_dir: Path) -> None:
@@ -357,7 +357,7 @@ def remove_legacy_includes(target_dir: Path, prefix: Path, config_dir: Path) -> 
         if link.is_symlink() and any(o == link.resolve().parent or o in link.resolve().parents for o in owned):
             link.unlink()
             removed_names.append(name)
-            print(f"  [削除] 以前のリンク .agents/{name}（.agents/rules/ に移行）")
+            print(f"  [削除] 以前のセットアップが作ったリンク .agents/{name} を削除しました（今は .agents/rules/ に置いています）")
     agents_md = target_dir / "AGENTS.md"
     if removed_names and agents_md.exists():
         lines = agents_md.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -382,15 +382,15 @@ def ensure_ignored(target_dir: Path, name: str, comment: str) -> None:
     素朴な除外を足す。既に何らかのルールがあれば、導入者の意図したものとして触らない。"""
     gi_path = target_dir / ".gitignore"
     if not gi_path.exists():
-        print("  [スキップ] .gitignore が無い")
+        print("  [スキップ] .gitignore がないので、除外の追記はしませんでした")
         return
     lines = gi_path.read_text(encoding="utf-8").splitlines()
     if any(name in l for l in lines):
-        print(f"  [OK] .gitignore に {name} の記載が既にある（変更しない）")
+        print(f"  [OK] .gitignore には、すでに {name} についての記載があるので、変更しませんでした")
         return
     with gi_path.open("a", encoding="utf-8") as f:
         f.write(f"\n# {comment}\n{name}/\n")
-    print(f"  [追加] .gitignore: {name}/")
+    print(f"  [追加] .gitignore に {name}/ を追記しました")
 
 
 def ensure_scratch_ignored(target_dir: Path) -> None:
@@ -442,10 +442,10 @@ def register_with_hook(target_dir: Path, config_dir: Path) -> None:
     プロジェクトだけが、フックの対象になる。置き場は設定ディレクトリ(エージェントは読み書きできない)。"""
     state = Path(script_integrity.state_dir(str(config_dir), str(target_dir)))
     if state.is_dir():
-        print("  [OK] フックの状態ディレクトリは作成済み")
+        print("  [OK] スクリプト検査フックの記録用ディレクトリは、すでにあります")
         return
     state.mkdir(parents=True)
-    print(f"  [作成] フックの状態ディレクトリ: {state}")
+    print("  [作成] スクリプト検査フックが記録を残すディレクトリを作成しました")
 
 
 # --- agy プロジェクト ------------------------------------------------------------
@@ -612,18 +612,18 @@ def write_gdrive_rules(ask: "Prompter", target_dir: "Path | None", prefix: Path,
             return
         dest.unlink()
     if dest.exists() and dest.read_text(encoding="utf-8") == text:
-        print(f"  [OK] {RULES_DIR / GDRIVE_RULES} は対応済み")
+        print(f"  [OK] {RULES_DIR / GDRIVE_RULES} は、すでに最新の内容です")
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
-    print(f"  [書込] {RULES_DIR / GDRIVE_RULES}（Drive CLI の使い方。プロファイル {profile}）")
+    print(f"  [書込] Drive CLI の使い方（プロファイル {profile}）を {RULES_DIR / GDRIVE_RULES} に書きました")
 
 
 def remove_gdrive_rules(target_dir: "Path | None") -> None:
     dest = target_dir / RULES_DIR / GDRIVE_RULES if target_dir else None
     if dest and dest.is_file() and not dest.is_symlink() and GDRIVE_RULES_MARK in dest.read_text(encoding="utf-8", errors="replace"):
         dest.unlink()
-        print(f"  [削除] {RULES_DIR / GDRIVE_RULES}（Drive CLI を外したため）")
+        print(f"  [削除] Drive CLI を外したので、{RULES_DIR / GDRIVE_RULES} を削除しました")
 
 
 def remove_project_gdrive_allow(project_json: Path, prefix: Path, profile: str) -> None:
@@ -645,7 +645,7 @@ def delete_profile_files(config_dir: Path, profile: str) -> None:
         f = config_dir / "gdrive" / name
         if f.exists():
             f.unlink()
-            print(f"  [削除] {f}")
+            print(f"  [削除] {f} を削除しました")
 
 
 def check_profile_file(ask: "Prompter", bridge_config_dir: Path, profile: str) -> None:
@@ -686,7 +686,7 @@ def update_project_gdrive_allow(project_json: Path, prefix: Path, profile: str,
     for e in stale:
         print(f"  [削除] 「{e[len('command('):-1] if e.startswith('command(') else e}」の実行を許可する設定を削除しました（Drive のプロファイルで無効にしたため）")
     if not added and not stale:
-        print(f"  [OK] {project_json.name} は対応済み")
+        print("  [OK] このプロジェクトの許可の設定は、すでに最新です")
 
 
 # --- 認証情報(環境変数のプロファイル。tools/cred_run.py) ---------------------------------
@@ -742,18 +742,18 @@ def write_cred_rules(ask: "Prompter", target_dir: "Path | None", prefix: Path, p
             return
         dest.unlink()
     if dest.exists() and dest.read_text(encoding="utf-8") == text:
-        print(f"  [OK] {RULES_DIR / CRED_RULES} は対応済み")
+        print(f"  [OK] {RULES_DIR / CRED_RULES} は、すでに最新の内容です")
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
-    print(f"  [書込] {RULES_DIR / CRED_RULES}（認証情報の使い方。プロファイル {profile}）")
+    print(f"  [書込] 認証情報の使い方（プロファイル {profile}）を {RULES_DIR / CRED_RULES} に書きました")
 
 
 def remove_cred_rules(target_dir: "Path | None") -> None:
     dest = target_dir / RULES_DIR / CRED_RULES if target_dir else None
     if dest and dest.is_file() and not dest.is_symlink() and CRED_RULES_MARK in dest.read_text(encoding="utf-8", errors="replace"):
         dest.unlink()
-        print(f"  [削除] {RULES_DIR / CRED_RULES}（認証情報を外したため）")
+        print(f"  [削除] 認証情報を外したので、{RULES_DIR / CRED_RULES} を削除しました")
 
 
 def cred_profile_names(config_dir: Path) -> list[str]:
@@ -803,7 +803,7 @@ def configure_cred_profile(ask: "Prompter", config_dir: Path, name: str) -> "lis
         print("  [スキップ] 値が入力されなかったので、プロファイルは作りません")
         return None
     cred_profiles.write_profile(str(path), env)
-    print(f"  [書込] {path}（chmod 600）")
+    print(f"  [書込] プロファイルを {path} に保存しました（自分だけが読み書きできる設定）")
     return list(env)
 
 
@@ -880,12 +880,12 @@ def ask_new_profile(ask: Prompter, config_dir: Path, profile: str) -> "dict | No
         key_file = ask.text("サービスアカウントの JSON 鍵のパス（空欄で別の保管先）", validate=_validate_sa_key_file, paths=True)
         if key_file:
             dest, email = store_sa_key(Path(key_file).expanduser(), config_dir, profile)
-            print(f"  [保存] {dest}（0600）")
+            print(f"  [保存] 鍵ファイルを {dest} に保存しました（自分だけが読み書きできる設定）")
             original = Path(key_file).expanduser()
             if ask.yes_no(f"元の鍵ファイル（{original}）を削除しますか?（設定ディレクトリに保存済みです。削除すると元に戻せません）",
                           default=False):
                 original.unlink()
-                print(f"  [削除] {original}")
+                print(f"  [削除] {original} を削除しました")
             print(f"  Drive で使わせたいフォルダを、サービスアカウントのメールアドレスに共有してください: {email}")
             cat = shutil.which("cat") or "cat"
             return _finish_profile(kind, [cat, str(dest)], [str(dest)])
@@ -992,9 +992,9 @@ def configure_gdrive_profile(ask: Prompter, config_dir: Path, profile: str,
                 new = old
     if created or new != old:
         gdrive_policy.write_profile(path, gdrive_policy.apply_policy(data, new))
-        print(f"  [書込] {path}")
+        print(f"  [書込] 方針を {path} に保存しました")
     else:
-        print(f"  [OK] {path} は変更なし")
+        print("  [OK] 方針は変更していません")
     return {c for c in new["commands"] if c in GDRIVE_READONLY_SUBCOMMANDS}
 
 
@@ -1036,7 +1036,7 @@ def configure_channel(ask: Prompter, config_path: Path, project_id: str, project
     """options: None = 任意の項目を設定するか聞く（y なら全グループ）/ False = 任意の項目は聞かない /
     CHANNEL_GROUPS のキー = そのグループだけを、対応づけ済みのチャンネルに設定する。"""
     if not config_path.exists():
-        print(f"  [スキップ] {config_path} がありません（先に install.py を実行してください）")
+        print(f"  [スキップ] 設定ファイル {config_path} がないので、設定できません。先に install.py を実行してください")
         return
     text = config_path.read_text(encoding="utf-8")
     channels = bridge_config.read_channels(text)
@@ -1147,13 +1147,13 @@ CHANNEL_GROUPS = {
 def _write_channel(config_path: Path, text: str, channel_id: str, entry: dict) -> None:
     new_text = bridge_config.upsert_channel(text, channel_id, entry)
     if new_text == text:
-        print("  [OK] config.yaml は対応済み")
+        print("  [OK] config.yaml は、すでに最新の内容です")
         return
     backup = config_path.with_name(config_path.name + ".bak")
     backup.write_text(text, encoding="utf-8")
     os.chmod(backup, 0o600)
     config_path.write_text(new_text, encoding="utf-8")
-    print(f"  [更新] {config_path} の channels.{channel_id}（元のファイル: {backup.name}）")
+    print(f"  [更新] {config_path} にチャンネル {channel_id} の設定を書きました（変更前の内容は {backup.name} に残しています）")
 
 
 def configure_tokens(ask: Prompter, env_path: Path) -> None:
@@ -1166,7 +1166,7 @@ def configure_tokens(ask: Prompter, env_path: Path) -> None:
     replace = False
     if any(is_set.values()):
         done = [k for k, _ in keys if is_set[k]]
-        print(f"  [OK] {', '.join(done)} は設定済み")
+        print(f"  [OK] {', '.join(done)} は、すでに設定されています")
         replace = ask.yes_no(f"設定済みのトークンを入れ直しますか?（{revert_note(env_path)}）", default=False)
     for key, prefix_hint in keys:
         if is_set[key] and not replace:
@@ -1178,7 +1178,7 @@ def configure_tokens(ask: Prompter, env_path: Path) -> None:
     if changed:
         env_path.write_text(text, encoding="utf-8")
         os.chmod(env_path, 0o600)
-        print(f"  [更新] {env_path}")
+        print(f"  [更新] トークンを {env_path} に保存しました")
 
 
 # --- 中断時のメッセージ -------------------------------------------------------------
@@ -1262,7 +1262,7 @@ class Session:
                 # git 管理は必須(恒久許可コマンドの commit-before-run 判定の前提)
                 subprocess.run(["git", "init", "-q", str(target_dir)], check=True)
                 self.git_inited = True
-                print(f"  [git init] {target_dir} は git リポジトリではなかったので初期化しました（git 管理は必須です）")
+                print(f"  [初期化] {target_dir} は git リポジトリではなかったので、git リポジトリとして初期化しました（git 管理は必須です）")
         else:
             print(f"=== {existing['name']}（ディレクトリ無しのプロジェクト） ===")
         self.target_dir, self.existing, self.selected = target_dir, existing, True
@@ -1276,14 +1276,14 @@ class Session:
                 print("  [失敗] agy への登録ができませんでした。許可の登録とチャンネルの対応づけは行えません"
                       "（agy にログインしているか確認して、もう一度やり直してください）。")
             else:
-                print("  [登録] agy に登録しました（agy --new-project）")
+                print("  [登録] agy にプロジェクトとして登録しました")
         self.project_json = project_json
         self.project_id = self.project_name = None
         if project_json is not None:
             project = load_json(project_json)
             self.project_id = project["id"]
             self.project_name = project.get("name") or (target_dir.name if target_dir else self.project_id)
-            print(f"  [OK] {self.project_name}（{self.project_id}）")
+            print(f"  [OK] プロジェクト「{self.project_name}」を対象にしました（ID: {self.project_id}）")
 
     @operation_method("ルールとフックの配置", atomic=False, redo="プロジェクトのメニューの 2)")
     def setup_files(self) -> None:
@@ -1307,7 +1307,7 @@ class Session:
         ensure_inbox_ignored(target_dir)
         finish_git(self.ask, target_dir, self.git_inited)
 
-        print("-- machine-wide settings --")
+        print("-- agy 全体の設定 --")
         agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
 
     def project(self, target_arg: "str | None" = None) -> None:
@@ -1411,11 +1411,11 @@ class Session:
             else:
                 data.pop("scopes", None)
         gdrive_policy.write_profile(path, data)
-        print(f"  [書込] {path}")
+        print(f"  [書込] プロファイルを {path} に保存しました")
         sa = config_dir / "gdrive" / f"{profile}.sa.json"
         if sa.exists() and str(sa) not in json.dumps(data["credentials"]):
             sa.unlink()
-            print(f"  [削除] {sa}（使わなくなった鍵）")
+            print(f"  [削除] 使わなくなった鍵ファイル {sa} を削除しました")
 
     @operation_method("Drive のプロファイルの切り替え", atomic=False, redo="プロジェクトのメニューの 7) → 3)")
     def switch_profile(self, current: str) -> None:
