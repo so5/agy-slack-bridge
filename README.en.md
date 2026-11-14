@@ -123,6 +123,14 @@ The `t` line of the first screen (`Slack app の設定`) also shows the Slack to
 
 To set up another project, go back with `b` and choose again. Prompts that ask for a path complete it with Tab.
 
+#### Committing the files (an existing git repository)
+
+If the files setup created in 3-1 and later (`.agents/`, `.gitignore`, and `.agents/rules/credentials.md` once credentials are set) are not committed yet, you are asked.
+
+| Prompt | How to answer |
+|---|---|
+| `コミットしますか? [Y/n]` (commit?) | **Y** (default): commits only those files; they stay in the history and can be undone later. **n**: no commit; the command to run later is shown. In a repository setup just created with `git init`, it commits without asking |
+
 #### 3-2. Mapping a Slack channel
 
 | Prompt | Answer |
@@ -169,7 +177,7 @@ If other projects have profiles, you first get this choice:
 |---|---|
 | `Drive CLI を使いますか? [y/N]` (use the Drive CLI?) | Asked only for item `1` (set up everything). **N** to skip (setup is complete); **y** to use it |
 | `認証の種類（service_account / oauth）` (authentication type) | See the table below. If unsure, press Enter (`service_account`) |
-| `サービスアカウントの JSON 鍵のパス` (path to the service account JSON key) | When you chose `service_account`. The path of the downloaded key file. It is saved as `<config dir>/gdrive/<profile>.sa.json` (0600) and the email address to share folders with is shown (delete the original key file). Empty = use another key store via the next prompt |
+| `サービスアカウントの JSON 鍵のパス` (path to the service account JSON key) | When you chose `service_account`. The path of the downloaded key file. It is saved as `<config dir>/gdrive/<profile>.sa.json` (0600) and the email address to share folders with is shown. You are then asked `元の鍵ファイルを削除しますか?` (delete the original key file? default N; it cannot be undone). Empty = use another key store via the next prompt |
 | `資格情報を取り出すコマンド` (command that prints the credentials) | For `oauth`, or when the key path was left empty. A **command that prints the key / token JSON to stdout** (examples below). Do not type a scope (`drive` etc.) here |
 | `` `…` というコマンドが見つかりません。このまま使いますか? [y/N]`` (command not found; use anyway?) | Only shown when the command is not found. If it is a typo, answer **N** and start again |
 | `詳細設定（スコープ・方針）を変更しますか? [y/N]` (change the advanced settings?) | **N**: keep the defaults below. **y**: answer the advanced questions below. Defaults: scopes `drive.readonly` (read) / `drive` (write); all commands enabled (`list,search,meta,read,download,mkdir,upload,update`); no folder limit; upload deny list of secret-like files (`.env*`, `*.pem`, `*.key`, …) and directories (`.git`, `.ssh`, …). With no folder limit, everything the credentials can see is in scope, so setting folders is recommended |

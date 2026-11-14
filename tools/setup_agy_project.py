@@ -407,10 +407,10 @@ GENERATED_PATHS = (".agents", ".gitignore")      # セットアップが作る�
 COMMIT_MESSAGE = "agy-slack-bridge: set up agent rules"
 
 
-def finish_git(target_dir: "Path | None", inited: bool) -> None:
+def finish_git(ask: "Prompter", target_dir: "Path | None", inited: bool) -> None:
     """セットアップが作った・書き換えたファイル(GENERATED_PATHS)がコミットされていなければ、
-    git init したリポジトリではコミットし、既存のリポジトリでは警告とコマンドを示す
-    (既存の履歴に、勝手にコミットを足さない)。"""
+    git init したリポジトリでは自動でコミットし、既存のリポジトリでは、コミットしてよいかを聞く
+    (既存の履歴には、断りなくコミットを足さない)。"""
     if target_dir is None or not (target_dir / ".git").exists():
         return
     paths = [p for p in GENERATED_PATHS if (target_dir / p).exists() or (target_dir / p).is_symlink()]
@@ -418,19 +418,23 @@ def finish_git(target_dir: "Path | None", inited: bool) -> None:
                             capture_output=True, text=True)
     if status.returncode != 0 or not status.stdout.strip():
         return
+    names = "、".join(paths)
     cmd = f"git -C {target_dir} add {' '.join(paths)} && git -C {target_dir} commit -m \"{COMMIT_MESSAGE}\""
-    if inited:
-        done = subprocess.run(["git", "-C", str(target_dir), "add", "--", *paths], capture_output=True, text=True)
-        if done.returncode == 0:
-            done = subprocess.run(["git", "-C", str(target_dir), "commit", "-q", "-m", COMMIT_MESSAGE, "--", *paths],
-                                  capture_output=True, text=True)
-        if done.returncode == 0:
-            print(f"  [コミット] 新しく初期化したリポジトリに、セットアップで作ったファイルをコミットしました（{', '.join(paths)}）")
+    if not inited:
+        print(f"  セットアップで作った・書き換えたファイル（{names}）が、まだコミットされていません。")
+        if not ask.yes_no("コミットしますか?（変更履歴に残り、あとで元に戻せます。これらのファイルだけをコミットします）", default=True):
+            print(f"  [スキップ] コミットしませんでした。あとでする場合は、内容を確かめて、次を実行してください:\n    {cmd}")
             return
-        print(f"  [警告] 自動コミットできませんでした（{(done.stderr or done.stdout).strip()}）。次を実行してください:\n    {cmd}")
+    done = subprocess.run(["git", "-C", str(target_dir), "add", "--", *paths], capture_output=True, text=True)
+    if done.returncode == 0:
+        done = subprocess.run(["git", "-C", str(target_dir), "commit", "-q", "-m", COMMIT_MESSAGE, "--", *paths],
+                              capture_output=True, text=True)
+    if done.returncode == 0:
+        print(f"  [コミット] セットアップで作ったファイルをコミットしました（{names}）")
         return
-    print(f"  [警告] セットアップで作った・書き換えたファイルが、まだコミットされていません（{', '.join(paths)}）。"
-          f"内容を確かめて、コミットしてください:\n    {cmd}")
+    reason = (done.stderr or done.stdout).strip().splitlines()
+    print(f"  [警告] コミットできませんでした{'（' + reason[-1] + '）' if reason else ''}。"
+          f"自分でコミットする場合は、次を実行してください:\n    {cmd}")
 
 
 def register_with_hook(target_dir: Path, config_dir: Path) -> None:
@@ -632,7 +636,7 @@ def remove_project_gdrive_allow(project_json: Path, prefix: Path, profile: str) 
         return
     for e in gone:
         allow.remove(e)
-        print(f"  [削除] {project_json.name} permissionGrants.allow: {e}")
+        print(f"  [削除] このプロジェクトに許可していたコマンド: {e[len('command('):-1] if e.startswith('command(') else e}")
     save_json(project_json, data)
 
 
@@ -644,14 +648,16 @@ def delete_profile_files(config_dir: Path, profile: str) -> None:
             print(f"  [削除] {f}")
 
 
-def warn_if_profile_missing(bridge_config_dir: Path, profile: str) -> None:
+def check_profile_file(ask: "Prompter", bridge_config_dir: Path, profile: str) -> None:
     path = bridge_config_dir / "gdrive" / f"{profile}.json"
     if not path.exists():
-        print(f"  [警告] プロファイルがまだありません: {path}（tools/gdrive-profile.md を参照。"
-              "作るまで gdrive_cli.py は動きません）")
+        print(f"  プロファイル {profile} のファイルがまだありません（{path}）。作るまで、Drive CLI は動きません。"
+              "作り方は tools/gdrive-profile.md にあります。")
     elif path.stat().st_mode & 0o022:
-        print(f"  [警告] {path} が group/other から書き込み可能です（chmod 600）。"
-              "gdrive_cli.py はこの状態では実行を拒否します")
+        print(f"  {path} が、自分以外にも書き込める設定になっています。この状態では、Drive CLI は実行を拒否します。")
+        if ask.yes_no("自分だけが読み書きできる設定（chmod 600）に直しますか?", default=True):
+            os.chmod(path, 0o600)
+            print(f"  [OK] {path} を chmod 600 にしました")
 
 
 def warn_if_gdrive_packages_missing(prefix: Path) -> None:
@@ -676,9 +682,9 @@ def update_project_gdrive_allow(project_json: Path, prefix: Path, profile: str,
     if added or stale:
         save_json(project_json, data)
     for e in added:
-        print(f"  [追加] {project_json.name} permissionGrants.allow: {e}")
+        print(f"  [追加] このプロジェクトに許可するコマンド: {e[len('command('):-1] if e.startswith('command(') else e}")
     for e in stale:
-        print(f"  [削除] {project_json.name} permissionGrants.allow: {e}（プロファイルで無効）")
+        print(f"  [削除] このプロジェクトに許可していたコマンド: {e[len('command('):-1] if e.startswith('command(') else e}（プロファイルで無効なため）")
     if not added and not stale:
         print(f"  [OK] {project_json.name} は対応済み")
 
@@ -874,8 +880,13 @@ def ask_new_profile(ask: Prompter, config_dir: Path, profile: str) -> "dict | No
         key_file = ask.text("サービスアカウントの JSON 鍵のパス（空欄で別の保管先）", validate=_validate_sa_key_file, paths=True)
         if key_file:
             dest, email = store_sa_key(Path(key_file).expanduser(), config_dir, profile)
-            print(f"  [保存] {dest}（0600）。元の鍵ファイルは削除してください")
-            print(f"  Drive で使わせたいフォルダを、このアドレスに共有してください: {email}")
+            print(f"  [保存] {dest}（0600）")
+            original = Path(key_file).expanduser()
+            if ask.yes_no(f"元の鍵ファイル（{original}）を削除しますか?（設定ディレクトリに保存済みです。削除すると元に戻せません）",
+                          default=False):
+                original.unlink()
+                print(f"  [削除] {original}")
+            print(f"  Drive で使わせたいフォルダを、サービスアカウントのメールアドレスに共有してください: {email}")
             cat = shutil.which("cat") or "cat"
             return _finish_profile(kind, [cat, str(dest)], [str(dest)])
     command = ask.text("資格情報を取り出すコマンド",
@@ -1294,7 +1305,7 @@ class Session:
         register_with_hook(target_dir, config_dir)
         ensure_scratch_ignored(target_dir)
         ensure_inbox_ignored(target_dir)
-        finish_git(target_dir, self.git_inited)
+        finish_git(self.ask, target_dir, self.git_inited)
 
         print("-- machine-wide settings --")
         agy_settings.update_settings(project_deny_rules(target_dir), [str(target_dir)])
@@ -1342,8 +1353,8 @@ class Session:
         enabled = configure_gdrive_profile(ask, config_dir, profile, gate)
         update_project_gdrive_allow(self.project_json, prefix, profile, enabled)
         write_gdrive_rules(ask, self.target_dir, prefix, config_dir, profile)
-        finish_git(self.target_dir, self.git_inited)
-        warn_if_profile_missing(config_dir, profile)
+        finish_git(self.ask, self.target_dir, self.git_inited)
+        check_profile_file(ask, config_dir, profile)
         warn_if_gdrive_packages_missing(prefix)
 
     def drive_menu(self) -> None:
@@ -1490,7 +1501,7 @@ class Session:
                 return
             if key == "3":
                 remove_cred_rules(self.target_dir)
-                finish_git(self.target_dir, self.git_inited)
+                finish_git(self.ask, self.target_dir, self.git_inited)
                 print("  [OK] このプロジェクトでは認証情報の使い方を伝えません（プロファイルのファイルは残しています）。")
                 return
             name = current if key == "1" else self.pick_cred_profile()
@@ -1506,7 +1517,7 @@ class Session:
         if users:
             print(f"  [注意] このプロファイルは {', '.join(users)} と共有です。値を変えると、どちらにも反映されます。")
         write_cred_rules(ask, self.target_dir, prefix, name, names)
-        finish_git(self.target_dir, self.git_inited)
+        finish_git(self.ask, self.target_dir, self.git_inited)
 
     def pick_cred_profile(self) -> "str | None":
         existing = cred_profile_names(self.config_dir)

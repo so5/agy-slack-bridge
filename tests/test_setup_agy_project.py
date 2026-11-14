@@ -269,7 +269,7 @@ def test_profile_is_pinned_before_the_subcommand_in_every_entry(tmp_path):
 
 def test_warns_when_profile_missing(env, capsys):
     run(env, Scripted({"Drive CLI": "y"}))
-    assert "プロファイルがまだありません" in capsys.readouterr().out
+    assert "のファイルがまだありません" in capsys.readouterr().out
 
 
 # --- Slack channel mapping ------------------------------------------------------------
@@ -1103,11 +1103,21 @@ def test_generated_files_are_committed_when_setup_ran_git_init(env, tmp_path, mo
     assert "set up agent rules" in _git(other, "log", "--oneline")
 
 
-def test_existing_repo_is_not_committed_to_but_warned(env, capsys):
-    run(env)
+def test_existing_repo_asks_before_committing_and_default_commits(env, capsys):
+    run(env, Scripted({"コミットしますか": "n"}))
     out = capsys.readouterr().out
-    assert _git(env.target, "log", "--oneline").strip() == ""      # no commit was made
-    assert "コミットされていません" in out and f"git -C {env.target} add" in out
+    assert _git(env.target, "log", "--oneline").strip() == ""      # declined: no commit
+    assert f"git -C {env.target} add" in out and "あとでする場合" in out
+    run(env, Scripted({"コミットしますか": "y"}))
+    assert "set up agent rules" in _git(env.target, "log", "--oneline")
+    assert _git(env.target, "status", "--porcelain", "--", ".agents").strip() == ""
+
+
+def test_existing_repo_commit_question_is_not_asked_when_nothing_is_uncommitted(env):
+    run(env, Scripted({"コミットしますか": "y"}))
+    ask = Scripted({"コミットしますか": "y"})
+    run(env, ask)
+    assert not any("コミットしますか" in q for q in ask.asked)
 
 
 def test_tool_usage_rules_are_linked_next_to_the_safety_rules(env):

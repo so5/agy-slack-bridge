@@ -67,8 +67,18 @@ def install_global_hook(prefix: Path, config_dir: Path, path: "Path | None" = No
         return False
     data[HOOK_NAME] = entry
     save_json(path, data)
-    print(f"  [書込] {path} にフック {HOOK_NAME} を登録（{hook}）")
+    print(f"  [書込] スクリプト実行の検査フック（{HOOK_NAME}）を agy に登録しました（{path.name}）")
     return True
+
+
+_DENY_VERBS = {"read_file": "の読み取り", "write_file": "への書き込み"}
+
+
+def describe_deny(entry: str) -> str:
+    """deny ルール(`read_file(/path)` など)を、設定画面向けの言い方にする。"""
+    action, _, rest = entry.partition("(")
+    target = rest[:-1] if rest.endswith(")") else rest
+    return f"{target} {_DENY_VERBS[action]}" if action in _DENY_VERBS else entry
 
 
 def update_settings(deny_rules: list[str], trusted_workspaces: "list[str] | None" = None,
@@ -82,9 +92,9 @@ def update_settings(deny_rules: list[str], trusted_workspaces: "list[str] | None
     if added_deny or added_ws:
         save_json(path, data)
     for e in added_deny:
-        print(f"  [追加] settings.json permissions.deny: {e}")
+        print(f"  [追加] エージェントに禁止する操作: {describe_deny(e)}")
     for e in added_ws:
-        print(f"  [追加] settings.json trustedWorkspaces: {e}")
+        print(f"  [追加] agy が信頼する作業ディレクトリ: {e}")
     if not added_deny and not added_ws:
         print("  [OK] settings.json は対応済み")
     return added_deny + added_ws
