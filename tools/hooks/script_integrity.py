@@ -32,10 +32,13 @@ strings but all resolve to the same file.
   (`<state dir>/hashes.json`, hook-owned) remembers each
   exact command string's script content the first time it's seen; a *later*
   run of the identical command string with *different* script content is
-  denied once (forcing a visible pause instead of a silent swap, with a
+  denied (forcing a visible pause instead of a silent swap, with a
   unified diff of what changed in the deny message, so whoever's approving
-  can actually judge it), and the ledger is updated to the new content at
-  the same time, so simply asking again succeeds.
+  can actually judge it). The new content is kept as *pending* only: the
+  same command is denied again until a person approves it (the bridge does
+  that when a grant button is pressed or script review grants it), so the
+  agent cannot get through by simply sending it again. A command never seen
+  before has nothing to compare with: it is recorded and passes.
 
 Anything this can't confidently identify as "running a script" (most
 commands) falls through as "ask" - i.e. exactly the normal permission flow,
@@ -64,6 +67,7 @@ SHELL_OPERATORS = {";", "&&", "||", "|", "&"}
 DEFAULT_CONFIG_DIR = os.path.expanduser("~/.config/agy-slack-bridge")
 PERMANENT_COMMANDS_NAME = "permanent.json"
 COMMAND_HASHES_NAME = "hashes.json"
+PENDING_NAME = "pending.json"
 
 
 def state_dir(config_dir: str, root: str) -> str:
@@ -256,11 +260,44 @@ def load_hashes(state: str) -> dict:
         return {}
 
 
-def save_hashes(state: str, data: dict) -> None:
-    path = os.path.join(state, COMMAND_HASHES_NAME)
+def _save_json(state: str, name: str, data: dict) -> None:
+    path = os.path.join(state, name)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=1)
+    os.replace(tmp, path)
+
+
+def save_hashes(state: str, data: dict) -> None:
+    _save_json(state, COMMAND_HASHES_NAME, data)
+
+
+def load_pending(state: str) -> dict:
+    try:
+        return json.loads(open(os.path.join(state, PENDING_NAME)).read())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def save_pending(state: str, data: dict) -> None:
+    _save_json(state, PENDING_NAME, data)
+
+
+def approve_pending(state: str, cmdlines: "list[str]") -> list:
+    """What a person's approval does (the bridge calls this when a grant button is
+    pressed or script review grants automatically): the content a changed command was
+    last denied with becomes the approved one, so the command runs. Returns the command
+    strings approved. Nothing else ever moves content from pending to approved."""
+    pending = load_pending(state)
+    approved = [c for c in cmdlines if c in pending]
+    if approved:
+        hashes = load_hashes(state)
+        for c in approved:
+            hashes[c] = pending.pop(c)
+        save_hashes(state, hashes)
+        save_pending(state, pending)
+    return approved
 
 
 def changed_reason(cmdline: str, targets: list[str], root: str, state: str) -> "str | None":
@@ -269,18 +306,20 @@ def changed_reason(cmdline: str, targets: list[str], root: str, state: str) -> "
     sighting of a command string just records its script(s)' current
     content and allows it - nothing to compare against yet. A later run of
     the *identical* command string whose script content has since changed
-    is denied once, with a unified diff of the change in the deny message
-    (so the human approving can actually tell what changed, not just that
-    something did), and the ledger is refreshed to the new content in the
-    same step, so asking again (after confirming the change is intentional)
-    succeeds without a second denial."""
+    is denied, with a unified diff of the change in the deny message (so the
+    human approving can actually tell what changed). The new content is only
+    kept as *pending*: the approved content in the ledger does not move, so
+    sending the same command again is denied again until a person approves
+    (approve_pending, called by the bridge). Changing the script back to the
+    approved content clears the pending entry."""
     all_entries = load_hashes(state)
     prior = all_entries.get(cmdline)
     current = {os.path.relpath(p, root): read_text(p) for p in targets}
 
     if prior is not None and prior != current:
-        all_entries[cmdline] = current
-        save_hashes(state, all_entries)
+        pending = load_pending(state)
+        pending[cmdline] = current
+        save_pending(state, pending)
         changed = [p for p in current if prior.get(p) != current.get(p)]
         diff_chunks = []
         for relpath in changed:
@@ -296,11 +335,17 @@ def changed_reason(cmdline: str, targets: list[str], root: str, state: str) -> "
             diff_text = diff_text[:MAX_DIFF_CHARS] + "\n...(長いため省略)"
         return (f"{', '.join(changed)} の中身が、前回この同じコマンドを実行した時から変わっています。\n"
                 f"変更内容:\n{diff_text}\n"
-                "変更が意図したものか確認し、問題なければ同じ指示をもう一度送ってください。")
+                "人の承認があるまで、同じコマンドを送り直しても実行できません。"
+                "承認の確認（Slack の許可ボタン）が出るので、それを待ってください。")
 
     if prior is None:
         all_entries[cmdline] = current
         save_hashes(state, all_entries)
+    else:
+        pending = load_pending(state)
+        if cmdline in pending:
+            del pending[cmdline]
+            save_pending(state, pending)
     return None
 
 

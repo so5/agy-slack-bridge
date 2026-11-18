@@ -153,7 +153,7 @@ Only the code is replaced; your config (`config.yaml`, `env`, state DB) is untou
 | `agy invocation failed` in Slack | Look at the journal. When `agy` exits non-zero, the tail of its stdout is logged. Is `agy` logged in (`agy -p hi` as the bridge user)? |
 | `RESOURCE_EXHAUSTED` | Model quota used up. Switch to another model family with `/agy-model` |
 | "Permission denied" shows up | Normal. Grant it with the button or `/agy-permissions add` |
-| The same instruction is rejected once (with a script diff) | Protection for a script that changed since its last run. Check the diff, then send the same instruction again |
+| The same instruction is rejected (with a script diff) | Protection for a script that changed since its last run. Check the diff, then approve with the Slack grant button (sending it again does not get it through) |
 | A config change has no effect | Restart the bridge |
 | The safety rules do not seem to apply | Is the `.agents/rules/agent-safety-rules.md` link there (re-run `setup_agy_project.py`)? A rule file needs frontmatter (`trigger: always_on`); without it it is silently ignored |
 | `gdrive_cli.py` says the current directory is inside the install directory | It must run from the project directory (the one agy opened). `download` saves to `<project>/scratch/gdrive/` and prints the absolute path |

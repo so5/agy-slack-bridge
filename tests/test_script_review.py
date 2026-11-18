@@ -585,3 +585,17 @@ def test_credential_values_never_reach_slack(project, monkeypatch, tmp_path):
     client, store, perms = _drive(monkeypatch, project, "harmless", [_agy_result([], response="the token is tok_ABCdef123456")])
     text = "\n".join(client.posts)
     assert "tok_ABCdef123456" not in text and "the token is ***" in text
+
+
+def test_grant_approves_the_pending_content_of_a_changed_script(project, monkeypatch, tmp_path):
+    import json
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "hashes.json").write_text(json.dumps({"python3 scratch/a.py": {"scratch/a.py": "1"}}))
+    (state / "pending.json").write_text(json.dumps({"python3 scratch/a.py": {"scratch/a.py": "2"},
+                                                     "python3 scratch/b.py": {"scratch/b.py": "9"}}))
+    monkeypatch.setattr(bridge, "_project_root", lambda pid: tmp_path)
+    monkeypatch.setattr(bridge, "_integrity_state_dir", lambda root: state)
+    bridge._approve_changed_scripts("p", ["command(python3 scratch/a.py)"])
+    assert json.loads((state / "hashes.json").read_text()) == {"python3 scratch/a.py": {"scratch/a.py": "2"}}
+    assert list(json.loads((state / "pending.json").read_text())) == ["python3 scratch/b.py"]   # others stay pending

@@ -1253,6 +1253,40 @@ def _grantable_entry(err: dict) -> Optional[dict]:
     return {"entry": entry, "describe": describe}
 
 
+def _approve_changed_scripts(project_id: str, entries: list) -> None:
+    """A person (grant button) or script review approved these entries: the content the
+    integrity hook last denied a changed command with becomes the approved content, so the
+    command runs. Mirrors tools/hooks/script_integrity.py approve_pending (the hook's own
+    files: pending.json -> hashes.json, in the config dir the agent cannot write)."""
+    try:
+        root = _project_root(project_id)
+        if root is None or not entries:
+            return
+        state = _integrity_state_dir(root)
+        pending_path, hashes_path = state / "pending.json", state / "hashes.json"
+        pending = json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.exists() else {}
+        if not pending:
+            return
+        try:
+            hashes = json.loads(hashes_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            hashes = {}
+        approved = []
+        for cmdline in list(pending):
+            g = _grantable_entry({"tool_name": "run_command", "parameters": {"CommandLine": cmdline}})
+            if g and g["entry"] in entries:
+                hashes[cmdline] = pending.pop(cmdline)
+                approved.append(cmdline)
+        if approved:
+            for path, data in ((hashes_path, hashes), (pending_path, pending)):
+                tmp = path.with_name(path.name + ".tmp")
+                tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+                os.replace(tmp, path)
+            log.info("approved changed script content for %d command(s)", len(approved))
+    except Exception:
+        log.exception("could not approve pending script content")
+
+
 def _project_root(project_id: str) -> Optional[Path]:
     """Best-effort: the git working directory agy registered for this
     project, read from ~/.gemini/config/projects/<id>.json. Used to scope
@@ -1756,6 +1790,7 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
     tool_steps = set()
     raw_tool_events = []  # kept only for diagnostics (see _run_and_reply)
     last_tool_step: dict = {}
+    error_steps: list = []  # step index of each entry in tool_errors
     for line in proc.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -1785,6 +1820,29 @@ def run_agy(text: str, project_id: str, conversation_id: Optional[str],
                     "parameters": info.get("parameters"),
                     "message": (info.get("error") or {}).get("message"),
                 })
+                error_steps.append(step.get("step_index"))
+
+    # A denial that the *same command* later got past in this run (it ran and produced output)
+    # is history, not an open request: reporting it would show finished work as waiting for an
+    # approval. A denial the person still has to decide stays (the hook keeps denying a changed
+    # script until it is approved, so that case never gets a later success).
+    succeeded: dict = {}
+    for idx, st in last_tool_step.items():
+        info = st.get("tool_info") or {}
+        c = (info.get("parameters") or {}).get("CommandLine")
+        if (st.get("tool_name") == "run_command" and st.get("state") == "DONE"
+                and "output" in info and c and isinstance(idx, int)):
+            succeeded[c] = max(succeeded.get(c, -1), idx)
+    if succeeded:
+        kept = []
+        for err, idx in zip(tool_errors, error_steps):
+            c = (err.get("parameters") or {}).get("CommandLine")
+            if (err.get("tool_name") == "run_command" and c in succeeded
+                    and isinstance(idx, int) and succeeded[c] > idx):
+                log.info("dropping a denial of %r: the same command succeeded later in this run", c)
+                continue
+            kept.append(err)
+        tool_errors[:] = kept
 
     if proc.returncode != 0 and result is None:
         raise RuntimeError(f"agy exited {proc.returncode}: {proc.stderr.strip()[-2000:]}")
@@ -2512,8 +2570,8 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
             permission_errors.append(e)
 
     # A script that changed since its last run is reviewed like a first run (and then granted
-    # or offered a button like a denied one): the hook already updated its ledger, so the
-    # same command passes it from here on. It is never "stuck" - it may well be allowed already.
+    # or offered a button like a denied one): the hook keeps the new content as pending
+    # until a person (or the review) approves it here (_approve_changed_scripts). It is never "stuck" - it may well be allowed already.
     permission_errors.extend(script_changed_errors)
 
     # Already refused by the person in this conversation: refuse again, no review, no button.
@@ -2601,6 +2659,7 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
         review_notes, reviewed_errors = [], []
     auto_entries: list[str] = []
     if auto_errors:
+        _approve_changed_scripts(project_id, [(_grantable_entry(e) or {}).get("entry") for e in auto_errors])
         for e in auto_errors:
             g = _grantable_entry(e)
             if g and g["entry"] not in auto_entries:
@@ -2979,6 +3038,7 @@ def build_app() -> App:
                               "granted_permanent" if permanent else "granted_once", entries, clicker)
         _reset_denial_throttle(conversation_id)
         _forget_user_denial(conversation_id, entries)
+        _approve_changed_scripts(ctx["project_id"], entries)
 
         for entry in entries:
             newly_added = permissions.add_entry(ctx["project_id"], entry)

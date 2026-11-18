@@ -79,13 +79,41 @@ def test_permanent_script_uncommitted_edit_is_denied(repo):
     assert _hook(repo, "python3 tool.py")["decision"] == "deny"
 
 
-def test_temp_script_changed_between_runs_is_denied_once_with_diff(repo):
+def test_temp_script_changed_between_runs_is_denied_with_diff_until_a_person_approves(repo):
     (repo / "scratch.py").write_text("a\n")
     assert _hook(repo, "python3 scratch.py")["decision"] == "ask"  # first sighting
     (repo / "scratch.py").write_text("b\n")
     res = _hook(repo, "python3 scratch.py")
     assert res["decision"] == "deny" and "-a" in res["reason"] and "+b" in res["reason"]
-    assert _hook(repo, "python3 scratch.py")["decision"] == "ask"  # second ask passes
+    # sending the same command again does not get it through
+    for _ in range(3):
+        assert _hook(repo, "python3 scratch.py")["decision"] == "deny"
+    # the approval (the bridge's, on a button press) is what lets it through
+    assert si.approve_pending(_state(repo), ["python3 scratch.py"]) == ["python3 scratch.py"]
+    assert _hook(repo, "python3 scratch.py")["decision"] == "ask"
+    # edited again after approval: denied again
+    (repo / "scratch.py").write_text("c\n")
+    assert _hook(repo, "python3 scratch.py")["decision"] == "deny"
+
+
+def test_reverting_a_denied_change_clears_the_pending_entry(repo):
+    (repo / "scratch.py").write_text("a\n")
+    _hook(repo, "python3 scratch.py")
+    (repo / "scratch.py").write_text("b\n")
+    assert _hook(repo, "python3 scratch.py")["decision"] == "deny"
+    (repo / "scratch.py").write_text("a\n")
+    assert _hook(repo, "python3 scratch.py")["decision"] == "ask"
+    assert si.load_pending(_state(repo)) == {}
+
+
+def test_approval_uses_the_content_last_denied_not_a_later_edit(repo):
+    (repo / "scratch.py").write_text("a\n")
+    _hook(repo, "python3 scratch.py")
+    (repo / "scratch.py").write_text("b\n")
+    _hook(repo, "python3 scratch.py")                       # denied with b (what the person sees)
+    (repo / "scratch.py").write_text("evil\n")             # edited after, before the click
+    si.approve_pending(_state(repo), ["python3 scratch.py"])
+    assert _hook(repo, "python3 scratch.py")["decision"] == "deny"
 
 
 def test_project_that_was_not_set_up_is_left_alone(repo, tmp_path):

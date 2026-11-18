@@ -152,7 +152,7 @@ systemctl --user restart agy-slack-bridge.service
 | Slack に `agy invocation failed` | ジャーナルを見る。`agy` が非ゼロで終了したときは、標準出力の末尾がログに残る。`agy` にログインできているか（ブリッジを動かすユーザーで `agy -p hi`） |
 | `RESOURCE_EXHAUSTED` | モデルの利用枠切れ。`/agy-model` で別系統のモデルに切り替える |
 | 「権限がない」と表示される | 正常な動作。ボタン、または `/agy-permissions add` で許可する |
-| 同じ指示が一度だけ拒否される（スクリプトの差分つき） | スクリプトが前回から変わったときの保護。内容を確認して、同じ指示をもう一度送る |
+| 同じ指示が拒否される（スクリプトの差分つき） | スクリプトが前回から変わったときの保護。内容を確認して、Slack の許可ボタンで承認する(送り直しても通らない) |
 | 設定を変えたのに反映されない | ブリッジを再起動する |
 | 安全規則が効いていない | `.agents/rules/agent-safety-rules.md` のリンクがあるか（`setup_agy_project.py` を再実行）。ルールファイルには frontmatter（`trigger: always_on`）が必要で、無いとエラーなしで無視される |
 | `gdrive_cli.py` が「カレントディレクトリがインストール先の中」と言う | プロジェクトのディレクトリ(agy が開いているもの)で実行する必要があります。`download` は `<プロジェクト>/scratch/gdrive/` に保存し、絶対パスを出力します |

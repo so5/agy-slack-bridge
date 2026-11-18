@@ -98,3 +98,34 @@ def test_quota_text_names_the_model_and_flags_a_repeated_error():
     again = bridge._agy_failure_text(_ERR, "gemini-3.8-flash-high", "c1")
     assert "前回と同じ" in again
     assert "前回と同じ" not in bridge._agy_failure_text(_ERR.replace("17h2m45s", "17h0m1s"), None, "c1")
+
+
+def _step(idx, cmd, state, output=None, err=None):
+    import json
+    info = {"parameters": {"CommandLine": cmd}}
+    if output is not None:
+        info["output"] = output
+    if err:
+        info["error"] = {"message": err}
+    return json.dumps({"event": "step_update", "step_update": {
+        "step_type": "tool", "step_index": idx, "tool_name": "run_command", "state": state, "tool_info": info}})
+
+
+def _result():
+    import json
+    return json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "ok"}})
+
+
+def test_denial_followed_by_a_success_of_the_same_command_is_not_reported(monkeypatch):
+    out = "\n".join([_step(1, "python3 a.py", "ERROR", err="denied"),
+                     _step(2, "python3 a.py", "DONE", output="hi"), _result()])
+    assert _run(monkeypatch, out, "", 0)["_tool_errors"] == []
+
+
+def test_denial_without_a_later_success_or_for_another_command_is_kept(monkeypatch):
+    out = "\n".join([_step(1, "python3 a.py", "ERROR", err="denied"),
+                     _step(2, "python3 b.py", "DONE", output="hi"), _result()])
+    assert len(_run(monkeypatch, out, "", 0)["_tool_errors"]) == 1
+    out = "\n".join([_step(1, "python3 a.py", "DONE", output="hi"),
+                     _step(2, "python3 a.py", "ERROR", err="denied"), _result()])   # success came first
+    assert len(_run(monkeypatch, out, "", 0)["_tool_errors"]) == 1
