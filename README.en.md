@@ -288,7 +288,7 @@ Lets the agent use Google Calendar and Gmail (`tools/google_calendar.py` and `to
 
 For a configured project, item `10` opens: `1` add an account (profile), `2` change a profile's policy, `3` detach a profile from this project. Detaching updates the permissions, the skills and the pointer rule.
 
-**Moving from a project that kept its own scripts (such as secretary)**: (1) create a profile per account with item `10` (import the existing `token.json`). (2) Delete the old scripts and hand-written skills and permissions only after checking the move. (3) For aliases that used a personal token plus a search condition (such as a university account), create a profile with `token_from` pointing at the personal profile's token, and put the condition in `メールの検索条件`. (4) The labeling in the old `mail_client.py` (such as `label-givery`) is not bundled.
+**Moving from a project that kept its own scripts (such as secretary)**: (1) create a profile per account with item `10` (import the existing `token.json`). (2) Delete the old scripts and hand-written skills and permissions only after checking the move. (3) For aliases that used a personal token plus a search condition (such as a university account), create a profile with `token_from` pointing at the personal profile's token, and put the condition in `メールの検索条件`. (4) Business-specific features of the old `mail_client.py`, such as its labeling, are not bundled.
 
 ### 4. Start
 
