@@ -1052,23 +1052,42 @@ def test_shared_copy_replaces_an_old_link_and_asks_before_overwriting_edits(env)
     assert (rules / "local-tools.md").read_text() == "v2\n"
 
 
-def test_drive_setup_writes_usage_rules_with_the_exact_allowed_commands_and_detach_removes_them(env):
+def test_drive_setup_writes_a_skill_with_the_exact_allowed_commands_and_a_pointer_rule_and_detach_removes_them(env):
     _drive_project(env)
-    rules = env.target / ".agents/rules/gdrive-cli.md"
-    text = rules.read_text()
+    skill = env.target / ".agents/skills/gdrive-cli/SKILL.md"
+    rule = env.target / ".agents/rules/skills-first.md"
+    text = skill.read_text()
     py, script = f"{env.prefix.resolve()}/.venv/bin/python", f"{env.prefix.resolve()}/tools/gdrive_cli.py"
     cmd = f"{py} -I {script} --profile {pname(env)}"
-    assert text.startswith("---\ntrigger: always_on\n---\n") and f"`{cmd} list <フォルダID>`" in text
-    assert f"`{cmd} upload " in text and "実行のたびにユーザーの承認が要る" in text
+    assert text.startswith("---\nname: gdrive-cli\ndescription: Google Drive のファイルを探す・読む・取得する・アップロードするとき")
+    assert f"`{cmd} list <フォルダID>`" in text and f"`{cmd} upload " in text and "実行のたびにユーザーの承認が要る" in text
+    assert "コマンドは 1 回に 1 つ" in text and "`;` `&&`" in text
+    # the always-on rule is short: how to use fixed commands + where the skill is
+    rt = rule.read_text()
+    assert rt.startswith("---\ntrigger: always_on\n---\n") and "1 回に 1 つだけ" in rt and "`;` `&&`" in rt
+    assert ".agents/skills/gdrive-cli/SKILL.md" in rt and "list <フォルダID>" not in rt
     _drive_menu(env, {"選択": ["1", "7", "1", "b", "b", "q"], "有効にするコマンド": "list,read"})
-    text = rules.read_text()
+    text = skill.read_text()
     assert f"{cmd} list" in text and f"{cmd} read" in text and "search" not in text and "upload" not in text
-    rules.write_text("my own notes\n")                      # not ours: ask before replacing (default N)
+    skill.write_text("my own notes\n")                     # not ours: ask before replacing (default N)
     _drive_menu(env, {"選択": ["1", "7", "1", "b", "b", "q"], "有効にするコマンド": "list"})
-    assert rules.read_text() == "my own notes\n"
-    rules.write_text(text)                                    # ours again (carries the marker)
+    assert skill.read_text() == "my own notes\n"
+    skill.write_text(text)                                    # ours again (carries the marker)
     _drive_menu(env, {"選択": ["1", "7", "4", "q"], "削除しますか": "n"})
-    assert not rules.exists()
+    assert not skill.exists() and not rule.exists() and not skill.parent.exists()
+
+
+def test_drive_setup_replaces_the_old_generated_gdrive_rule(env):
+    old = env.target / ".agents/rules/gdrive-cli.md"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    _drive_project(env)
+    assert not old.exists()                                    # (none yet): nothing to do
+    old.write_text("---\ntrigger: always_on\n---\n" + setup.GDRIVE_RULES_MARK + "\nold\n")
+    _drive_menu(env, {"選択": ["1", "7", "1", "b", "b", "q"], "有効にするコマンド": "list"})
+    assert not old.exists() and (env.target / ".agents/skills/gdrive-cli/SKILL.md").exists()
+    old.write_text("my own rule\n")                           # not ours: left alone
+    _drive_menu(env, {"選択": ["1", "7", "1", "b", "b", "q"], "有効にするコマンド": "list"})
+    assert old.read_text() == "my own rule\n"
 
 
 def _git_identity(monkeypatch):
