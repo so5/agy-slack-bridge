@@ -114,9 +114,12 @@ def test_fresh_setup_registers_links_and_denies(env):
     deny = s["permissions"]["deny"]
     # machine-wide denies (prefix, config dir) come from install.py; setup adds only its own
     assert f"read_file({env.prefix.resolve()})" in deny and f"write_file({env.cfg.resolve()})" in deny
-    # only the safety-rules link is write-protected; other rules and AGENTS.md stay editable
-    assert [d for d in deny if str(env.target.resolve()) in d] == [
-        f"write_file({env.target.resolve()}/.agents/rules/agent-safety-rules.md)"]
+    # the safety-rules link and the agent extension configs (MCP servers, hooks) are write-protected
+    # (even when absent); other rules and AGENTS.md stay editable
+    t = env.target.resolve()
+    assert [d for d in deny if str(t) in d] == [
+        f"write_file({t}/.agents/rules/agent-safety-rules.md)",
+        f"write_file({t}/.agents/mcp_config.json)", f"write_file({t}/.agents/hooks.json)"]
     assert "allow" not in s["permissions"]  # never writes machine-wide allow
     # the hook's state (seals, ledger) is registered under the config dir, not in the project
     state = script_integrity.state_dir(str(env.cfg.resolve()), str(env.target.resolve()))

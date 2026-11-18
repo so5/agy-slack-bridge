@@ -35,7 +35,8 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
   2. agy へのプロジェクト登録(未登録なら `agy --new-project -p hi` を対象ディレクトリで実行。
      プロジェクト名は、そのディレクトリ名になる)。
   3. ~/.gemini/antigravity-cli/settings.json の trustedWorkspaces に対象ディレクトリを追加し、
-     安全規則のリンク(.agents/rules/agent-safety-rules.md)への書き込みを禁じる deny を足す。
+     安全規則のリンク(.agents/rules/agent-safety-rules.md)と、.agents/mcp_config.json・.agents/hooks.json
+     (MCP サーバーとフックの設定)への書き込みを禁じる deny を足す。
      (許可(allow)は、ここには決して書かない。インストール先・設定ディレクトリを守る
      machine-wide の deny と、グローバルの hooks.json へのフック登録は、install.py が行う。)
      併せて、フックの状態ディレクトリ(<設定ディレクトリ>/integrity/…、恒久許可の seal
@@ -152,10 +153,14 @@ LEGACY_INCLUDE_LABELS = {
 
 
 def project_deny_rules(target_dir: Path) -> list[str]:
-    """プロジェクトごとの deny。安全規則のリンクだけを守る(.agents/rules/ の他のルールや
-    AGENTS.md は、エージェントが編集できるままにする)。インストール先・設定ディレクトリを
-    守る machine-wide の deny は install.py が書く。"""
-    return [f"write_file({target_dir}/{RULES_DIR / SAFETY_RULES})"]
+    """プロジェクトごとの deny。安全規則のリンクと、エージェントの拡張設定(MCP サーバー・フック)を
+    守る(.agents/rules/ の他のルールや AGENTS.md は、エージェントが編集できるままにする)。
+    mcp_config.json / hooks.json は、エージェントが書けると、次のセッションで承認なしに任意のコマンドが
+    起動する(MCP サーバーの command)・安全フックが外れるため、まだ無くても禁じる。
+    インストール先・設定ディレクトリを守る machine-wide の deny は install.py が書く。"""
+    return [f"write_file({target_dir}/{RULES_DIR / SAFETY_RULES})",
+            f"write_file({target_dir}/.agents/mcp_config.json)",
+            f"write_file({target_dir}/.agents/hooks.json)"]
 
 
 # --- 対話 ---------------------------------------------------------------------
