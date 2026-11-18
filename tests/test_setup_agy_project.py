@@ -1062,6 +1062,7 @@ def test_drive_setup_writes_a_skill_with_the_exact_allowed_commands_and_a_pointe
     assert text.startswith("---\nname: gdrive-cli\ndescription: Google Drive のファイルを探す・読む・取得する・アップロードするとき")
     assert f"`{cmd} list <フォルダID>`" in text and f"`{cmd} upload " in text and "実行のたびにユーザーの承認が要る" in text
     assert "コマンドは 1 回に 1 つ" in text and "`;` `&&`" in text
+    assert "同じターンで続けて発行しない" in text and "同じターンで続けて発行しない" in rule.read_text()
     # the always-on rule is short: how to use fixed commands + where the skill is
     rt = rule.read_text()
     assert rt.startswith("---\ntrigger: always_on\n---\n") and "1 回に 1 つだけ" in rt and "`;` `&&`" in rt
