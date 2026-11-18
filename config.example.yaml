@@ -50,6 +50,15 @@ channels: {}
 #     icon_emoji: ":sparkles:"
 #     model: "gemini-3.1-pro-high"
 
+# Optional: limits on permission buttons per conversation (defaults shown). After
+# `button_limit` button-bearing denials within `window_seconds` (and no grant click in
+# between) buttons stop being offered; `auto_grant_limit` is the separate, looser cap on
+# denials that script review grants automatically. Read at startup / config reload.
+#permission_throttle:
+#  button_limit: 3
+#  window_seconds: 600
+#  auto_grant_limit: 10
+
 # Optional usage statistics, both off by default. This top-level block applies
 # to every channel; a channel can override it with its own `telemetry:` block
 # under `channels:`. `/agy-stats on|off <feature>` rewrites these in place.

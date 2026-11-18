@@ -436,21 +436,65 @@ def test_clear_temp_grants_keeps_the_kept_entries(tmp_path):
     assert store.clear_temp_grants("c1", "a") == ["command(x)"]
 
 
-def test_entry_the_person_refused_is_refused_again_in_that_conversation(project, monkeypatch):
+def test_entry_the_person_refused_is_asked_about_once_then_refused_in_that_conversation(project, monkeypatch):
     err = {"tool_name": "run_command", "parameters": {"CommandLine": "python3 scratch/a.py"},
            "message": "user denied permission to run"}
+    entry = "command(python3 scratch/a.py)"
     bridge._USER_DENIED.clear()
-    bridge._remember_user_denial("c1", ["command(python3 scratch/a.py)"])
+    bridge._REFUSAL_ASKED.clear()
+    bridge._remember_user_denial("c1", [entry])
     monkeypatch.setattr(bridge.script_review, "review", lambda *a, **k: pytest.fail("reviewed"))
+    # first time: not granted, no review, but asked ("you refused this earlier - allow it?") with one button
     client, store, perms = _drive(monkeypatch, project, "harmless", [_agy_result([err])])
-    assert perms.entries == [] and store.retries == [] and store.temp == []
-    assert any("拒否したため、自動で拒否" in p for p in client.posts)
-    assert ("refused_auto", ["command(python3 scratch/a.py)"]) in store.logged
+    assert perms.entries == [] and store.temp == []
+    assert any("以前あなたが拒否した操作ですが、許可しますか" in p for p in client.posts)
+    assert len(store.retries) == 1
+    assert ("refused_auto", [entry]) in store.logged
+    # second time in the same conversation: refused again, no new button
+    client, store, perms = _drive(monkeypatch, project, "harmless", [_agy_result([err])])
+    assert perms.entries == [] and store.retries == []
+    assert any("自動で拒否" in p for p in client.posts)
     bridge._USER_DENIED.clear()
-    bridge._remember_user_denial("other", ["command(python3 scratch/a.py)"])      # another conversation: asked as usual
+    bridge._REFUSAL_ASKED.clear()
+    bridge._remember_user_denial("other", [entry])      # another conversation: asked as usual
     client, store, perms = _drive(monkeypatch, project, "needs_review", [_agy_result([err])], reasons=["r"])
     assert len(store.retries) == 1
     bridge._USER_DENIED.clear()
+
+
+def test_refused_entry_button_is_only_allow_and_not_in_grant_all():
+    errs = [{"tool_name": "run_command", "parameters": {"CommandLine": c}, "message": "user denied permission to run"}
+            for c in ("python3 scratch/a.py", "python3 scratch/b.py")]
+    blocks = bridge._build_reply_blocks("x", errs, "rid", [], refused_entries={"command(python3 scratch/a.py)"})
+    actions = [b for b in blocks if b["type"] == "actions"]
+    assert len(actions) == 2                      # no "all" pair: only one ordinary entry is left
+    texts = [[e["text"]["text"] for e in b["elements"]] for b in actions]
+    assert texts[0] == ["やはり許可して再実行"]
+    assert "拒否" in texts[1]
+
+
+def test_allowing_after_all_forgets_the_refusal():
+    bridge._USER_DENIED.clear()
+    bridge._REFUSAL_ASKED.clear()
+    bridge._remember_user_denial("c1", ["command(x)", "command(y)"])
+    bridge._REFUSAL_ASKED["c1"] = {"command(x)"}
+    bridge._forget_user_denial("c1", ["command(x)"])
+    assert bridge._USER_DENIED["c1"] == {"command(y)"} and bridge._REFUSAL_ASKED["c1"] == set()
+    bridge._USER_DENIED.clear()
+    bridge._REFUSAL_ASKED.clear()
+
+
+def test_permission_throttle_is_configurable(monkeypatch):
+    try:
+        bridge.apply_permission_throttle({"button_limit": 7, "window_seconds": 60, "auto_grant_limit": 2})
+        assert (bridge.DENIAL_BUTTON_LIMIT, bridge.DENIAL_BUTTON_WINDOW_SEC, bridge.AUTO_GRANT_LIMIT) == (7, 60, 2)
+        bridge.apply_permission_throttle({"button_limit": 0, "window_seconds": "x", "bogus": 1})   # bad -> defaults
+        assert (bridge.DENIAL_BUTTON_LIMIT, bridge.DENIAL_BUTTON_WINDOW_SEC, bridge.AUTO_GRANT_LIMIT) == (3, 600, 10)
+        bridge.apply_permission_throttle({"button_limit": 5})
+        assert bridge.DENIAL_BUTTON_LIMIT == 5 and bridge.AUTO_GRANT_LIMIT == 10
+    finally:
+        bridge.apply_permission_throttle(None)
+    assert (bridge.DENIAL_BUTTON_LIMIT, bridge.DENIAL_BUTTON_WINDOW_SEC, bridge.AUTO_GRANT_LIMIT) == (3, 600, 10)
 
 
 def test_summary_returned_as_a_json_string_is_unwrapped():

@@ -160,6 +160,9 @@ Restart the bridge after changing it.
   tied to a repo.
 - `watched_config_files`: files to drift-protect, see "Config drift detection" below.
 - `telemetry`: opt-in usage statistics, see "Usage statistics" below.
+- `permission_throttle` (top level, optional): limits for the permission-button throttle:
+  `button_limit` (default 3), `window_seconds` (default 600), `auto_grant_limit` (default 10),
+  all positive integers. See the button-throttle note below.
 
 ## Tool permissions
 
@@ -293,7 +296,7 @@ but these make the easy mistakes (and easy probing) fail loudly:
   not counted (writing one fresh `scratch/` script after another must not be
   stopped). Automatic grants have a looser limit of their own (10 per
   conversation per 10 minutes); past it, denials are no longer reviewed and
-  go through the button limit like any other. Granting
+  go through the button limit like any other. The limits can be changed in `config.yaml` under the top-level `permission_throttle:` (`button_limit`, `window_seconds`, `auto_grant_limit`). Granting
   something yourself in that conversation resets the count (you're evidently
   watching), so a legitimate trial-and-error session isn't cut off.
 - **A shared rules file in each project** (`.agents/rules/agent-safety-rules.md`, linked

@@ -544,12 +544,40 @@ def telemetry_enabled(channel_id: Optional[str], feature: str) -> bool:
     return TELEMETRY_DEFAULTS.get(feature, False)
 
 
+def apply_permission_throttle(block) -> None:
+    """Top-level `permission_throttle:` in config.yaml overrides the button / auto-grant limits
+    (DENIAL_BUTTON_LIMIT, DENIAL_BUTTON_WINDOW_SEC, AUTO_GRANT_LIMIT). A missing key keeps the
+    built-in default; a value that is not a positive integer is ignored with a warning."""
+    global DENIAL_BUTTON_LIMIT, DENIAL_BUTTON_WINDOW_SEC, AUTO_GRANT_LIMIT
+    DENIAL_BUTTON_LIMIT = _DEFAULT_DENIAL_BUTTON_LIMIT
+    DENIAL_BUTTON_WINDOW_SEC = _DEFAULT_DENIAL_BUTTON_WINDOW_SEC
+    AUTO_GRANT_LIMIT = _DEFAULT_AUTO_GRANT_LIMIT
+    if not isinstance(block, dict):
+        return
+    for key in block:
+        if key not in ("button_limit", "window_seconds", "auto_grant_limit"):
+            log.warning("config.yaml permission_throttle: unknown key %r ignored", key)
+    def pick(key: str, default: int) -> int:
+        v = block.get(key)
+        if v is None:
+            return default
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            log.warning("config.yaml permission_throttle.%s must be a positive integer, got %r; using %d",
+                        key, v, default)
+            return default
+        return v
+    DENIAL_BUTTON_LIMIT = pick("button_limit", DENIAL_BUTTON_LIMIT)
+    DENIAL_BUTTON_WINDOW_SEC = pick("window_seconds", DENIAL_BUTTON_WINDOW_SEC)
+    AUTO_GRANT_LIMIT = pick("auto_grant_limit", AUTO_GRANT_LIMIT)
+
+
 def load_channel_map() -> dict:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
     for feature, enabled in (cfg.get("telemetry") or {}).items():
         if feature in TELEMETRY_DEFAULTS:
             TELEMETRY_DEFAULTS[feature] = bool(enabled)
+    apply_permission_throttle(cfg.get("permission_throttle"))
     channel_map = cfg.get("channels") or {}
     for channel_id, entry in channel_map.items():
         CHANNEL_TELEMETRY[channel_id] = {
@@ -1835,6 +1863,19 @@ def _text_to_section_blocks(text: str, chunk_size: int = 2900) -> list[dict]:
 _USER_DENIED: dict = {}
 
 
+# Entries a refused-earlier question was already asked about, per conversation: the "you refused
+# this earlier, allow it?" button is offered once per entry (an agent that keeps asking would
+# otherwise bring a button back every turn).
+_REFUSAL_ASKED: dict = {}
+
+
+def _forget_user_denial(conversation_id: Optional[str], entries: list) -> None:
+    """A person allowed these after all: they are no longer refused automatically."""
+    if conversation_id:
+        _USER_DENIED.get(conversation_id, set()).difference_update(entries)
+        _REFUSAL_ASKED.get(conversation_id, set()).difference_update(entries)
+
+
 def _remember_user_denial(conversation_id: Optional[str], entries: list) -> None:
     if conversation_id:
         _USER_DENIED.setdefault(conversation_id, set()).update(e for e in entries if isinstance(e, str))
@@ -2025,7 +2066,8 @@ def _review_scripts(permission_errors: list[dict], project_id: str, user_request
 
 
 def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: str,
-                        summary_entries: "list[str] | tuple" = ()) -> list[dict]:
+                        summary_entries: "list[str] | tuple" = (),
+                        refused_entries: "set[str] | frozenset" = frozenset()) -> list[dict]:
     """Reply blocks for a turn that hit at least one grantable denial: the
     text as usual, plus one pair of grant/retry buttons per distinct
     denied entry, and - only when 2 or more distinct entries showed up in
@@ -2034,7 +2076,9 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
     ever grant one and immediately re-run the whole prompt, possibly
     hitting the others all over again. Denials we can't map to a
     permissions.allow entry (see _grantable_entry) stay text-only. An entry in
-    `summary_entries` also gets a "show summary" button (the script review's stage 3)."""
+    `summary_entries` also gets a "show summary" button (the script review's stage 3). An entry in
+    `refused_entries` (the person refused it earlier in this conversation) gets only an
+    "allow after all" button, and is left out of the grant-all pair."""
     blocks = _text_to_section_blocks(outgoing_text)
     entries: list[dict] = []
     seen: set[str] = set()
@@ -2051,6 +2095,19 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
         entry, describe = g["entry"], g["describe"]
         value = json.dumps({"retry_id": retry_id, "entries": [entry], "describe": describe,
                             **({"label": g["label"]} if g.get("label") else {})})
+        if entry in refused_entries:
+            blocks.append({
+                "type": "actions",
+                "block_id": f"perm_{i}_{retry_id}",
+                "elements": [{
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "やはり許可して再実行"},
+                    "style": "primary",
+                    "action_id": "grant_once",
+                    "value": value,
+                }],
+            })
+            continue
         blocks.append({
             "type": "actions",
             "block_id": f"perm_{i}_{retry_id}",
@@ -2078,6 +2135,7 @@ def _build_reply_blocks(outgoing_text: str, tool_errors: list[dict], retry_id: s
                 "value": json.dumps({"retry_id": retry_id, "entry": entry, "describe": describe}),
             })
 
+    entries = [g for g in entries if g["entry"] not in refused_entries]
     if len(entries) >= 2:
         all_entries = [g["entry"] for g in entries]
         all_describe = " / ".join(g["describe"] for g in entries)
@@ -2121,9 +2179,13 @@ GREY_QUESTION_PROGRESS_RETRIES = 5
 # counted here (a conversation writing one fresh scratch/ script after another is normal: each
 # is denied once, reviewed, granted, re-run). They get a looser limit of their own, because each
 # review is an LLM call: past it, denials go through the button limit above like any other.
-DENIAL_BUTTON_LIMIT = 3
-DENIAL_BUTTON_WINDOW_SEC = 600
-AUTO_GRANT_LIMIT = 10
+_DEFAULT_DENIAL_BUTTON_LIMIT = 3
+_DEFAULT_DENIAL_BUTTON_WINDOW_SEC = 600
+_DEFAULT_AUTO_GRANT_LIMIT = 10
+# Overridable in config.yaml under `permission_throttle:` (see apply_permission_throttle).
+DENIAL_BUTTON_LIMIT = _DEFAULT_DENIAL_BUTTON_LIMIT
+DENIAL_BUTTON_WINDOW_SEC = _DEFAULT_DENIAL_BUTTON_WINDOW_SEC
+AUTO_GRANT_LIMIT = _DEFAULT_AUTO_GRANT_LIMIT
 _denial_log: dict = {}
 _auto_grant_log: dict = {}
 
@@ -2457,13 +2519,27 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
     # Already refused by the person in this conversation: refuse again, no review, no button.
     refused = _USER_DENIED.get(conversation_id) or set()
     refused_errors = [e for e in permission_errors if (_grantable_entry(e) or {}).get("entry") in refused]
+    refused_offer: list[dict] = []
     if refused_errors:
         permission_errors = [e for e in permission_errors if e not in refused_errors]
-        lines = "\n".join(f"- {_describe_tool_error(e)}" for e in refused_errors)
-        parts.append(
-            ":no_entry_sign: 先ほどあなたが拒否したため、自動で拒否しました（ボタンは出しません）:\n"
-            f"{lines}\n許可したいときは、`/agy-permissions add <エントリ>` で明示的に許可してください。"
-        )
+        asked_before = _REFUSAL_ASKED.setdefault(conversation_id, set()) if conversation_id else set()
+        refused_offer = [e for e in refused_errors
+                         if (_grantable_entry(e) or {}).get("entry") not in asked_before]
+        for e in refused_offer:
+            asked_before.add((_grantable_entry(e) or {}).get("entry"))
+        repeated = [e for e in refused_errors if e not in refused_offer]
+        if refused_offer:
+            lines = "\n".join(f"- {_describe_tool_error(e)}" for e in refused_offer)
+            parts.append(
+                ":question: 以前あなたが拒否した操作ですが、許可しますか？\n"
+                f"{lines}\n許可する場合は、下のボタンでこの会話だけ許可して再実行できます。"
+            )
+        if repeated:
+            lines = "\n".join(f"- {_describe_tool_error(e)}" for e in repeated)
+            parts.append(
+                ":no_entry_sign: 先ほどあなたが拒否したため、自動で拒否しました（確認のボタンは、さきほど出しています）:\n"
+                f"{lines}\n許可したいときは、`/agy-permissions add <エントリ>` で明示的に許可してください。"
+            )
         store.log_permission(channel_id, conversation_id, "refused_auto",
                               [(_grantable_entry(e) or {}).get("entry") or "?" for e in refused_errors])
 
@@ -2662,11 +2738,14 @@ def _run_and_reply(client, store: "ThreadStore", permissions: "ProjectPermission
                               "throttled" if buttons_throttled else "requested", asked)
 
     blocks = None
-    if permission_errors and not buttons_throttled:
+    button_errors = ([] if buttons_throttled else list(permission_errors)) + refused_offer
+    if button_errors:
         retry_id = uuid.uuid4().hex[:12]
         store.put_retry(retry_id, channel_id, thread_key, project_id, conversation_id,
                          remember_text if remember_text is not None else text)
-        blocks = _build_reply_blocks(outgoing_text, permission_errors, retry_id, summary_entries)
+        blocks = _build_reply_blocks(
+            outgoing_text, button_errors, retry_id, summary_entries,
+            refused_entries={(_grantable_entry(e) or {}).get("entry") for e in refused_offer})
 
     log.info("posting to slack text=%r", outgoing_text)
     try:
@@ -2899,6 +2978,7 @@ def build_app() -> App:
         store.log_permission(ctx["channel_id"], conversation_id,
                               "granted_permanent" if permanent else "granted_once", entries, clicker)
         _reset_denial_throttle(conversation_id)
+        _forget_user_denial(conversation_id, entries)
 
         for entry in entries:
             newly_added = permissions.add_entry(ctx["project_id"], entry)
