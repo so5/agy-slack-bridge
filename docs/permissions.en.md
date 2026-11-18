@@ -110,6 +110,17 @@ Tokens and the like are kept not in the project's `.env` but in the config dir's
 - **Refused commands:** `env`, `printenv`, `export`, `eval`, `python -c`, `sh -c`, `node -e` and so on (anything that can print the environment directly), and commands pointing at `/proc`, are refused by the prefix.
 - **Limits:** the refusal covers the obvious forms; it is not a sandbox. A script that transforms a value before printing it (reversed, ...) is not masked - that is what the automatic check and the person's review before a grant are for. For anything you must not expose even in part, use a token scoped down at the service (read-only, ...). Values `op` resolves (what the `.env` references point to) are not the profile's values, so the prefix does not mask them (`op run` itself masks them in its output).
 
+### Google Calendar and Mail (`google_calendar.py` / `google_mail.py`)
+
+An account's token and policy live in `google/<profile name>.json` in the config directory (0600; `deny` for the agent). Format: [tools/google-profile.en.md](../tools/google-profile.en.md).
+
+- **What is allowed:** read commands (Calendar `list` `search`; Mail `search` `read` `attachment`) go into the project's `permissionGrants` as fixed command strings (`--profile` fixed before the subcommand). Write commands (Calendar `create` `update` `delete`; Mail drafts) follow the profile's `write_mode`: `confirm` (default) keeps them out of the allow list, so each run needs a Slack grant button press; `allow` puts them in (a permanent grant). In that case the skill and the always-on rule say the agent must report every command it ran to the user. A report is the agent's own account, so every run is also recorded in `google/actions.log` for later checking (bodies are not recorded).
+- **No sending or deleting mail.** Drafts only (the `gmail.modify` scope technically allows more; the CLI simply has no such command). A token obtained with only read-only scopes (`calendar.readonly`, `gmail.readonly`) cannot write on Google's side either.
+- **Notifying guests:** `--send-updates` defaults to `none`. A command has to ask for it. In `confirm` mode the grant button shows the command.
+- **Mail search condition (`mail_filter`):** always added to `search`; `read`, `attachment` and `draft-reply` only work on mail matching it (the Message-ID is searched with the condition and must return the same message). **It narrows; it is not a permission boundary.** Another profile using the same token reads the same mail without it. Keep accounts you must not expose on separate tokens.
+- **Attachments:** saved only under the project's `scratch/mail/<message ID>/` (the destination cannot be chosen).
+- **Limit:** the CLI writes the action log itself. The agent has no way to call Google's APIs without it, since it cannot read the token (`deny`).
+
 ## 6. MCP tools
 
 MCP tools are allowed by per-server tool name. This is finer-grained than a `run_command` prefix permission. Do not allow tools that execute arbitrary code. As with other entries, permissions are per project (for example, `mcp(playwright/...)` for browser operation should be allowed only in the projects that need it).

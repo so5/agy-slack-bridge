@@ -66,6 +66,11 @@ Slack ブリッジ経由で動かす agy プロジェクトに要る設定一式
      (<設定ディレクトリ>/credentials/NAME.json。環境変数の名前と値。0600。エージェントからは読めない)
      を作り、使い方(tools/cred_run.py を前置きにする書き方)を .agents/rules/credentials.md に生成する。
      値は画面に出さずに入力する。プロファイルは複数のプロジェクトで共有できる。
+  9. Google カレンダー・メール(任意。プロジェクトのメニューの 10)を使う場合: アカウントごとのプロファイル
+     (<設定ディレクトリ>/google/NAME.json、tools/google-profile.md。トークンと方針。0600)を作り、読み取り系の許可
+     (書き込み系は、方針が恒久許可のときだけ)を、そのプロジェクトの permissionGrants に入れ、スキル
+     (.agents/skills/google-calendar, google-mail)と、案内のルール(.agents/rules/skills-first.md)を生成する。
+     トークンは、既存の token.json を取り込む(OAuth の取得はしない)。
 
 設定ファイルを変えたあとは、ブリッジの再起動が必要な場合があります。
 """
@@ -93,6 +98,9 @@ import bridge_config  # noqa: E402
 import cred_profiles  # noqa: E402
 import gdrive_cli  # noqa: E402
 import gdrive_policy  # noqa: E402
+import google_common  # noqa: E402
+import google_policy  # noqa: E402
+import google_skills  # noqa: E402
 import safety_stack  # noqa: E402
 import script_integrity  # noqa: E402
 from agy_settings import ensure_list_entries, load_json, save_json  # noqa: E402
@@ -619,7 +627,7 @@ def _skill_description(path: Path) -> str:
     return ""
 
 
-def skills_rule_text(skills: "list[tuple[str, str]]") -> str:
+def skills_rule_text(skills: "list[tuple[str, str]]", report: bool = False) -> str:
     """常時読み込まれる、短いルール。固定コマンドを守ること(複合コマンドの禁止)と、
     操作の前にスキルを確認すること。skills は (名前, いつ使うか) の一覧。"""
     out = ["---", "trigger: always_on", "---", SKILLS_RULE_MARK, "",
@@ -631,6 +639,9 @@ def skills_rule_text(skills: "list[tuple[str, str]]") -> str:
            "  書き込み系は、1 つずつ実行して、承認を待ってから次へ進む。読み取り系は、その後で実行する。",
            "- 次の操作をする前に、対応するスキルを読んで、使い方を確認する:"]
     out += [f"  - {when}: `.agents/skills/{name}/SKILL.md`" for name, when in skills]
+    if report:
+        out += ["- スキルに「承認なしで実行できる書き込み」と書いてあるコマンドを実行したら、そのターンの最後に、",
+                "  何を実行したか（全件）をユーザーに報告する。"]
     out.append("")
     return "\n".join(out)
 
@@ -641,7 +652,8 @@ def generated_skills(target_dir: Path) -> "list[tuple[str, str]]":
     for md in sorted((target_dir / SKILLS_DIR).glob("*/SKILL.md")):
         if md.is_symlink() or SKILL_MARK not in md.read_text(encoding="utf-8", errors="replace"):
             continue
-        when = GDRIVE_SKILL_WHEN if md.parent.name == GDRIVE_SKILL else (_skill_description(md) or md.parent.name)
+        when = (GDRIVE_SKILL_WHEN if md.parent.name == GDRIVE_SKILL
+                else google_skills.SKILL_WHEN.get(md.parent.name) or _skill_description(md) or md.parent.name)
         found.append((md.parent.name, when))
     return found
 
@@ -662,7 +674,9 @@ def refresh_skills_rule(target_dir: "Path | None") -> None:
     if dest.exists() and not ours:
         print(f"  [スキップ] {RULES_DIR / SKILLS_RULE} は、このスクリプトが作ったものではないので、変更しません")
         return
-    text = skills_rule_text(skills)
+    report = any(google_skills.REPORT_MARK in (md.read_text(encoding="utf-8", errors="replace"))
+                 for md in (target_dir / SKILLS_DIR).glob("*/SKILL.md") if not md.is_symlink())
+    text = skills_rule_text(skills, report)
     if ours and dest.read_text(encoding="utf-8") == text:
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -783,6 +797,223 @@ def update_project_gdrive_allow(project_json: Path, prefix: Path, profile: str,
         print(f"  [削除] 「{e[len('command('):-1] if e.startswith('command(') else e}」の実行を許可する設定を削除しました（Drive のプロファイルで無効にしたため）")
     if not added and not stale:
         print("  [OK] このプロジェクトの許可の設定は、すでに最新です")
+
+
+# --- Google カレンダー・メール(tools/google_calendar.py, google_mail.py) ------------------------------
+
+OAUTH_DOC_URLS = ("https://developers.google.com/workspace/guides/create-credentials#oauth-client-id",
+                  "https://developers.google.com/identity/protocols/oauth2")
+
+
+def current_google_profiles(project_json: Path, prefix: Path) -> list[str]:
+    grants = ((load_json(project_json).get("permissionGrants") or {}).get("permissionGrants") or {})
+    return google_skills.attached_profiles(grants.get("allow", []), prefix)
+
+
+def google_profile_path(config_dir: Path, profile: str) -> Path:
+    return config_dir / "google" / f"{profile}.json"
+
+
+def read_google_policy(config_dir: Path, profile: str) -> "dict | None":
+    try:
+        data = google_policy.read_profile(google_profile_path(config_dir, profile))
+        return None if data is None else {**google_policy.policy_from_data(data), "name": profile,
+                                          "commands": set(google_policy.policy_from_data(data)["commands"])}
+    except (ValueError, OSError):
+        return None
+
+
+def update_project_google_allow(project_json: Path, prefix: Path, profile: str, commands, write_mode: str) -> None:
+    """読み取り系(と、write_mode が allow のとき書き込み系)の許可を、そのプロジェクト自身の
+    permissionGrants にだけ入れる。以前入れた、いまは入れないはずのエントリは取り除く。"""
+    data = load_json(project_json)
+    grants = data.setdefault("permissionGrants", {}).setdefault("permissionGrants", {})
+    want = google_skills.allow_entries(prefix, profile, commands, write_mode)
+    added = ensure_list_entries(grants, "allow", want)
+    stale = [e for e in google_skills.all_possible_entries(prefix, profile) if e not in want and e in grants.get("allow", [])]
+    for e in stale:
+        grants["allow"].remove(e)
+    if added or stale:
+        save_json(project_json, data)
+    short = lambda e: e[len("command("):-1] if e.startswith("command(") else e
+    for e in added:
+        print(f"  [追加] 「{short(e)}」の実行を、このプロジェクトのエージェントに許可する設定を作成しました")
+    for e in stale:
+        print(f"  [削除] 「{short(e)}」の実行を許可する設定を削除しました（プロファイルの設定で無効にしたため）")
+    if not added and not stale:
+        print("  [OK] このプロジェクトの許可の設定は、すでに最新です")
+
+
+def remove_project_google_allow(project_json: Path, prefix: Path, profile: str) -> None:
+    data = load_json(project_json)
+    allow = ((data.get("permissionGrants") or {}).get("permissionGrants") or {}).get("allow")
+    gone = [e for e in google_skills.all_possible_entries(prefix, profile) if e in (allow or [])]
+    for e in gone:
+        allow.remove(e)
+        print(f"  [削除] 「{e[len('command('):-1]}」の実行を許可する設定を削除しました")
+    if gone:
+        save_json(project_json, data)
+
+
+def write_google_skills(ask: "Prompter", target_dir: "Path | None", prefix: Path, config_dir: Path,
+                        profiles: "list[str]") -> None:
+    """このプロジェクトで使うプロファイルから、カレンダーとメールのスキルを作り直す。
+    そのツールで有効なコマンドが 1 つも無ければ、スキルを削除する。案内のルールも合わせる。"""
+    if target_dir is None:
+        return
+    loaded = [p for p in (read_google_policy(config_dir, name) for name in profiles) if p]
+    for tool, skill in google_skills.SKILL_NAMES.items():
+        dest = target_dir / SKILLS_DIR / skill / "SKILL.md"
+        shown = SKILLS_DIR / skill / "SKILL.md"
+        ours = dest.is_file() and not dest.is_symlink() and SKILL_MARK in dest.read_text(encoding="utf-8", errors="replace")
+        usable = [p for p in loaded if any(c.startswith(tool + ".") for c in p["commands"])]
+        if not usable:
+            if ours:
+                dest.unlink()
+                try:
+                    dest.parent.rmdir()
+                except OSError:
+                    pass
+                print(f"  [削除] {tool} を使うプロファイルが無くなったので、{shown} を削除しました")
+            continue
+        text = google_skills.skill_text(tool, prefix, usable, SKILL_MARK)
+        if dest.is_symlink() or (dest.exists() and not ours):
+            if not ask.yes_no(f"{shown} は、このスクリプトが作ったものではありません。使い方に置き換えますか?", default=False):
+                print(f"  [スキップ] {shown} は変更しません")
+                continue
+            dest.unlink()
+        if dest.exists() and dest.read_text(encoding="utf-8") == text:
+            print(f"  [OK] {shown} は、すでに最新の内容です")
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+        print(f"  [書込] {'カレンダー' if tool == 'calendar' else 'メール'}の使い方を {shown} に書きました")
+    refresh_skills_rule(target_dir)
+
+
+def _validate_google_commands(v):
+    if v.strip() == "all":
+        return None
+    names = _csv(v)
+    bad = [n for n in names if n not in google_policy.ALL_COMMANDS]
+    if bad or not names:
+        return f"未知のコマンド: {', '.join(bad)}（{', '.join(google_policy.ALL_COMMANDS)}、または all）"
+    if not any(n in google_policy.READ_COMMANDS for n in names):
+        return "読み取り系のコマンドを、1 つ以上含めてください"
+    return None
+
+
+def _validate_token_file(v):
+    try:
+        google_policy.read_token_file(Path(v).expanduser())
+    except ValueError as e:
+        return str(e)
+    return None
+
+
+def ask_google_policy(ask: Prompter, old: dict) -> dict:
+    new = dict(old)
+    cmds = ask.text("有効にするコマンド（カンマ区切り、または all）", default=", ".join(old["commands"]),
+                    validate=_validate_google_commands)
+    new["commands"] = google_policy.ALL_COMMANDS[:] if (cmds or "").strip() == "all" else _csv(cmds)
+    if any(c in google_policy.WRITE_COMMANDS for c in new["commands"]):
+        key = choose(ask, "書き込み系（予定の作成・更新・削除、メールの下書き）の扱い",
+                     [("1", "毎回、Slack の許可ボタンで確認する（安全。既定）"),
+                      ("2", "恒久許可にする（確認なしで実行できる。実行した全件を、エージェントがユーザーに報告する。"
+                            "実行は記録にも残る）")],
+                     "1" if old["write_mode"] == "confirm" else "2", prompt="選択")
+        new["write_mode"] = "confirm" if key == "1" else "allow"
+    flt = ask.text("メールの検索条件（任意。例: (to:a@example.com OR from:example.com)。空欄で、条件なし）",
+                   default=old["mail_filter"] or None)
+    new["mail_filter"] = flt or ""
+    return new
+
+
+def ask_google_token(ask: Prompter, config_dir: Path, profile: str) -> "dict | None":
+    """新しいプロファイルのトークン: 既存のトークンファイルを取り込む、または、別のプロファイルのトークンを共有する。"""
+    others = []
+    gdir = config_dir / "google"
+    if gdir.is_dir():
+        for f in sorted(gdir.glob("*.json")):
+            if f.stem == profile or not _PROFILE_NAME_RE.match(f.stem):
+                continue
+            try:
+                if (google_policy.read_profile(f) or {}).get("token"):
+                    others.append(f.stem)
+            except (ValueError, OSError):
+                pass
+    options = [("1", "既存のトークンのファイル（token.json）を取り込む")]
+    names = {}
+    for i, name in enumerate(others, 2):
+        options.append((str(i), f"別のプロファイルのトークンを使う（{name}。同じアカウントで、検索条件などを変えたいとき）"))
+        names[str(i)] = name
+    key = choose(ask, f"プロファイル {profile} のトークン", options + [("n", "作らない")], "1")
+    if key == "n":
+        return None
+    if key in names:
+        return google_policy.new_profile(token_from=names[key])
+    print("  トークンのファイルは、OAuth で取得した、リフレッシュトークンの入った JSON です。取得の方法は、次のドキュメントを見てください:")
+    for url in OAUTH_DOC_URLS:
+        print(f"    {url}")
+    path = ask.text("トークンのファイルのパス", validate=_validate_token_file, paths=True)
+    if not path:
+        return None
+    src = Path(path).expanduser()
+    data = google_policy.new_profile(token=google_policy.read_token_file(src))
+    print(f"  [OK] {src} から、トークンを読み取りました")
+    return data | {"_source": str(src)}
+
+
+def configure_google_profile(ask: Prompter, config_dir: Path, profile: str, gate: bool = True) -> "dict | None":
+    """プロファイル(<設定ディレクトリ>/google/NAME.json)の作成と方針の設定。方針(dict)を返す。扱えなかったときは None。"""
+    path = google_profile_path(config_dir, profile)
+    try:
+        data = google_policy.read_profile(path)
+    except (ValueError, OSError) as e:
+        print(f"  [警告] {path} を読めません（{e}）。設定はスキップします（直してから再実行してください）。")
+        return None
+    created = data is None
+    source = None
+    if created:
+        data = ask_google_token(ask, config_dir, profile)
+        if data is None:
+            return None
+        source = data.pop("_source", None)
+    else:
+        try:
+            google_common.parse_profile(data)
+        except google_common.ProfileError as e:
+            print(f"  [警告] {path} が不正です（{e}）。設定はスキップします。")
+            return None
+    old = google_policy.policy_from_data(data)
+    print("    現在の方針:" if not created else "    方針（既定値）:")
+    for line in google_policy.describe(old):
+        print(f"      {line}")
+    new = old
+    if (not gate and not created) or ask.yes_no("方針を変更しますか?", default=created):
+        new = ask_google_policy(ask, old)
+        for line in google_policy.diff(old, new):
+            print(f"      変更: {line}")
+        looser = google_policy.loosening(old, new)
+        if looser:
+            print("    [注意] 権限が広がる変更が含まれます:")
+            for line in looser:
+                print(f"      - {line}")
+            if not ask.yes_no("緩める変更を適用しますか?", default=False):
+                print("    [取消] 方針の変更を取り消しました")
+                new = old
+    if created or new != old:
+        google_policy.write_profile(path, google_policy.apply_policy(data, new))
+        print(f"  [書込] プロファイルを {path} に保存しました（{'トークンを含みます。' if created and 'token' in data else ''}自分だけが読めます）")
+    else:
+        print("  [OK] 方針は変更していません")
+    if source and ask.yes_no(f"取り込み元のトークンのファイル {source} を削除しますか?（トークンが 2 か所に残らないようにします）", default=False):
+        try:
+            Path(source).unlink()
+            print(f"  [削除] {source} を削除しました")
+        except OSError as e:
+            print(f"  [警告] {source} を削除できませんでした: {e}")
+    return {**new, "name": profile, "commands": set(new["commands"])}
 
 
 # --- 認証情報(環境変数のプロファイル。tools/cred_run.py) ---------------------------------
@@ -1575,6 +1806,88 @@ class Session:
         key = choose(self.ask, "Google Drive CLI のプロファイル", options, "n")
         return names.get(key, new)
 
+    # --- Google カレンダー・メール ---
+    @operation_method("Google カレンダー・メールの設定", redo="プロジェクトのメニューの 10)")
+    def google(self, gate: bool = False) -> None:
+        if not self.ready():
+            return
+        ask, prefix = self.ask, self.prefix
+        print("-- Google カレンダー・メール --")
+        current = current_google_profiles(self.project_json, prefix)
+        if gate and not ask.yes_no("Google カレンダー・メールを使いますか?", default=bool(current)):
+            return
+        if re.search(r"\s", str(prefix)):
+            print("  [スキップ] インストール先のパスに空白があると許可エントリを安全に作れません。")
+            return
+        if current and not gate:
+            self.google_menu()
+            return
+        if not current:
+            self.add_google_profile()
+
+    def google_menu(self) -> None:
+        ask, prefix = self.ask, self.prefix
+        while True:
+            current = current_google_profiles(self.project_json, prefix)
+            if not current:
+                return
+            key = choose(ask, f"Google カレンダー・メール — プロファイル {', '.join(current)}",
+                         [("1", "アカウント（プロファイル）を追加する"),
+                          ("2", "プロファイルの方針を変更する"),
+                          ("3", "プロファイルを、このプロジェクトから外す"),
+                          ("b", "戻る")], "b")
+            if key == "b":
+                return
+            if key == "1":
+                self.add_google_profile()
+                continue
+            name = current[0]
+            if len(current) > 1:
+                options = [(str(i), n) for i, n in enumerate(current, 1)]
+                picked = choose(ask, "どのプロファイルですか?", options + [("b", "戻る")], "b")
+                if picked == "b":
+                    continue
+                name = current[int(picked) - 1]
+            if key == "2":
+                self.configure_google(name, gate=False)
+            else:
+                self.detach_google(name)
+
+    @operation_method("Google プロファイルの追加", redo="プロジェクトのメニューの 10) → 1)")
+    def add_google_profile(self) -> None:
+        ask = self.ask
+        name = ask.text("プロファイル名（アカウントの呼び名。例: personal / work）",
+                        validate=lambda v: None if _PROFILE_NAME_RE.match(v) else "英数字と _ - だけ使えます")
+        if not name:
+            return
+        self.configure_google(name, gate=True)
+
+    @operation_method("Google プロファイルの方針", redo="プロジェクトのメニューの 10) → 2)")
+    def configure_google(self, profile: str, gate: bool = True) -> None:
+        ask, prefix, config_dir = self.ask, self.prefix, self.config_dir
+        print(f"  プロファイル: {profile}（{google_profile_path(config_dir, profile)}）")
+        policy = configure_google_profile(ask, config_dir, profile, gate)
+        if policy is None:
+            return
+        update_project_google_allow(self.project_json, prefix, profile, policy["commands"], policy["write_mode"])
+        write_google_skills(ask, self.target_dir, prefix, config_dir, current_google_profiles(self.project_json, prefix))
+        finish_git(self.ask, self.target_dir, self.git_inited)
+        warn_if_gdrive_packages_missing(prefix)
+
+    @operation_method("Google プロファイルの取り外し", atomic=False, redo="プロジェクトのメニューの 10) → 3)")
+    def detach_google(self, profile: str) -> None:
+        remove_project_google_allow(self.project_json, self.prefix, profile)
+        write_google_skills(self.ask, self.target_dir, self.prefix, self.config_dir,
+                            current_google_profiles(self.project_json, self.prefix))
+        print(f"  [OK] このプロジェクトでは、プロファイル {profile} を使えなくなりました。")
+        users = [pr["name"] for pr in list_agy_projects()
+                 if pr["id"] != self.project_id and profile in current_google_profiles(pr["json"], self.prefix)]
+        path = google_profile_path(self.config_dir, profile)
+        if not users and path.exists() and self.ask.yes_no(
+                f"プロファイル {profile} はどのプロジェクトからも使われていません。トークンごと削除しますか?", default=False):
+            path.unlink()
+            print(f"  [削除] {path} を削除しました")
+
     # --- 認証情報 ---
     @operation_method("認証情報の設定", redo="プロジェクトのメニューの 9)")
     def credentials(self, gate: bool = False) -> None:
@@ -1690,7 +2003,8 @@ class Session:
         group = lambda name: mark(any(e.get(k) for e in entries for k in CHANNEL_GROUPS[name][1]))
         return {"2": mark(ok_files), "3": mark(has_channel), "4": group("appearance"), "5": group("model"),
                 "6": group("watch"), "7": mark(has_drive),
-                "9": mark(bool(current_cred_profile(folder)))}
+                "9": mark(bool(current_cred_profile(folder))),
+                "10": mark(bool(self.project_json is not None and current_google_profiles(self.project_json, self.prefix)))}
 
     def project_status(self, pr: dict) -> dict:
         """一覧に出す状態。必須 = 安全機構（ルール・フック・deny）と Slack チャンネル。
@@ -1706,6 +2020,8 @@ class Session:
         if not missing:
             if current_gdrive_profile(pr["json"], self.prefix) is None:
                 optional.append("Drive CLI")
+            if not current_google_profiles(pr["json"], self.prefix):
+                optional.append("Google カレンダー・メール")
             if current_cred_profile(folder) is None:
                 optional.append("認証情報")
             for name, keys in (("表示名", ("display_name",)), ("アイコン", ("icon_emoji", "icon_url")),
@@ -1729,6 +2045,8 @@ class Session:
         if self.project_json is not None:
             profile = current_gdrive_profile(self.project_json, self.prefix)
             print(f"  Drive CLI: {'プロファイル ' + profile if profile else '使わない'}")
+            gp = current_google_profiles(self.project_json, self.prefix)
+            print(f"  Google カレンダー・メール: {'プロファイル ' + ', '.join(gp) if gp else '使わない'}")
             cred = current_cred_profile(self.target_dir)
             print(f"  認証情報: {'プロファイル ' + cred if cred else '使わない'}")
             mine = self.mapped_channels(self.project_id)
@@ -1747,6 +2065,7 @@ class Session:
         self.tokens()
         if self.project_json is not None:
             self.drive(gate=True)
+            self.google(gate=True)
             self.credentials(gate=True)
         print("\n完了。設定を変えた場合は、ブリッジを再起動してください。")
 
@@ -1784,6 +2103,7 @@ def project_menu(session: Session) -> bool:
                    ("7", f"Google Drive CLI を設定する  [{st['7']}]"),
                    ("8", "現在の状態を表示する"),
                    ("9", f"認証情報（op など）を設定する  [{st['9']}]"),
+                   ("10", f"Google カレンダー・メールを設定する  [{st['10']}]"),
                    ("b", "プロジェクトの一覧に戻る"),
                    ("q", "終了")]
         key = choose(ask, f"プロジェクト: {session.project_name or '未登録'}  {session.target_dir or ''}", options, "b")
@@ -1797,6 +2117,7 @@ def project_menu(session: Session) -> bool:
                 if session.project_json is not None:
                     session.channel()
                     session.drive(gate=True)
+                    session.google(gate=True)
                     session.credentials(gate=True)
             elif key == "2":
                 session.setup_files()
@@ -1810,6 +2131,8 @@ def project_menu(session: Session) -> bool:
                 session.status()
             elif key == "9":
                 session.credentials()
+            elif key == "10":
+                session.google()
         except SystemExit as e:           # 段階の中の sys.exit(メッセージ) でメニューを閉じない
             if e.code not in (None, 0):
                 print(e.code)

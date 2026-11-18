@@ -67,7 +67,7 @@ When you re-run it, the current values appear as defaults.
 ```sh
 git clone https://github.com/so5/agy-slack-bridge.git
 cd agy-slack-bridge
-python3 tools/install.py --with-gdrive      # leave out --with-gdrive if you will not use the Drive CLI
+python3 tools/install.py --with-gdrive      # leave out --with-gdrive if you will not use the Drive CLI or Google Calendar/Mail
 ```
 
 The install location is `~/.local/share/agy-slack-bridge` (`<prefix>` below); the config is
@@ -94,7 +94,7 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 
 | Item | What it does |
 |---|---|
-| `1` Set up everything | 3-1 → 3-2 → 3-4 → 3-5 in order (first time, or updating). Required items come first; the optional Drive CLI (3-4) and credentials (3-5) come last |
+| `1` Set up everything | 3-1 → 3-2 → 3-4 → 3-6 → 3-5 in order (first time, or updating). Required items come first; the optional Drive CLI (3-4), Google Calendar/Mail (3-6) and credentials (3-5) come last |
 | `2` Place / update the rules and hook | Only the placement part of 3-1 |
 | `3` Set up the Slack channel mapping | Only the `チャンネル ID` prompt of 3-2 |
 | `4` Set up the channel appearance | The `表示名` / `アイコン絵文字` / `アイコン画像 URL` prompts of 3-2. Needs item `3` first |
@@ -103,6 +103,7 @@ A menu opens. Choose by typing a number or key (the `[...]` item is chosen with 
 | `7` Set up the Google Drive CLI | 3-4 |
 | `8` Show the current state | |
 | `9` Set up credentials (op and others) | 3-5 |
+| `10` Set up Google Calendar and Mail | 3-6 |
 | `b` Back to the project list | |
 | `q` Quit | |
 
@@ -258,6 +259,36 @@ For letting the agent use an external service's credentials (a 1Password CLI tok
 Choosing item `9` in a configured project offers `1` re-enter the values, `2` switch to another profile, `3` remove this project's setting (deletes only the rules file; the profile file stays).
 
 **Moving from an existing `.env` + `op run` setup**: (1) create the profile with item `9`; (2) delete the `OP_SERVICE_ACCOUNT_TOKEN` line from `.env` (keep the `op://…` references); (3) drop the hand-written `op run …` instructions from `AGENTS.md`/skills in favour of the generated `.agents/rules/credentials.md`; (4) the operator may want to rotate the token that sat in `.env` on the 1Password side (an agent that could read `.env` could see it).
+
+#### 3-6. Google Calendar and Mail (optional; skip if unused)
+
+Lets the agent use Google Calendar and Gmail (`tools/google_calendar.py` and `tools/google_mail.py`; they need the Google packages that `--with-gdrive` installs). Calendar: `list` `search` `create` `update` `delete`. Mail: `search` `read` `attachment` `draft-reply` `draft-new`. **Sending and deleting mail are not supported** (drafts only).
+
+- **An account is a profile.** `<config dir>/google/<profile name>.json` (0600; the agent cannot read it) holds the token and the policy. One project can use several profiles (personal, work, ...). To use the same account with a different mail search condition (for example only a university's mail), make another profile and share the token.
+- **The token is the JSON from an OAuth flow (it contains the refresh token).** This setup does not obtain it. See Google's documentation: [Create an OAuth client ID](https://developers.google.com/workspace/guides/create-credentials#oauth-client-id), [OAuth 2.0 overview](https://developers.google.com/identity/protocols/oauth2). Scopes needed: `https://www.googleapis.com/auth/calendar` for Calendar (plus `…/auth/meetings.space.settings` for Meet transcription) and `https://www.googleapis.com/auth/gmail.modify` for Mail (creating drafts needs it). The setup imports the `token.json` you obtained. Format details: [tools/google-profile.md](tools/google-profile.md).
+- **Permissions.** Read commands (Calendar `list` `search`; Mail `search` `read` `attachment`) are permanently allowed. Write commands (Calendar `create` `update` `delete`; Mail drafts) are chosen per profile: **confirm every time with a Slack grant button (default)**, or **permanently allowed (the agent must report every command it ran to the user)**. Either way, each run is recorded as one line in `<config dir>/google/actions.log` (the contents of bodies are not recorded).
+- Notification emails to guests (`--send-updates`) are not sent by default; a command has to ask for them explicitly.
+- Mail attachments are saved under the project's `scratch/mail/<message ID>/`.
+- Usage is generated as the skills `.agents/skills/google-calendar/SKILL.md` and `google-mail/SKILL.md` (the commands exactly as allowed, no chained commands, no mixing write and read commands in one turn, ...). A short always-on rule `.agents/rules/skills-first.md` tells the agent to read the skill first.
+
+| Prompt | How to answer |
+|---|---|
+| `Google カレンダー・メールを使いますか? [y/N]` | Asked only for item `1` (everything in order). **N** to skip |
+| `プロファイル名` (profile name) | A name for the account (e.g. `personal`); letters, digits, `_`, `-`. Entering the name of an existing profile uses it |
+| `トークンのファイルのパス` (token file path) | For a new profile that imports a token file: a JSON with `client_id`, `client_secret` and `refresh_token`. Refused if one is missing. Other keys (such as the access token) are not imported |
+| `プロファイル … のトークン` (`選択`) | For a new profile. `1` (default): import a token file. A number: use another profile's token (to change the mail search condition for the same account; the token is shared). `n`: do not create |
+| `方針を変更しますか? [Y/n]` (change the policy?) | Default **Y** for a new profile. **n**: keep the defaults (all commands, writes confirmed each time, no search condition, timezone Asia/Tokyo) |
+| `有効にするコマンド（カンマ区切り、または all）` (enabled commands) | `calendar.list` `calendar.search` `calendar.create` `calendar.update` `calendar.delete` `mail.search` `mail.read` `mail.attachment` `mail.draft-reply` `mail.draft-new`; include at least one read command |
+| `書き込み系（…）の扱い` (`選択`) | Only when a write command is enabled. `1` (default): confirm every time. `2`: permanently allowed (every run must be reported) |
+| `メールの検索条件` (mail search condition) | Optional Gmail search condition (e.g. `(to:a@example.com OR from:example.com)`). Always added to `search`; `read`, `attachment` and `draft-reply` only work on mail matching it. **It narrows; it is not a permission boundary** (another profile using the same token reads the same mail without it). The condition's text is not written into the skill files |
+| `緩める変更を適用しますか? [y/N]` (apply the loosening?) | Only when the change widens permissions (enabling commands, permanent write permission, changing or removing the condition) |
+| `取り込み元のトークンのファイル … を削除しますか? [y/N]` (delete the imported token file?) | Right after importing a token. **N** (default): keep the original. **y**: delete it (so the token is not left in two places) |
+| `… は、このスクリプトが作ったものではありません。使い方に置き換えますか? [y/N]` (replace a skill file this script did not create?) | When a skill file exists that this script did not create. **N** (default): leave it |
+| `プロファイル … はどのプロジェクトからも使われていません。トークンごと削除しますか? [y/N]` (delete the unused profile?) | After detaching, when no project uses the profile any more. **N** (default) |
+
+For a configured project, item `10` opens: `1` add an account (profile), `2` change a profile's policy, `3` detach a profile from this project. Detaching updates the permissions, the skills and the pointer rule.
+
+**Moving from a project that kept its own scripts (such as secretary)**: (1) create a profile per account with item `10` (import the existing `token.json`). (2) Delete the old scripts and hand-written skills and permissions only after checking the move. (3) For aliases that used a personal token plus a search condition (such as a university account), create a profile with `token_from` pointing at the personal profile's token, and put the condition in `メールの検索条件`. (4) The labeling in the old `mail_client.py` (such as `label-givery`) is not bundled.
 
 ### 4. Start
 

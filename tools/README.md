@@ -139,6 +139,10 @@ deny の対象外で、通常の許可フローと、安全規則 9 で防ぎま
 中にあるので、後から変えても承認済みのコマンド文字列は変わらず、再承認は要りません。
 プロファイルの書き方は [`gdrive-profile.md`](gdrive-profile.md)。
 
+### Google カレンダー・メール
+
+`tools/google_calendar.py`（`list` `search` `create` `update` `delete`）と `tools/google_mail.py`（`search` `read` `attachment` `draft-reply` `draft-new`。送信・削除はない）。インストール時に `--with-gdrive`（Google 系パッケージと、PDF 添付用の `pypdf`）が要ります。アカウントごとのプロファイル `<設定ディレクトリ>/google/NAME.json`（書式は [google-profile.md](google-profile.md)）にトークンと方針を置き、`--profile NAME` で選びます。`setup_agy_project.py` の項目 `10` が、プロファイル・許可・スキル（`.agents/skills/google-calendar`、`google-mail`）・案内のルール（`.agents/rules/skills-first.md`）を作ります。許可の分け方と限界は [docs/permissions.md](../docs/permissions.md) の「Google カレンダー・メール」。
+
 ### Drive CLI を使うときの前提
 
 - インストール時に `--with-gdrive` を付けて、Google 系パッケージをインストール先の venv に入れる。

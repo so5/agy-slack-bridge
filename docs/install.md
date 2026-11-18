@@ -24,7 +24,7 @@ python3 tools/install.py [--prefix DIR] [--config-dir DIR] [--with-gdrive]
 |---|---|
 | `--prefix DIR` | インストール先（既定 `~/.local/share/agy-slack-bridge`） |
 | `--config-dir DIR` | 設定ディレクトリ（既定 `~/.config/agy-slack-bridge`） |
-| `--with-gdrive` | Google Drive CLI 用の Google 系パッケージも入れる |
+| `--with-gdrive` | Google Drive CLI と、Google カレンダー・メールの CLI 用の Google 系パッケージ（PDF 添付用の `pypdf` を含む）も入れる |
 | `--no-setup` | 最後の「続けてセットアップするか」の確認を出さない |
 | `--no-settings` | agy の `settings.json` と `hooks.json` を書き換えない |
 | `--config-only` | コードには触れず、設定ディレクトリと agy の設定だけ行う |

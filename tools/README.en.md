@@ -149,6 +149,10 @@ scopes, allowed folders, etc.) is inside the profile, so changing it later does 
 the approved command string and no re-approval is needed. For how to write a profile, see
 [`gdrive-profile.en.md`](gdrive-profile.en.md).
 
+### Google Calendar and Mail
+
+`tools/google_calendar.py` (`list` `search` `create` `update` `delete`) and `tools/google_mail.py` (`search` `read` `attachment` `draft-reply` `draft-new`; no send or delete). They need `--with-gdrive` at install time (the Google packages, and `pypdf` for PDF attachments). Each account is a profile `<config dir>/google/NAME.json` (format: [google-profile.en.md](google-profile.en.md)) holding the token and policy, chosen with `--profile NAME`. Item `10` of `setup_agy_project.py` creates the profile, the permissions, the skills (`.agents/skills/google-calendar`, `google-mail`) and the pointer rule (`.agents/rules/skills-first.md`). What is allowed, and the limits: "Google Calendar and Mail" in [docs/permissions.en.md](../docs/permissions.en.md).
+
 ### Prerequisites for using the Drive CLI
 
 - Install with `--with-gdrive` to put the Google packages into the install location's venv.

@@ -25,7 +25,7 @@ permission model relies on must live where the agent cannot write (see
 |---|---|
 | `--prefix DIR` | install location (default `~/.local/share/agy-slack-bridge`) |
 | `--config-dir DIR` | config directory (default `~/.config/agy-slack-bridge`) |
-| `--with-gdrive` | also install the Google client libraries for the Drive CLI |
+| `--with-gdrive` | also install the Google client libraries for the Drive CLI and the Google Calendar/Mail CLIs (including `pypdf` for PDF attachments) |
 | `--no-setup` | skip the final "run the project setup now?" prompt |
 | `--no-settings` | do not touch agy's `settings.json` / `hooks.json` |
 | `--config-only` | leave the code alone; only set up the config dir and agy's settings |

@@ -884,8 +884,24 @@ def test_configured_project_lists_every_unset_optional_item(env, capsys):
         assert item in optional
 
 
+GOOGLE_TOKEN = {"client_id": "cid", "client_secret": "sec", "refresh_token": "rt-SECRET",
+                "scopes": ["https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.modify"]}
+
+
+def _token_file(env, name="token.json"):
+    f = env.target.parent / name
+    f.write_text(json.dumps({**GOOGLE_TOKEN, "token": "ACCESS", "expiry": "x"}))
+    return str(f)
+
+
+def _google_answers(env, profile="personal", **extra):
+    return {"Google カレンダー・メールを使いますか": "y", "プロファイル名": profile,
+            "トークンのファイルのパス": _token_file(env), "方針を変更しますか": "n",
+            "取り込み元のトークンのファイル": "n", **extra}
+
+
 def test_optional_items_disappear_from_the_list_once_set(env, capsys):
-    run(env, Scripted({"任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Bot", "アイコン絵文字": "robot_face",
+    run(env, Scripted({**_google_answers(env), "任意の項目": "y", "チャンネル ID": "C0TEST123", "表示名": "Bot", "アイコン絵文字": "robot_face",
                        "モデル": "1", "effort": "high", "監視するファイル": "AGENTS.md", "権限ボタンの統計": "n",
                        "Drive CLI": "y", "認証の種類": "oauth", "資格情報を取り出すコマンド": "cat /k",
                        "認証情報（op など）を使いますか": "y"}, {"OP_SERVICE_ACCOUNT_TOKEN": "ops_token_1234567"}))
@@ -1187,3 +1203,88 @@ def test_credentials_detach_removes_only_the_rules_file(env):
     run(env, Scripted({"チャンネル ID": "C0TEST123", "認証情報（op など）を使いますか": "y", "選択": "3"}))
     assert not (env.target / ".agents/rules/credentials.md").exists()
     assert (env.cfg / "credentials" / "op.json").exists()
+
+
+def _google_project(env, **extra):
+    run(env, Scripted(_google_answers(env, **extra)))
+    return setup.find_agy_project_json(env.target.resolve())
+
+
+def _allow(env):
+    return json.loads(project_json(env).read_text())["permissionGrants"]["permissionGrants"].get("allow", [])
+
+
+def test_google_setup_makes_a_0600_profile_exact_allow_entries_skills_and_a_pointer_rule(env):
+    _google_project(env)
+    prof = env.cfg / "google" / "personal.json"
+    assert oct(prof.stat().st_mode & 0o777) == "0o600" and oct(prof.parent.stat().st_mode & 0o777) == "0o700"
+    data = json.loads(prof.read_text())
+    assert data["token"] == GOOGLE_TOKEN and set(data) == {"token"}      # only the needed keys, no access token
+    py, pre = f"{env.prefix.resolve()}/.venv/bin/python", str(env.prefix.resolve())
+    cal = f"{py} -I {pre}/tools/google_calendar.py --profile personal"
+    mail = f"{py} -I {pre}/tools/google_mail.py --profile personal"
+    allow = _allow(env)
+    for sub in ("list", "search"):
+        assert f"command({cal} {sub})" in allow
+    for sub in ("search", "read", "attachment"):
+        assert f"command({mail} {sub})" in allow
+    assert not any(w in e for e in allow for w in ("create)", "update)", "delete)", "draft-"))   # writes: confirm each time
+    skill = (env.target / ".agents/skills/google-calendar/SKILL.md").read_text()
+    assert skill.startswith("---\nname: google-calendar\ndescription: Google カレンダーの予定を探す")
+    assert f"`{cal} search --query" in skill and "実行のたびにユーザーの承認が要る" in skill
+    assert "コマンドは 1 回に 1 つ" in skill and "--send-updates" in skill
+    ms = (env.target / ".agents/skills/google-mail/SKILL.md").read_text()
+    assert f"`{mail} read --msg-id" in ms and "送信と削除はできない" in ms
+    rule = (env.target / ".agents/rules/skills-first.md").read_text()
+    assert ".agents/skills/google-calendar/SKILL.md" in rule and ".agents/skills/google-mail/SKILL.md" in rule
+    assert "全件）をユーザーに報告" not in rule              # no unattended writes
+    assert "rt-SECRET" not in skill + ms + rule
+
+
+def test_google_write_mode_allow_adds_write_entries_the_report_duty_and_the_filter_stays_out_of_the_files(env):
+    _google_project(env)
+    flt = "(to:me@example.com)"
+    _drive_menu(env, {"選択": ["1", "10", "2", "2", "b", "b", "q"], "有効にするコマンド": "all",
+                      "メールの検索条件": flt, "緩める変更": "y"})
+    data = json.loads((env.cfg / "google" / "personal.json").read_text())
+    assert data["write_mode"] == "allow" and data["mail_filter"] == flt
+    allow = _allow(env)
+    assert any(e.endswith("google_calendar.py --profile personal create)") for e in allow)
+    assert any(e.endswith("google_mail.py --profile personal draft-new)") for e in allow)
+    skill = (env.target / ".agents/skills/google-mail/SKILL.md").read_text()
+    assert "承認なしで実行できる" in skill and "ユーザーに報告する" in skill and "あらかじめ決められた検索条件" in skill
+    assert "me@example.com" not in skill
+    assert "全件）をユーザーに報告" in (env.target / ".agents/rules/skills-first.md").read_text()
+    # back to confirm: the write entries and the report duty go away
+    _drive_menu(env, {"選択": ["1", "10", "2", "1", "b", "b", "q"], "有効にするコマンド": "all", "メールの検索条件": flt})
+    assert not any(e.endswith(" create)") or e.endswith(" draft-new)") for e in _allow(env))
+    assert "全件）をユーザーに報告" not in (env.target / ".agents/rules/skills-first.md").read_text()
+
+
+def test_google_second_profile_can_share_the_token_and_detach_removes_everything(env):
+    _google_project(env)
+    _drive_menu(env, {"選択": ["1", "10", "1", "2", "b", "b", "q"], "プロファイル名": "kyushu", "方針を変更しますか": "y",
+                      "有効にするコマンド": "mail.search, mail.read", "メールの検索条件": "(to:k@example.com)"})
+    kyushu = json.loads((env.cfg / "google" / "kyushu.json").read_text())
+    assert kyushu["token_from"] == "personal" and "token" not in kyushu
+    assert kyushu["commands"] == ["mail.search", "mail.read"]
+    ms = (env.target / ".agents/skills/google-mail/SKILL.md").read_text()
+    assert "--profile kyushu search" in ms and "--profile personal search" in ms
+    assert "calendar" not in "".join(e for e in _allow(env) if "--profile kyushu" in e)
+    _drive_menu(env, {"選択": ["1", "10", "3", "1", "b", "b", "q"], "削除しますか": "n"})   # detach personal
+    assert not any("--profile personal" in e for e in _allow(env))
+    assert not (env.target / ".agents/skills/google-calendar").exists()              # nobody uses calendar now
+    assert "--profile kyushu search" in (env.target / ".agents/skills/google-mail/SKILL.md").read_text()
+    _drive_menu(env, {"選択": ["1", "10", "3", "b", "q"], "削除しますか": "y"})        # detach the last one, delete the file
+    assert not (env.target / ".agents/skills/google-mail").exists() and not (env.target / ".agents/rules/skills-first.md").exists()
+    assert not (env.cfg / "google" / "kyushu.json").exists() and (env.cfg / "google" / "personal.json").exists()
+
+
+def test_google_setup_rejects_a_token_file_without_a_refresh_token_and_can_delete_the_source(env):
+    bad = env.target.parent / "bad.json"
+    bad.write_text(json.dumps({"client_id": "a"}))
+    ask = Scripted({**_google_answers(env), "トークンのファイルのパス": [str(bad), _token_file(env)],
+                    "取り込み元のトークンのファイル": "y"})
+    run(env, ask)
+    assert (env.cfg / "google" / "personal.json").exists()           # the bad file was refused, the good one imported
+    assert not (env.target.parent / "token.json").exists()           # the source was deleted on request

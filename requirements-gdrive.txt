@@ -1,5 +1,6 @@
-# Only for tools/gdrive_cli.py (install.py --with-gdrive installs these into the
-# install prefix's venv).
+# Only for tools/gdrive_cli.py and tools/google_calendar.py / google_mail.py (install.py
+# --with-gdrive installs these into the install prefix's venv). pypdf: text of PDF attachments.
 google-api-python-client>=2,<3
 google-auth>=2,<3
 google-auth-httplib2>=0.2
+pypdf>=4
